@@ -11,14 +11,15 @@
  1. WHAT IT DOES
 --------------------------------------------------------------------------------
   Press 🚀 (PlanetList row) or "Land on surface" (Inspector) on any non-star
-  world. The camera snaps behind the walker hovering a few units above the
-  face of the planet currently turned toward you; you then FALL onto the
-  terrain and land. From there you walk the surface with WASD (camera-
-  relative), sprint with Shift, jump with Space — always bound to the hex
-  terrain: contour-following, stepping up low ledges, blocked (and sliding)
-  by tall tile walls, falling off cliffs under local gravity. Esc lifts off
-  and hands the camera back to the editor. The walk keeps working while the
-  planet orbits and spins, and even while the global sim is paused.
+  world. You drop — in FIRST PERSON, from the astronaut's eyes — above the
+  face of the planet currently turned toward you and FALL onto the terrain
+  and land. From there you walk the surface with WASD (view-relative),
+  sprint with Shift, jump with Space — always bound to the hex terrain:
+  contour-following, stepping up low ledges, blocked (and sliding) by tall
+  tile walls, falling off cliffs under local gravity. Hold & drag to look
+  around. Esc lifts off and hands the camera back to the editor. The walk
+  keeps working while the planet orbits and spins, and even while the global
+  sim is paused.
 
 
 --------------------------------------------------------------------------------
@@ -156,27 +157,31 @@
     (normalize(camPos − planetPos), rotated into the local frame). You
     always land where you were looking.
   * Spawn altitude: createWalker starts the walker at surface + 4.5 units,
-    radialVel = 0, airborne. The first thing it does is FALL — the camera,
-    delta-dragged with the walker, shows the ground rising. ~1.4 s on the
-    starter's earth world, ~2.4 s floaty on the small moon, then a
-    grounded landing.
-  * Camera takeover: on the first frame the orbit pivot is moved from
-    wherever it was to the walker's chest (EYE = 0.72 above the surface),
-    carrying the camera along (view direction preserved), then pulled to a
-    walking distance (clamped 3.2–14 units).
-  * Every following frame: the camera is TRANSLATED by the walker's
-    per-frame world delta and the pivot re-set to the chest. This is the
-    identical delta-drag trick as the editor's "Follow" mode, so drei's
-    OrbitControls keeps handling look-around and zoom while the walker
-    moves — walking and orbiting compose instead of fighting.
+    radialVel = 0, airborne. The first thing it does is FALL — the camera
+    is AT the astronaut's eyes, so the ground rising IS the landing.
+    ~1.4 s on the starter's earth world, ~2.4 s floaty on the small moon,
+    then a grounded landing.
+  * First-person eye camera, at all times — fall, walk, jump, on a spinning
+    orbiting world: every frame the camera is PLACED at feet + up·EYE
+    (EYE = 0.62 above the surface) and aimed along a stored world-space
+    view heading via lookAt(eye, eye+fwd, localUp). The heading starts as
+    the direction the editor camera was looking at takeover.
+  * Look-around is a held pointer drag (Walker.jsx listens on the canvas):
+    yaw rotates the heading around the walker's LOCAL up, pitch around the
+    local right, elevation clamped to ±83° so the horizon never flips or
+    rolls. This is precisely what OrbitControls cannot do on a spherical
+    world — its azimuth is locked to world Y — so OrbitControls is disabled
+    for the whole surface session and the walker owns the camera outright.
+  * The same heading drives movement: the WASD wish vector is the view
+    heading projected onto the tangent plane, so you always walk where you
+    look, through the air included (75% air control).
   * Lift-off (unmount): the orbit pivot moves back to the planet center,
-    dragging the camera by the same delta, so there is no view jump and
-    normal editing resumes from a sane framing.
+    dragging the camera by the same delta, and OrbitControls re-enables for
+    normal editing.
 
-  While walked on, a small flat-shaded astronaut (legs/torso/backpack/
-  helmet, oriented with the local up) stands at the walker's feet so the
-  view has an anchor; it is raycast-disabled and painting is guarded while
-  walking, so pointer input never paints by accident.
+  The camera IS the astronaut, so no body is rendered — a self-avatar would
+  only clip against the eyes. Painting is guarded while walking, so look-
+  drags never paint the planet by accident.
 
 
 --------------------------------------------------------------------------------
@@ -184,6 +189,10 @@
 --------------------------------------------------------------------------------
   * Keyboard: Walker.jsx owns WASD/arrows/Shift, and Space is EDGE-triggered
     (keydown, not repeat) and consumed per frame as the jump input.
+  * Pointer: Walker.jsx listens for pointerdown on the canvas and tracks one
+    pointer (capture); pixel deltas accumulate and are consumed once per
+    frame by the view rotation — frame-rate independent, works with mouse
+    and touch. Right-drag looks too (contextmenu is suppressed).
   * App.jsx's global shortcut handler short-circuits while walkMode is set:
     Space is swallowed (a previously focused button must not be re-clicked
     by the jump key), Esc exits surface mode, Ctrl/Cmd+S still saves.
@@ -260,6 +269,6 @@
     doing the physical storytelling for now.
   * Airborne wish keeps full steering; a jump ARC lock (locked heading)
     would feel more "physical" if ever desired.
-  * The camera takeover is a cut; an eased descend animation into the
-    walking distance would polish the landing further.
+  * The camera takeover is a cut; an eased pitch-in / FOV sweep during the
+    landing fall would polish the first-person descent further.
 ================================================================================

@@ -45,7 +45,7 @@ export default function WalkHud() {
           {r.sprint ? ' · sprint' : ''}
         </span>
       </div>
-      <div className="walk-hud-keys">W A S D move · Shift sprint · Space jump · drag look · scroll zoom</div>
+      <div className="walk-hud-keys">W A S D move · Shift sprint · Space jump · Hold &amp; drag look</div>
     </div>
   )
 }

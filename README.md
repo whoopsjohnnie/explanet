@@ -31,8 +31,9 @@ npm run dev        # → http://localhost:5173
 - **Land on a planet** — press 🚀 (PlanetList / Inspector) to descend onto any
   non-star world: you fall onto the surface and can then walk it —
   following the hex contours, stepping up ledges, blocked (and sliding)
-  along cliffs, jumping, sprinting. You're bound to the surface and ride the
-  planet's spin and orbit while the camera chases you.
+  along cliffs, jumping, sprinting. All of it in first person: the camera
+  sits at the astronaut's eyes through the fall, the walk and every jump,
+  riding the planet's spin and orbit. Hold & drag to look around.
 - **world.json everywhere** — Open, Save (Ctrl+S) and drag-&-drop. In
   Chrome/Edge the file handle is remembered (File System Access API +
   IndexedDB), so Ctrl+S writes to the same file on disk. Elsewhere it falls
@@ -123,7 +124,7 @@ src/
   components/
     Scene.jsx           R3F canvas, cannon <Physics>, camera follow
     Planet.jsx          one planet = sphere body + per-terrain meshes + painting
-    Walker.jsx          surface mode: walk integration, chase camera, astronaut
+    Walker.jsx          surface mode: walk integration, first-person eye camera
     ui/                 TopBar, PlanetList, Inspector, Palette, WalkHud, AddPlanetDialog
 scripts/
   gen-sample-world.mjs  regenerates public/world.json

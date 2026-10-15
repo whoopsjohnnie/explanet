@@ -34,7 +34,7 @@ function CameraFollow() {
   const camera = useThree((s) => s.camera)
   useFrame(() => {
     if (!controls?.target) return
-    if (useStore.getState().walkMode) return // surface walker owns the camera
+    if (useStore.getState().walkMode) return // surface walker owns the camera (first person)
     if (!useStore.getState().followSelected) return
     const id = useStore.getState().selectedId
     const body = id ? registry.bodies.get(id) : null
@@ -85,7 +85,9 @@ export default function Scene() {
         <GravityRunner />
       </Physics>
 
-      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={1600} />
+      {/* disabled while walking: the surface walker drives the camera in
+          first person, and OrbitControls' world-Y azimuth fights that */}
+      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={1600} enabled={!walkMode} />
       <CameraFollow />
       {walkMode && <Walker key={walkMode.planetId} planetId={walkMode.planetId} />}
       <MaterialAnimator />

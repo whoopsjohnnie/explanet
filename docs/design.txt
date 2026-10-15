@@ -295,7 +295,7 @@
     src/state/store.js       zustand: document + editor state
     src/components/Scene.jsx    canvas, cannon world, camera follow
     src/components/Planet.jsx   body + meshes + painting per planet
-    src/components/Walker.jsx   surface mode: walk loop + chase camera
+    src/components/Walker.jsx   surface mode: walk loop + first-person camera
     src/components/ui/*.jsx     top bar, list, inspector, palette, walkhud, dialog
     scripts/*                  sample-world generator + headless tests
 
@@ -331,9 +331,12 @@
   own state never mentions where the planet is in the solar system. World
   pose is composed once per frame from the live registry (planetPos +
   quat·dir·r), the same 60 Hz side-channel the camera follower and saver
-  already use, so walking never round-trips through React state. The camera
-  is dragged with the walker using the identical delta-drag pattern as
-  "Follow", so OrbitControls keeps handling look/zoom.
+  already use, so walking never round-trips through React state. The
+  camera sits at the astronaut's eyes: every frame it is placed at the
+  composed eye pose and aimed by a drag-driven view heading (yaw around
+  the local up, pitch around the local right), so OrbitControls is
+  disabled while walking — its world-Y azimuth cannot level a horizon on
+  a spherical world.
 
   Walking rules on a hex height field
   -------------------------------------
