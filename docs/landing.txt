@@ -163,9 +163,15 @@
     then a grounded landing.
   * First-person eye camera, at all times — fall, walk, jump, on a spinning
     orbiting world: every frame the camera is PLACED at feet + up·EYE
-    (EYE = 0.62 above the surface) and aimed along a stored world-space
-    view heading via lookAt(eye, eye+fwd, localUp). The heading starts as
-    the direction the editor camera was looking at takeover.
+    (EYE = 0.62 above the surface) and aimed by lookAt(eye, eye+gaze,
+    localUp). The view heading is stored PLANET-LOCAL — exactly like the
+    walker's dir + r — and composed every frame as gaze = quat·fwdL, so the
+    view is WELDED to the surface: a landmark stays dead ahead while the
+    planet spins or flies, and the horizon turns WITH the planet instead of
+    sliding under you. (A world-space heading was the naive first cut and
+    visibly drifted over the terrain on any rotating world.) The heading
+    starts as the editor camera's view direction at takeover, rotated into
+    the local frame.
   * Look-around is a held pointer drag (Walker.jsx listens on the canvas):
     yaw rotates the heading around the walker's LOCAL up, pitch around the
     local right, elevation clamped to ±83° so the horizon never flips or

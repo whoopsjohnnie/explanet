@@ -11,16 +11,20 @@
  *    from the live body registry every frame (never through React state),
  *  • first-person camera at all times: the camera sits at EYE height above
  *    the surface, exactly where the astronaut's eyes are, through the landing
- *    fall, the walk and every jump. Look-around is a held pointer drag: yaw
- *    rotates the view around the walker's LOCAL up, pitch around the local
- *    right, elevation clamped short of the poles so the horizon stays level
- *    with the surface normal — on a spherical world this is what OrbitControls
- *    cannot give (its azimuth is locked to world Y), which is why the walker
- *    owns the camera outright and Scene.jsx disables OrbitControls while
- *    walking,
- *  • translate the camera-relative WASD input through the inverse planet
- *    rotation into a local tangent wish — the wish is projected from the same
- *    view heading, so you always move where you look.
+ *    fall, the walk and every jump. The view heading is stored PLANET-LOCAL —
+ *    exactly like the walker's position — so it composes through the planet's
+ *    quaternion every frame: the view is WELDED to the surface, and a landmark
+ *    stays dead ahead no matter how the planet spins or flies; the horizon
+ *    turns with the planet, never under it. Look-around is a held pointer
+ *    drag: yaw rotates the heading around the walker's local up, pitch around
+ *    the local right, elevation clamped short of the poles so the horizon
+ *    stays level with the surface normal — on a spherical world this is what
+ *    OrbitControls cannot give (its azimuth is locked to world Y), which is
+ *    why the walker owns the camera outright and Scene.jsx disables
+ *    OrbitControls while walking,
+ *  • translate the camera-relative WASD input into a local tangent wish —
+ *    the heading already lives in the local frame, and the wish is its
+ *    projection onto the tangent plane, so you always move where you look.
  *
  * No avatar is rendered — the camera IS the astronaut. On mount the walker
  * spawns above the surface facing your current view and falls down: the
@@ -52,7 +56,7 @@ export default function Walker({ planetId }) {
   const surface = useMemo(() => (planet ? makeSurface(planet) : null), [planet])
   const mass = useMemo(() => (planet ? planetMass(planet) : 0), [planet])
 
-  // live session: { walker, fwd (world view heading), lastFwd, placed }
+  // live session: { walker, fwdL (view heading, planet-local), lastFwd, placed }
   const stateRef = useRef(null)
   const keys = useRef({ up: false, down: false, left: false, right: false, sprint: false, jump: false })
   // accumulated look-drag in pixels, consumed by the frame loop
@@ -66,6 +70,7 @@ export default function Walker({ planetId }) {
       m: new THREE.Matrix4(),
       planetPos: new THREE.Vector3(),
       dirW: new THREE.Vector3(),
+      upL: new THREE.Vector3(),
       player: new THREE.Vector3(),
       eye: new THREE.Vector3(),
       gaze: new THREE.Vector3(),
@@ -225,55 +230,56 @@ export default function Walker({ planetId }) {
       tmp.dirW.normalize().applyQuaternion(tmp.qInv)
       s = {
         walker: createWalker(surface, [tmp.dirW.x, tmp.dirW.y, tmp.dirW.z]),
-        fwd: new THREE.Vector3(),
+        fwdL: new THREE.Vector3(),
         lastFwd: new THREE.Vector3(0, 0, -1),
         placed: false,
       }
       stateRef.current = s
     }
     const w = s.walker
-    tmp.dirW.set(w.dir[0], w.dir[1], w.dir[2]).applyQuaternion(tmp.q) // world up at feet
+    tmp.upL.set(w.dir[0], w.dir[1], w.dir[2]) // local up == local position dir
 
-    // ---- view heading: keep current direction on the first frame ----------
+    // ---- view heading: on the first frame keep the direction we landed ----
+    // looking, in world space; store it PLANET-LOCAL from then on
     if (!s.placed) {
-      camera.getWorldDirection(s.fwd)
-      clampElevation(s.fwd, tmp.dirW, tmp.rgt)
+      camera.getWorldDirection(s.fwdL)
+      s.fwdL.applyQuaternion(tmp.qInv)
+      clampElevation(s.fwdL, tmp.upL, tmp.rgt)
       s.placed = true
     }
 
     // ---- consume look drag: yaw around local up, pitch around local right -
     const l = look.current
     if (l.dx !== 0 || l.dy !== 0) {
-      s.fwd.applyAxisAngle(tmp.dirW, -l.dx * LOOK_SENS)
-      tmp.rgt.crossVectors(s.fwd, tmp.dirW)
+      s.fwdL.applyAxisAngle(tmp.upL, -l.dx * LOOK_SENS)
+      tmp.rgt.crossVectors(s.fwdL, tmp.upL)
       if (tmp.rgt.lengthSq() > 1e-8) {
-        s.fwd.applyAxisAngle(tmp.rgt.normalize(), -l.dy * LOOK_SENS)
-        clampElevation(s.fwd, tmp.dirW, tmp.rgt)
+        s.fwdL.applyAxisAngle(tmp.rgt.normalize(), -l.dy * LOOK_SENS)
+        clampElevation(s.fwdL, tmp.upL, tmp.rgt)
       }
-      s.fwd.normalize()
+      s.fwdL.normalize()
       l.dx = 0
       l.dy = 0
     }
 
-    // ---- wish direction: view heading projected, into the local frame ----
+    // ---- wish direction: view heading projected onto the tangent plane ---
     const k = keys.current
     const fwdIn = (k.up ? 1 : 0) - (k.down ? 1 : 0)
     const strafeIn = (k.right ? 1 : 0) - (k.left ? 1 : 0)
-    tmp.fwd.copy(s.fwd).addScaledVector(tmp.dirW, -s.fwd.dot(tmp.dirW))
+    tmp.fwd.copy(s.fwdL).addScaledVector(tmp.upL, -s.fwdL.dot(tmp.upL))
     if (tmp.fwd.lengthSq() > 1e-8) {
       tmp.fwd.normalize()
       s.lastFwd.copy(tmp.fwd)
     } else {
       tmp.fwd.copy(s.lastFwd) // looking straight up/down: keep last ground heading
-      tmp.fwd.addScaledVector(tmp.dirW, -tmp.fwd.dot(tmp.dirW))
+      tmp.fwd.addScaledVector(tmp.upL, -tmp.fwd.dot(tmp.upL))
       tmp.fwd.normalize()
     }
-    tmp.rgt.crossVectors(tmp.fwd, tmp.dirW)
-    tmp.wish
+    tmp.rgt.crossVectors(tmp.fwd, tmp.upL)
+    tmp.wish // heading lives in the planet-local frame, so the wish already does too
       .set(0, 0, 0)
       .addScaledVector(tmp.fwd, fwdIn)
       .addScaledVector(tmp.rgt, strafeIn)
-      .applyQuaternion(tmp.qInv)
     tmp.wishArr[0] = tmp.wish.x
     tmp.wishArr[1] = tmp.wish.y
     tmp.wishArr[2] = tmp.wish.z
@@ -288,7 +294,9 @@ export default function Walker({ planetId }) {
     tmp.player.copy(tmp.planetPos).addScaledVector(tmp.dirW, w.r) // feet
     tmp.eye.copy(tmp.player).addScaledVector(tmp.dirW, EYE) // eyes — through
     camera.position.copy(tmp.eye) // fall, walk and jump alike
-    tmp.gaze.copy(tmp.eye).add(s.fwd)
+    // gaze = local heading spun into the world: the view is WELDED to the
+    // surface, so the horizon turns exactly with the planet, never under it
+    tmp.gaze.copy(s.fwdL).applyQuaternion(tmp.q).add(tmp.eye)
     tmp.m.lookAt(tmp.eye, tmp.gaze, tmp.dirW)
     camera.quaternion.setFromRotationMatrix(tmp.m)
 
