@@ -7,7 +7,7 @@ Design rationale: `docs/design.txt` (explains WHY), usage: `README.md`.
 ## Commands
 
 - `npm run dev` — dev server (add `-- --host 0.0.0.0` for LAN testing)
-- `npm test` — runs both node test scripts; a single one is just `node scripts/test-hexsphere.mjs` (or `test-geometry.mjs`)
+- `npm test` — runs the three node test scripts; a single one is just `node scripts/test-hexsphere.mjs` (or `test-geometry.mjs` / `test-surface.mjs`)
 - `npm run build` — production build; this + `npm test` is the **entire** verification loop
 - `npm run gen:world` — regenerates `public/world.json` (the bundled demo world)
 
@@ -23,6 +23,7 @@ No browser automation is available here: headless Firefox **hangs** (no GPU). Do
 - **Live body positions/velocities live in the mutable registry in `core/physics.js`, outside React state.** Never route 60 Hz physics through zustand; the store holds only the document + UI state.
 - **StrictMode is intentionally removed** from `main.jsx` — it double-mounts effects and duplicates cannon bodies in the worker. Do not re-enable.
 - Painting/picking works via `cellByTri` (triangle→cell lookup baked into each geometry batch); planet geometry rebuilds on `[planet.elements, planet.frequency]` identity changes — keep element updates copy-on-write or memoization silently breaks.
+- **Surface mode (land & walk) is kinematic, not a cannon body** (`core/surface.js`): the walker integrates against the hex height field `r(dir)=R+h(cell)` in the planet-LOCAL frame and rides spin/orbit for free. Its live pose is a mutable object stepped in `Walker.jsx` (also outside React state); world pose composes the registry's `pos`+`quat` (Planet.jsx must keep publishing `quat`). Don't add a rigid body or route walk state through zustand.
 
 ## Testing quirks
 

@@ -34,6 +34,9 @@ export const useStore = create((set, get) => ({
   showLabels: true,
   followSelected: true,
   showAddDialog: false,
+  walkMode: null, // null | { planetId } — surface exploration session.
+  // Only the session identity lives in the store; the walker's live pose is
+  // mutable state in core/surface.js, same as the physics body registry.
 
   // -------------------------------------------------------------- startup --
   init: async () => {
@@ -61,6 +64,7 @@ export const useStore = create((set, get) => ({
         selectedId: world.planets[0]?.id ?? null,
         fileName: fileName || 'world.json',
         dirty: false,
+        walkMode: null,
         statusMsg: `Loaded ${world.planets.length} bodies from ${fileName || 'world.json'}`,
       })
     } catch (err) {
@@ -73,6 +77,7 @@ export const useStore = create((set, get) => ({
       world: createEmptyWorld('New World'),
       selectedId: null,
       dirty: true,
+      walkMode: null,
       statusMsg: 'New empty world — add a star to get started',
     }),
 
@@ -112,6 +117,7 @@ export const useStore = create((set, get) => ({
     set((s) => ({
       world: { ...s.world, planets: s.world.planets.filter((p) => p.id !== id) },
       selectedId: s.selectedId === id ? (s.world.planets.find((p) => p.id !== id)?.id ?? null) : s.selectedId,
+      walkMode: s.walkMode && s.walkMode.planetId === id ? null : s.walkMode,
       dirty: true,
     })),
 
@@ -216,5 +222,28 @@ export const useStore = create((set, get) => ({
   toggleFollow: () => set((s) => ({ followSelected: !s.followSelected })),
   setShowLabels: (showLabels) => set({ showLabels }),
   setShowAddDialog: (showAddDialog) => set({ showAddDialog }),
+
+  // ------------------------------------------------------- surface mode ---
+  /**
+   * Drop onto a planet and walk its surface. The Walker component spawns the
+   * kinematic walker above the ground (so you fall and land), takes over the
+   * camera and integrates the walk outside React state.
+   */
+  landOnPlanet: (planetId) => {
+    const { world } = get()
+    const p = world.planets.find((pl) => pl.id === planetId)
+    if (!p) return
+    if (p.preset === 'star') {
+      set({ statusMsg: `You'd vaporize on ${p.name} — find a solid world to land on` })
+      return
+    }
+    set({
+      walkMode: { planetId },
+      selectedId: planetId,
+      statusMsg: `Descending onto ${p.name} — WASD move · Space jump · Shift sprint · Esc lift off`,
+    })
+  },
+
+  exitWalkMode: () => set({ walkMode: null }),
   markSaved: (fileName) => set({ dirty: false, fileName: fileName ?? get().fileName }),
 }))

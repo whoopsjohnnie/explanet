@@ -26,6 +26,8 @@ export default function PlanetList() {
   const select = useStore((s) => s.select)
   const removePlanet = useStore((s) => s.removePlanet)
   const duplicatePlanet = useStore((s) => s.duplicatePlanet)
+  const landOnPlanet = useStore((s) => s.landOnPlanet)
+  const walkingHere = useStore((s) => s.walkMode?.planetId)
 
   return (
     <div className="panel panel-left">
@@ -58,6 +60,18 @@ export default function PlanetList() {
                 </div>
               </div>
               <div className="planet-item-actions">
+                {p.preset !== 'star' && (
+                  <button
+                    className={`mini-btn ${walkingHere === p.id ? 'mini-btn--on' : ''}`}
+                    title="Land on surface"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      landOnPlanet(p.id)
+                    }}
+                  >
+                    🚀
+                  </button>
+                )}
                 <button
                   className="mini-btn"
                   title="Duplicate"

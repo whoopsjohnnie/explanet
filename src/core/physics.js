@@ -12,7 +12,9 @@
  */
 
 export const registry = {
-  // id -> { api, pos:{x,y,z}, vel:{x,y,z}, mass, isStatic, radius }
+  // id -> { api, pos:{x,y,z}, vel:{x,y,z}, quat:{x,y,z,w}, mass, isStatic, radius }
+  // pos/vel/quat are live; the surface walker (core/surface.js) composes the
+  // world pose of an on-surface avatar from pos + quat·(localDir·r).
   bodies: new Map(),
 }
 

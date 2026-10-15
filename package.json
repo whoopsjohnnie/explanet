@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/test-hexsphere.mjs && node scripts/test-geometry.mjs",
+    "test": "node scripts/test-hexsphere.mjs && node scripts/test-geometry.mjs && node scripts/test-surface.mjs",
     "gen:world": "node scripts/gen-sample-world.mjs"
   },
   "dependencies": {

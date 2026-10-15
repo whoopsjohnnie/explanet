@@ -27,6 +27,7 @@ export default function Planet({ planet }) {
   const selected = useStore((s) => s.selectedId === planet.id)
   const showLabels = useStore((s) => s.showLabels)
   const tool = useStore((s) => s.tool)
+  const walking = useStore((s) => !!s.walkMode)
   const applyBrush = useStore((s) => s.applyBrush)
   const select = useStore((s) => s.select)
   const controls = useThree((s) => s.controls)
@@ -60,6 +61,7 @@ export default function Planet({ planet }) {
       api,
       pos: { ...planet.center },
       vel: { ...planet.velocity },
+      quat: { x: 0, y: 0, z: 0, w: 1 },
       mass,
       isStatic,
       radius,
@@ -75,10 +77,17 @@ export default function Planet({ planet }) {
       entry.vel.y = v[1]
       entry.vel.z = v[2]
     })
+    const un3 = api.quaternion.subscribe((v) => {
+      entry.quat.x = v[0]
+      entry.quat.y = v[1]
+      entry.quat.z = v[2]
+      entry.quat.w = v[3]
+    })
     const unregister = registerBody(planet.id, entry)
     return () => {
       un1()
       un2()
+      un3()
       unregister()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,6 +142,7 @@ export default function Planet({ planet }) {
   }
 
   const onPointerDown = (e) => {
+    if (walking) return // surface mode: pointer drives the camera, not tools
     if (e.button !== 0) return
     const ci = cellFromEvent(e)
     if (ci == null) return
@@ -148,6 +158,7 @@ export default function Planet({ planet }) {
   }
 
   const onPointerMove = (e) => {
+    if (walking) return
     if (!painting.current) return
     const ci = cellFromEvent(e)
     if (ci == null || ci === lastCell.current) return

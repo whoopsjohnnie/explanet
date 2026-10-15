@@ -47,6 +47,9 @@ export default function Inspector() {
   const updatePlanet = useStore((s) => s.updatePlanet)
   const setGravity = useStore((s) => s.setGravity)
   const capturePositions = useStore((s) => s.capturePositions)
+  const landOnPlanet = useStore((s) => s.landOnPlanet)
+  const exitWalkMode = useStore((s) => s.exitWalkMode)
+  const walkingHere = useStore((s) => s.walkMode?.planetId)
 
   const planet = world.planets.find((p) => p.id === selectedId)
 
@@ -90,6 +93,24 @@ export default function Inspector() {
               <b>{planetStats(planet).seaCells}</b>
               <span>sea</span>
             </div>
+          </div>
+
+          <div className="surface-actions">
+            {planet.preset === 'star' ? (
+              <div className="hint">Stars have no walkable surface.</div>
+            ) : (
+              <button
+                className={`btn ${walkingHere === planet.id ? 'btn-on' : 'btn-accent'}`}
+                onClick={(e) => {
+                  e.currentTarget.blur()
+                  if (walkingHere === planet.id) exitWalkMode()
+                  else landOnPlanet(planet.id)
+                }}
+                title="Drop onto this planet and walk its surface"
+              >
+                {walkingHere === planet.id ? '🚁 Lift off' : '🚀 Land on surface'}
+              </button>
+            )}
           </div>
 
           <div className="section-label">Physical</div>

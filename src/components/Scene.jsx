@@ -10,6 +10,7 @@ import { useStore } from '../state/store.js'
 import { registry, stepGravity } from '../core/physics.js'
 import { animateTerrainMaterials } from '../three/materials.js'
 import Planet from './Planet.jsx'
+import Walker from './Walker.jsx'
 
 function GravityRunner() {
   useFrame(() => {
@@ -33,6 +34,7 @@ function CameraFollow() {
   const camera = useThree((s) => s.camera)
   useFrame(() => {
     if (!controls?.target) return
+    if (useStore.getState().walkMode) return // surface walker owns the camera
     if (!useStore.getState().followSelected) return
     const id = useStore.getState().selectedId
     const body = id ? registry.bodies.get(id) : null
@@ -52,6 +54,7 @@ function CameraFollow() {
 export default function Scene() {
   const planets = useStore((s) => s.world.planets)
   const playing = useStore((s) => s.playing)
+  const walkMode = useStore((s) => s.walkMode)
 
   return (
     <Canvas
@@ -84,6 +87,7 @@ export default function Scene() {
 
       <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={1600} />
       <CameraFollow />
+      {walkMode && <Walker key={walkMode.planetId} planetId={walkMode.planetId} />}
       <MaterialAnimator />
     </Canvas>
   )

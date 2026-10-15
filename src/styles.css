@@ -555,3 +555,61 @@ input[type='range'] {
   color: #cfe8ff;
   background: rgba(35, 80, 140, 0.55);
 }
+
+/* ------------------------------------------------------- inspector land */
+.surface-actions {
+  margin: 4px 0 12px;
+}
+.surface-actions .btn {
+  width: 100%;
+  font-size: 12.5px;
+}
+.mini-btn--on {
+  background: rgba(95, 168, 255, 0.32);
+  box-shadow: 0 0 0 1px rgba(130, 185, 255, 0.5) inset;
+}
+
+/* ---------------------------------------------------------- walk hud */
+.walk-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 16px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  user-select: none;
+  animation: toast-in 0.25s ease-out;
+}
+.walk-hud-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.walk-hud-title .btn {
+  font-size: 10.5px;
+  padding: 3px 9px;
+}
+.walk-hud-stats {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.walk-hud-air {
+  color: var(--accent-2);
+}
+.walk-hud-keys {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+}

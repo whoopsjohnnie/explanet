@@ -267,6 +267,11 @@
                         batches finite, whole triangles, pick-map indices
                         in range; world.json round-trip; corrupt documents
                         heal.
+    test-surface.mjs    Voronoi under-foot lookup == brute-force nearest
+                        center; gravity law consistency; landing fall;
+                        walking never dips below the surface; tall tiles
+                        block and slide; jump apex + re-land; determinism
+                        and a 30 s random-walk fuzz.
 
   These caught two real bugs during development (recursive subdivision
   giving wrong cell counts; the edge-parameter swap described in §2).
@@ -284,16 +289,71 @@
     src/core/worldSchema.js  world.json shape, creation, healing (pure)
     src/core/starter.js      demo system; writes public/world.json (pure)
     src/core/physics.js      N-body step + live body registry (pure logic)
+    src/core/surface.js      surface queries + kinematic walker (pure math)
     src/core/terrain.js      terrain registry + canvas textures (DOM-light)
     src/core/fileIO.js       File System Access + IndexedDB + fallbacks
     src/state/store.js       zustand: document + editor state
     src/components/Scene.jsx    canvas, cannon world, camera follow
     src/components/Planet.jsx   body + meshes + painting per planet
-    src/components/ui/*.jsx     top bar, list, inspector, palette, dialog
+    src/components/Walker.jsx   surface mode: walk loop + chase camera
+    src/components/ui/*.jsx     top bar, list, inspector, palette, walkhud, dialog
     scripts/*                  sample-world generator + headless tests
 
 --------------------------------------------------------------------------------
-12. KNOWN LIMITATIONS / POSSIBLE NEXT STEPS
+12. SURFACE MODE — LANDING AND WALKING ON A PLANET
+--------------------------------------------------------------------------------
+  Goal: click a planet and descend onto it — fall to the ground, then walk
+  around bound to the surface (follow contours, step up ledges, jump), and
+  lift off again.
+
+  Why a kinematic walker, not a cannon body
+  ------------------------------------------
+  A rigid body would be the obvious choice, but it breaks here for two
+  reasons. (1) Planet colliders are SPHERES at radius R, while the real
+  surface is r(dir) = R + h(cell(dir)) — the star-shaped roof of the hex
+  tiles. A physical capsule would sink into every mountain and stand on
+  invisible air over valleys; rebuilding a trimesh collider from the height
+  field on every terrain edit would be expensive and janky. (2) The planet
+  itself is a fast-moving, spinning cannon body; friction against a moving
+  sphere drags and ejects small bodies — standing on it physically is
+  numerically miserable.
+  So surface mode integrates its OWN walker in core/surface.js against the
+  actual hex height field. This is cheap, exact to the rendered geometry,
+  and (like everything in core/) unit-testable without a browser.
+
+  The local-frame trick
+  ----------------------
+  The walker stores its pose as a unit DIRECTION + radius in the PLANET'S
+  LOCAL frame, and all input is transformed into that frame. Consequence:
+  the walker automatically rides the planet's spin and orbital flight — its
+  own state never mentions where the planet is in the solar system. World
+  pose is composed once per frame from the live registry (planetPos +
+  quat·dir·r), the same 60 Hz side-channel the camera follower and saver
+  already use, so walking never round-trips through React state. The camera
+  is dragged with the walker using the identical delta-drag pattern as
+  "Follow", so OrbitControls keeps handling look/zoom.
+
+  Walking rules on a hex height field
+  -------------------------------------
+  * Under-foot cell: nearest cell center to the walker dir (Voronoi lookup)
+    computed by greedy funnel walk over the hex adjacency graph from the
+    previous cell — a few steps per frame, no local maxima because the
+    geodesic dual is quasi-regular; tests verify against brute force.
+  * Walking rotates dir along the tangent plane; surface contour is exact
+    by construction (r always tracks R+h).
+  * Tile step-up <= stepUp is climbed, drops <= stepDownSnap keep you
+    grounded, bigger drops become real falls, taller neighbors are walls —
+    blocked dead-on, slid along at an angle.
+  * Falls use the SAME softened gravity law as the orbital sim
+    (G·m/(r²+ε²), scaled for feel) — heavy worlds pull harder, moons are
+    floaty, and a fall always terminates because the surface is star-shaped.
+  * Spawns ~4.5u above the ground facing the camera → the "landing" is a
+    visible fall, matching the physicality the brief asked for.
+  * Walking stays surface-bound even while the planet orbits/spins or the
+    sim is paused (the walker's integrator is independent of cannon).
+
+--------------------------------------------------------------------------------
+13. KNOWN LIMITATIONS / POSSIBLE NEXT STEPS
 --------------------------------------------------------------------------------
   * Equal-area is ~equal, not exact (spherical hexes cannot be exact);
     spread < 1% for n >= 3 and documented in the inspector.

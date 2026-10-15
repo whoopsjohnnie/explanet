@@ -9,6 +9,7 @@ import TopBar from './components/ui/TopBar.jsx'
 import PlanetList from './components/ui/PlanetList.jsx'
 import Inspector from './components/ui/Inspector.jsx'
 import Palette from './components/ui/Palette.jsx'
+import WalkHud from './components/ui/WalkHud.jsx'
 import AddPlanetDialog from './components/ui/AddPlanetDialog.jsx'
 import { saveWorldUI, openWorldUI, initFileHandle } from './components/ui/actions.js'
 import { TERRAIN_KEYS } from './core/terrain.js'
@@ -18,6 +19,7 @@ export default function App() {
   const init = useStore((s) => s.init)
   const statusMsg = useStore((s) => s.statusMsg)
   const showAddDialog = useStore((s) => s.showAddDialog)
+  const walkMode = useStore((s) => s.walkMode)
 
   useEffect(() => {
     init()
@@ -37,6 +39,20 @@ export default function App() {
       const tag = e.target?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       const s = useStore.getState()
+      if (s.walkMode) {
+        // surface mode owns the keyboard (movement is handled in Walker.jsx):
+        // Esc lifts off, Ctrl/Cmd+S still saves. Space is swallowed so a
+        // focused button can't be re-triggered by the jump key.
+        if (e.code === 'Space') e.preventDefault()
+        else if (e.code === 'Escape') {
+          e.preventDefault()
+          s.exitWalkMode()
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault()
+          saveWorldUI(false)
+        }
+        return
+      }
       if (e.code === 'Space') {
         e.preventDefault()
         s.togglePlay()
@@ -92,7 +108,8 @@ export default function App() {
           <TopBar />
           <PlanetList />
           <Inspector />
-          <Palette />
+          {!walkMode && <Palette />}
+          {walkMode && <WalkHud />}
           {showAddDialog && <AddPlanetDialog />}
           {statusMsg && <div className="toast">{statusMsg}</div>}
         </>

@@ -28,6 +28,11 @@ npm run dev        # → http://localhost:5173
 - **N-body gravity** — the cannon-es world runs with zero global gravity;
   every frame all bodies attract pairwise with
   `F = G·m₁·m₂ / (d² + ε²)`. Planets orbit, moons wobble, collisions bounce.
+- **Land on a planet** — press 🚀 (PlanetList / Inspector) to descend onto any
+  non-star world: you fall onto the surface and can then walk it —
+  following the hex contours, stepping up ledges, blocked (and sliding)
+  along cliffs, jumping, sprinting. You're bound to the surface and ride the
+  planet's spin and orbit while the camera chases you.
 - **world.json everywhere** — Open, Save (Ctrl+S) and drag-&-drop. In
   Chrome/Edge the file handle is remembered (File System Access API +
   IndexedDB), so Ctrl+S writes to the same file on disk. Elsewhere it falls
@@ -53,6 +58,20 @@ npm run dev        # → http://localhost:5173
 | `[` `]` | Brush size − / + |
 | `L` | Toggle labels |
 | `Ctrl/Cmd + S` | Save world.json |
+
+### Surface mode (landed on a planet)
+
+Press 🚀 in the body list (or **Land on surface** in the Inspector) to drop
+onto a planet. While landed:
+
+| Key | Action |
+| --- | --- |
+| `W A S D` / arrows | Walk along the surface (camera-relative) |
+| `Shift` | Sprint |
+| `Space` | Jump |
+| Left-drag / scroll | Look around / zoom (camera follows the walker) |
+| `Esc` | Lift off — back to the editor camera |
+| `Ctrl/Cmd + S` | Save (still works while walking) |
 
 ## world.json format
 
@@ -97,17 +116,20 @@ src/
     worldSchema.js      world.json shape, creation, validation & repair
     starter.js          demo system (also writes public/world.json)
     physics.js          N-body gravity step + live body registry
+    surface.js          surface queries + kinematic walker (land & walk mode)
     terrain.js          terrain registry + procedural canvas textures
     fileIO.js           File System Access API + IndexedDB handle + fallbacks
   state/store.js        zustand: world document + editor state
   components/
     Scene.jsx           R3F canvas, cannon <Physics>, camera follow
     Planet.jsx          one planet = sphere body + per-terrain meshes + painting
-    ui/                 TopBar, PlanetList, Inspector, Palette, AddPlanetDialog
+    Walker.jsx          surface mode: walk integration, chase camera, astronaut
+    ui/                 TopBar, PlanetList, Inspector, Palette, WalkHud, AddPlanetDialog
 scripts/
   gen-sample-world.mjs  regenerates public/world.json
   test-hexsphere.mjs    grid correctness (12 pentagons, symmetry, equal areas)
   test-geometry.mjs     generators + geometry + schema round-trips
+  test-surface.mjs      walker math (cell lookup, landing, walking, walls, jumps)
 ```
 
 ## Tests
@@ -118,8 +140,11 @@ npm test
 
 verifies: cell counts (`10n²+2`), exactly 12 pentagons, symmetric adjacency,
 near-equal cell areas (total = 4π, spread < 1%), all generators produce
-valid elements, geometry batches are finite and fully pickable, and corrupt
-world files heal.
+valid elements, geometry batches are finite and fully pickable, corrupt
+world files heal, and the surface walker's math (Voronoi under-foot lookup
+matches brute force, falls terminate on the surface, walking never dips
+through terrain, tall tiles block and slide, jumps arc to the target height,
+and the integrator is deterministic + fuzz-safe).
 
 ## Notes & limits
 
