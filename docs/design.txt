@@ -1,0 +1,309 @@
+================================================================================
+  ExPlanet — Design & Thinking
+  Hexagonal world builder: React + Three.js (R3F) + cannon N-body physics
+================================================================================
+  Oct 2026 · companion to README.md (usage) — this document explains WHY the
+  system is shaped the way it is.
+
+
+--------------------------------------------------------------------------------
+1. GOALS
+--------------------------------------------------------------------------------
+  * Build planets whose surfaces are composed of hexagonal landmass tiles
+    (in the style of the "Hexagon Planet Generator" asset that inspired it),
+    each tile carrying terrain type + height.
+  * Multiple planets in one world, orbiting and interacting through gravity.
+  * ALL world/planet data lives in a local world.json file that a human can
+    read, hand-edit, version, and move between machines.
+  * Planet size, mass and gravity are DERIVED from the hex elements, never
+    stored separately — the elements are the planet.
+  * Stay within the dependency set already in package.json
+    (React 19, three, @react-three/fiber, @react-three/drei,
+    @react-three/cannon, zustand, nanoid).
+
+--------------------------------------------------------------------------------
+2. THE CENTRAL PROBLEM: HEXAGONS ON A SPHERE
+--------------------------------------------------------------------------------
+  Regular hexagons tile the plane but NOT the sphere. Euler's polyhedron
+  formula forces a topological defect: any closed mesh of hexagons must
+  contain exactly twelve 5-valent vertices (pentagons). The reference asset
+  says as much ("the planet always contains 12 pentagons"). So the design
+  accepts this and uses the classic construction:
+
+    icosahedron -> geodesic subdivision (class I, frequency n)
+                -> DUAL of the triangulation = hex/pent cell layout
+
+  Why the dual and not, say, UV-spheres or HEALPix?
+  ---------------------------------------------------
+  * The dual of a geodesic triangulation gives near-UNIFORM hexagons — the
+    12 pentagons are spread evenly (one per icosahedron vertex), which is
+    exactly the look of the reference. UV-sphere grids produce horrible
+    pinched cells at the poles.
+  * Cell areas are near-equal by construction (verified by tests: total area
+    = 4*pi with per-cell spread < 1% for n >= 3). This satisfies the
+    requirement that every hexagonal element covers the same surface area,
+    as closely as geometry allows.
+  * Cell counts are closed-form: cells(n) = 10n^2 + 2, so "a planet is its
+    element list" works losslessly — the file stores exactly one element per
+    cell, in a fixed order determined only by the frequency.
+  * Neighbor adjacency falls out for free (cells around a primal vertex;
+    shared edge <=> shared primal edge), which we need for brush radii,
+    wall building and flooding tools.
+
+  Construction details (src/core/hexsphere.js):
+
+  * Icosphere: each of the 20 base faces is sampled on an n x n barycentric
+    grid, points projected onto the unit sphere; edge points merged across
+    faces with canonical keys. (Design note: an earlier midpoint-recursive
+    subdivision was scrapped — it produced 4^k frequencies only; the
+    barycentric scheme yields every frequency n and exactly 10n^2+2 cells.
+    A subtle edge-parameter bug — fraction from B is j/n, not i/n — was
+    caught precisely because the test suite checks pentagon count, adjacency
+    symmetry and total area for every frequency.)
+  * Dual: for each icosphere vertex v we walk its ring of incident faces via
+    directed edges and take the face centroids (projected to the sphere) as
+    the cell's corners. Corners ordered counter-clockwise = cell outline;
+    the primal vertex direction = cell center. Degree 6 -> hexagon,
+    degree 5 -> pentagon (exactly 12).
+  * Each cell stores: center dir, corner dirs, per-edge neighbor indices,
+    and its exact spherical polygon area (Oosterom-Strackee fan).
+  * Cell index === icosphere vertex index, which makes elements[i] <->
+    cells[i] a stable identity across sessions (same frequency => same
+    grid => element i is always the same tile).
+
+--------------------------------------------------------------------------------
+3. DATA MODEL — world.json AS THE SPECIFICATION
+--------------------------------------------------------------------------------
+  The document is deliberately boring, flat JSON (see README for the schema):
+
+    world: { version, name, gravity, planets[] }
+    planet: { id, name, preset, seed, frequency,
+              center{x,y,z}, velocity{...}, spin{...},
+              density, isStatic, elements[] }
+    element: { t: terrainKey, h: height, c?: colorOverride }
+
+  Decisions & reasoning:
+
+  * Radius, volume and mass are NEVER stored. They are pure functions of
+    the element list (src/core/planetMath.js):
+
+        cells  = elements.length
+        R      = sqrt(cells / 4*pi)      (each cell covers 1 area unit;
+        V      = sum( 1/3 * Ai * (R+hi) )  4*pi*R^2 == cells exactly)
+        m      = density * V
+
+    Consequences: (a) hand-editing the hex count literally grows the planet;
+    (b) raising terrain increases mass and therefore gravity — the
+    simulation follows the art, not the other way round; (c) files can never
+    contain inconsistent derived data.
+
+  * "Same surface area" is quantified honestly: cell areas are computed
+    exactly and used for volume; deviations (<1% for n>=3) are inherent to
+    spherical hexes and are documented rather than hidden.
+
+  * elements are stored in canonical grid order (index = cell index). This
+    keeps files small, diffable and order-independent; the grid itself is
+    regenerated from `frequency`, not stored.
+
+  * Version + normalizeWorld(): loading heals malformed documents (wrong
+    lengths, bad terrain keys, garbage numbers) to defaults instead of
+    crashing — files are meant to be hand-edited, so the loader is lenient
+    but never silently loses structure.
+
+  * Height is an absolute offset from the base sphere (water at h=0 forms
+    flat sea level). Terrain type selects default color + texture; an
+    optional per-cell color override allows things like gas-giant bands
+    without inventing new types.
+
+--------------------------------------------------------------------------------
+4. RENDERING PIPELINE
+--------------------------------------------------------------------------------
+  geometry.js is framework-free (no three.js import) and pure:
+  planet document -> vertex batches. Components just upload to the GPU.
+
+  * One draw batch (mesh) PER TERRAIN TYPE per planet. Why: a terrain type
+    is a material (color scheme, texture, transparency, emissiveness);
+    batching per type means ~2-6 draw calls per planet instead of thousands,
+    and painting a cell only moves triangles between batches on rebuild.
+  * Per cell: a top triangle fan at radius R+h with corners slightly
+    inset (so tile borders read as grooves, like the reference), plus wall
+    quads down to the lower of the two neighbor heights (minus a small
+    groove depth). This gives cliffs at height changes, mortar lines between
+    equal tiles, and watertight-looking silhouettes at any angle.
+  * Geometry is NON-indexed; per-face normals via computeVertexNormals +
+    flatShading => the crisp faceted low-poly look.
+  * Every emitted triangle records which cell produced it
+    (cellByTri: Uint32Array). Raycasting therefore converts a hit
+    (mesh, faceIndex) into an element index in O(1) — this is the entire
+    painting and picking system, no spatial structures needed.
+  * Texture coordinates are computed per-vertex in the tangent plane of the
+    cell center — seamless per-tile texturing without global UV seams
+    (equirectangular UVs would smear across the dateline).
+  * Textures are generated at runtime on <canvas> (core/terrain.js: speckle,
+    crack, wave patterns from a seeded PRNG). No binary assets ship; the
+    whole app is source + one JSON file.
+  * Rebuild granularity: a paint stroke mutates only `elements`; a memo on
+    [elements, frequency] rebuilds that planet's geometry (a few ms at
+    1,442 cells) while other planets keep their buffers untouched.
+    Water/lava/star materials get a slow texture-offset animation.
+
+--------------------------------------------------------------------------------
+5. PHYSICS — N-BODY GRAVITY INSIDE A RIGID-BODY ENGINE
+--------------------------------------------------------------------------------
+  Requirement: planets that revolve AND collide. We reuse cannon-es (via
+  @react-three/cannon, a worker-based wrapper) for integration, sleeping,
+  broadphase and collisions, and layer the gravity model on top:
+
+  * The cannon world has ZERO global gravity. Every simulation frame,
+    stepGravity() applies pairwise forces to all bodies
+    (src/core/physics.js):
+
+        F = G * m1 * m2 / (d^2 + eps^2),   eps^2 = 4
+
+    Newton's third law applied symmetrically; static bodies (stars, mass 0
+    in cannon) exert force but are never moved. The softening term eps
+    prevents singular forces on close approach/collision.
+  * G is a world property (editable slider) — orbits are tuned to feel
+    lively at human timescales (~20 s for the inner planet), not to
+    reproduce SI units.
+  * The orbital helper inverts the same law for spawning:
+
+        v_circ = sqrt( G*M*r / (r^2 + eps^2) )
+
+    so "Add Planet orbiting Aqua" produces a stable near-circular orbit on
+    the first try (verified headlessly against a semi-implicit Euler
+    integrator matching cannon's stepping: r stays within ~0.4% over
+    several periods).
+  * Live-state registry (the important architectural bit):
+    @react-three/cannon streams body positions/velocities through worker
+    subscriptions at 60 Hz. Pushing that through React state would re-render
+    the world every frame. Instead each Planet subscribes into a MUTABLE
+    plain-object registry (Map planetId -> {api, pos, vel, mass, ...}),
+    which is read synchronously by: the gravity loop, the camera follower,
+    the inspector readout and the save snapshot. React state only carries
+    the document and UI state; physics never round-trips through it.
+  * Editing flow: document -> body only when the corresponding fields'
+    identities change (edits, captures), so an ongoing simulation is never
+    fought by stale React renders. Save snapshots read live positions from
+    the registry ("capturePositions") so world.json records reality.
+
+--------------------------------------------------------------------------------
+6. PERSISTENCE — ONE FILE, EXPLICIT, RECOVERABLE
+--------------------------------------------------------------------------------
+  * Primary path: File System Access API. The user picks world.json once;
+    the FileSystemFileHandle is persisted in IndexedDB, so later Ctrl+S
+    calls write straight to the same disk file (permission re-granted on
+    first gesture after reload). This is the closest the browser gets to
+    the "local database file" requirement without a server.
+  * Fallbacks: classic Blob download + file input (Firefox/Safari), and
+    global drag-and-drop of any .json onto the app.
+  * The bundled public/world.json is itself generated from the same code
+    path (scripts/gen-sample-world.mjs imports core/starter.js), so the
+    demo file can never drift from the schema.
+  * Documents in a single world can hold any number of unconnected systems
+    (stars, rogue planets, moons) — the model is a flat body list; what
+    "system" means is purely emergent from initial conditions.
+
+--------------------------------------------------------------------------------
+7. STATE MANAGEMENT (zustand)
+--------------------------------------------------------------------------------
+  * One store, two concerns kept distinct:
+      world document (planets, elements, gravity) — persisted to world.json
+      editor UI    (selection, tool, brush, playing, follow, dialogs) — not
+  * Updates are immutable (copy-on-write arrays/objects) so component-level
+    selectors and geometry memos only re-run for what actually changed;
+    e.g. painting one planet re-renders the world panels but does not
+    touch other planets' geometry.
+  * Physics reads via getState() inside useFrame (no subscription churn);
+  * The physics body registry lives OUTSIDE the store on purpose: it is a
+    high-frequency side-channel, not application state.
+
+--------------------------------------------------------------------------------
+8. EDITING UX & INTERACTION DESIGN
+--------------------------------------------------------------------------------
+  * Tools: Select / Paint / Raise / Lower, with brush size (BFS rings over
+    the hex adjacency graph — radius 0..3) and power. Painting water at a
+    tile clamps it to sea level; terrain painting clears a color override
+    so the new terrain's identity shows.
+  * Camera vs painting conflict is resolved by letting the planet's
+    pointerdown handler run first (R3F canvas listeners attach before the
+    drei OrbitControls ones) and hard-disabling controls for the duration
+    of a painting drag; pointerup anywhere re-enables.
+  * "Follow" drags camera + orbit target by the selected body's frame delta
+    — orbiting/zooming keep working while the selected planet flies.
+  * Add Planet dialog computes the circular orbit velocity around the
+    selected parent (position offset by chosen distance, velocity = parent
+    velocity + tangential), which makes fun solar systems one click deep.
+  * Shortcuts: Space play/pause, V/B/R/F tools, 1..9 terrain, [ ] brush
+    size, L labels, Ctrl/Cmd+S save, Esc deselect tool/close dialog.
+  * StrictMode is intentionally OFF: its double-invoked mount effects
+    duplicate physics bodies in the worker.
+
+--------------------------------------------------------------------------------
+9. PROCEDURAL GENERATION
+--------------------------------------------------------------------------------
+  * Seeded 3D value-noise + fBm sampled on the unit sphere direction (no
+    3D textures, no deps). Presets (earthlike, rocky, desert, ice,
+    volcanic, gas giant, moon, star) are small rules over the noise field:
+    sea level + latitude snowcaps, lava rivers from abs(noise) bands,
+    gas bands from latitude*sin(noise), crater ridges for moons, etc.
+  * The seed is stored in the document, so a whole planet can be
+    regenerated from (preset, frequency, seed) — but the file stores the
+    materialized elements list too, so hand edits survive and generation
+    is never required at load time.
+
+--------------------------------------------------------------------------------
+10. TESTING STRATEGY
+--------------------------------------------------------------------------------
+  The riskiest logic is pure math and must run without a browser, so the
+  core (hexsphere, generators, geometry, schema) is framework-free and
+  tested headlessly with plain node scripts (npm test):
+
+    test-hexsphere.mjs  cell count == 10n^2+2, exactly 12 pentagons,
+                        all other cells hexagons, neighbor symmetry,
+                        total area == 4*pi and area spread (equal-area),
+                        BFS neighborhood sizes.
+    test-geometry.mjs   every generator produces valid elements; geometry
+                        batches finite, whole triangles, pick-map indices
+                        in range; world.json round-trip; corrupt documents
+                        heal.
+
+  These caught two real bugs during development (recursive subdivision
+  giving wrong cell counts; the edge-parameter swap described in §2).
+  The interactive half (R3F/cannon) is verified by build + manual browser
+  testing; orbit stability was additionally validated by a headless
+  integrator replicating cannon's stepping.
+
+--------------------------------------------------------------------------------
+11. FILE MAP (WHO DOES WHAT)
+--------------------------------------------------------------------------------
+    src/core/hexsphere.js    geodesic grid + dual cells (pure math)
+    src/core/geometry.js     elements -> vertex batches + pick maps (pure)
+    src/core/planetMath.js   derived radius/volume/mass (pure)
+    src/core/generators.js   seeded noise terrain presets (pure)
+    src/core/worldSchema.js  world.json shape, creation, healing (pure)
+    src/core/starter.js      demo system; writes public/world.json (pure)
+    src/core/physics.js      N-body step + live body registry (pure logic)
+    src/core/terrain.js      terrain registry + canvas textures (DOM-light)
+    src/core/fileIO.js       File System Access + IndexedDB + fallbacks
+    src/state/store.js       zustand: document + editor state
+    src/components/Scene.jsx    canvas, cannon world, camera follow
+    src/components/Planet.jsx   body + meshes + painting per planet
+    src/components/ui/*.jsx     top bar, list, inspector, palette, dialog
+    scripts/*                  sample-world generator + headless tests
+
+--------------------------------------------------------------------------------
+12. KNOWN LIMITATIONS / POSSIBLE NEXT STEPS
+--------------------------------------------------------------------------------
+  * Equal-area is ~equal, not exact (spherical hexes cannot be exact);
+    spread < 1% for n >= 3 and documented in the inspector.
+  * 12 pentagons are mandatory (topology, not a bug).
+  * Changing a planet's cell count while playing rebuilds its collider and
+    re-seats it at the document position (acceptable; a "regrow" animation
+    could replace this).
+  * Orbits precess slightly due to force softening — physically motivated
+    and visually pleasing, but not Keplerian.
+  * Undo/redo, biome-aware auto-tiling, planet splitting/merging on violent
+    collisions, atmosphere shaders, and an RTS-style "spawn objects on
+    terrain type" pass (as in the reference asset) are natural extensions.
+================================================================================
