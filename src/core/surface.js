@@ -30,7 +30,8 @@
  * state — the same rule as the body registry in physics.js.
  */
 
-import { getHexSphere, radiusFromCellCount } from './hexsphere.js'
+import { getHexSphere } from './hexsphere.js'
+import { planetRadius } from './planetMath.js'
 
 // ---------------------------------------------------------------------------
 // Small vec helpers (arrays of 3)
@@ -127,7 +128,7 @@ export function cellAtDirection(hex, dir, hint) {
  */
 export function makeSurface(planet) {
   const hex = getHexSphere(planet.frequency)
-  const R = radiusFromCellCount(planet.elements.length)
+  const R = planetRadius(planet)
   const heightAt = (dir, hint) => {
     const cell = cellAtDirection(hex, dir, hint)
     const el = planet.elements[cell]

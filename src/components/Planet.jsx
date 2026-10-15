@@ -127,7 +127,7 @@ export default function Planet({ planet }) {
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planet.elements, planet.frequency])
+  }, [planet.elements, planet.frequency, planet.scale])
 
   useEffect(() => () => meshes.forEach((m) => m.geometry.dispose()), [meshes])
 

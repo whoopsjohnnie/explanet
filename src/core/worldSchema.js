@@ -14,6 +14,7 @@
  *       "preset": "earthlike",           // informational only
  *       "seed": 12345,
  *       "frequency": 6,                  // geodesic subdivision → cells
+ *       "scale": 1,                      // size factor vs. the raw grid
  *       "center":   { "x": 40, "y": 0, "z": 0 },
  *       "velocity": { "x": 0,  "y": 0, "z": 8 },
  *       "spin":     { "x": 0,  "y": 0.4, "z": 0 },
@@ -24,7 +25,11 @@
  *   ]
  * }
  *
- * Radius, volume and mass are derived from `elements` (see planetMath.js).
+ * Radius, volume and mass are derived from `elements` (see planetMath.js):
+ * radius = √(cells / 4π) · scale. `scale` decouples grid resolution from
+ * physical size (a small planet can carry a fine mesh); it defaults to 1,
+ * and `h` in elements stays in absolute world units — scale it alongside
+ * the radius when shrinking a generated grid.
  */
 
 import { nanoid } from 'nanoid'
@@ -36,7 +41,7 @@ import { DEFAULT_DENSITY } from './planetMath.js'
 export const WORLD_VERSION = 1
 
 export function createPlanet(opts = {}) {
-  const frequency = clampInt(opts.frequency ?? 6, 1, 24)
+  const frequency = clampInt(opts.frequency ?? 6, 1, 32)
   const seed = opts.seed ?? Math.floor(Math.random() * 1e9)
   const preset = opts.preset ?? 'earthlike'
   return {
@@ -45,6 +50,7 @@ export function createPlanet(opts = {}) {
     preset,
     seed,
     frequency,
+    scale: positive(opts.scale, 1),
     center: vec3(opts.center),
     velocity: vec3(opts.velocity),
     spin: vec3(opts.spin ?? { x: 0, y: 0.3, z: 0 }),
@@ -70,6 +76,10 @@ function num(v, d = 0) {
   const n = Number(v)
   return Number.isFinite(n) ? n : d
 }
+function positive(v, d) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : d
+}
 function clampInt(v, a, b) {
   const n = Math.round(Number(v))
   if (!Number.isFinite(n)) return a
@@ -89,7 +99,7 @@ export function normalizeWorld(raw) {
   const planets = Array.isArray(raw.planets) ? raw.planets : []
   for (const p of planets) {
     if (!p || typeof p !== 'object') continue
-    const frequency = clampInt(p.frequency ?? 6, 1, 24)
+    const frequency = clampInt(p.frequency ?? 6, 1, 32)
     const wanted = cellCountForFrequency(frequency)
     let elements = Array.isArray(p.elements) ? p.elements : []
 
@@ -115,6 +125,7 @@ export function normalizeWorld(raw) {
       preset: p.preset || 'earthlike',
       seed: num(p.seed, 1),
       frequency,
+      scale: positive(p.scale, 1),
       center: vec3(p.center),
       velocity: vec3(p.velocity),
       spin: vec3(p.spin),

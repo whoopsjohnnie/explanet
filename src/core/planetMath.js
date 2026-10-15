@@ -4,11 +4,13 @@
  * Everything derived about a planet comes from its hexagonal elements:
  *
  *   cellCount  = number of elements
- *   radius     = sqrt(cellCount / 4π)          (one area unit per cell)
+ *   radius     = sqrt(cellCount / 4π) · scale   (one area unit per cell)
  *   volume     = (1/3) Σ area_i · (R + h_i)    (pyramids from the core)
  *   mass       = density · volume
  *
- * So adding hexagons literally grows the planet and its gravity.
+ * So adding hexagons literally grows the planet and its gravity. `scale`
+ * (default 1) decouples grid resolution from physical size — a small world
+ * can carry a fine mesh — see worldSchema.js.
  */
 
 import { getHexSphere, radiusFromCellCount } from './hexsphere.js'
@@ -19,8 +21,14 @@ export function planetHex(planet) {
   return getHexSphere(planet.frequency)
 }
 
+/** Per-planet size factor; 1 = "natural" radius of its grid. */
+export function planetScale(planet) {
+  const s = Number(planet.scale)
+  return Number.isFinite(s) && s > 0 ? s : 1
+}
+
 export function planetRadius(planet) {
-  return radiusFromCellCount(planet.elements.length)
+  return radiusFromCellCount(planet.elements.length) * planetScale(planet)
 }
 
 export function planetVolume(planet, radius = planetRadius(planet)) {

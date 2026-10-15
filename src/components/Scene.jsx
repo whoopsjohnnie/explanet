@@ -3,6 +3,7 @@
  * pairwise N-body attraction added per frame), starfield, lights, controls.
  */
 
+import { useMemo } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Physics } from '@react-three/cannon'
 import { OrbitControls, Stars } from '@react-three/drei'
@@ -56,10 +57,23 @@ export default function Scene() {
   const playing = useStore((s) => s.playing)
   const walkMode = useStore((s) => s.walkMode)
 
+  // The viewport sizes itself to the system's own extent: for compact worlds
+  // every constant below evaluates to its classic value (starfield 900 u,
+  // fog 900–2400, far plane 5000, zoom-out 1600), while sprawling systems
+  // (Pluto at ≈ 3,500 u) scale them up so the whole system stays zoomable,
+  // inside the far plane, and only hazed at true depth.
+  const sysR = useMemo(() => {
+    let r = 80
+    for (const p of planets) r = Math.max(r, Math.hypot(p.center.x, p.center.y, p.center.z))
+    return r
+  }, [planets])
+  const starR = Math.max(900, sysR * 2.7) // starfield sits beyond the zoom limit
+  const starCount = Math.min(16000, Math.round(7000 * Math.sqrt(starR / 900)))
+
   return (
     <Canvas
       className="scene"
-      camera={{ position: [70, 52, 112], fov: 45, near: 0.1, far: 5000 }}
+      camera={{ position: [70, 52, 112], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
       dpr={[1, 2]}
       onPointerMissed={() => {
         // clicking empty space with the select tool keeps the selection;
@@ -67,8 +81,8 @@ export default function Scene() {
       }}
     >
       <color attach="background" args={['#04060d']} />
-      <fog attach="fog" args={['#04060d', 900, 2400]} />
-      <Stars radius={900} depth={160} count={7000} factor={5} saturation={0} fade speed={0.3} />
+      <fog attach="fog" args={['#04060d', Math.max(900, sysR * 1.2), Math.max(2400, sysR * 9)]} />
+      <Stars radius={starR} depth={160} count={starCount} factor={5} saturation={0} fade speed={0.3} />
       <ambientLight intensity={0.5} />
       <hemisphereLight args={['#9db8ff', '#201607', 0.3]} />
 
@@ -87,7 +101,7 @@ export default function Scene() {
 
       {/* disabled while walking: the surface walker drives the camera in
           first person, and OrbitControls' world-Y azimuth fights that */}
-      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={1600} enabled={!walkMode} />
+      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={Math.max(1600, sysR * 2.4)} enabled={!walkMode} />
       <CameraFollow />
       {walkMode && <Walker key={walkMode.planetId} planetId={walkMode.planetId} />}
       <MaterialAnimator />

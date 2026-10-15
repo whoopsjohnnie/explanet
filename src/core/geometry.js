@@ -15,7 +15,8 @@
  * raycast hits can be mapped straight back to `planet.elements[i]`.
  */
 
-import { getHexSphere, radiusFromCellCount } from './hexsphere.js'
+import { getHexSphere } from './hexsphere.js'
+import { planetRadius } from './planetMath.js'
 import { TERRAIN_TYPES, terrainDefaults } from './terrain.js'
 
 const INSET = 0.08 // fraction corners are pulled toward the cell center
@@ -54,7 +55,7 @@ function hexToRgb(hex) {
 export function buildPlanetGeometryData(planet) {
   const hex = getHexSphere(planet.frequency)
   const elements = planet.elements
-  const R = radiusFromCellCount(elements.length)
+  const R = planetRadius(planet)
 
   const batches = new Map()
   const batchFor = (type) => {

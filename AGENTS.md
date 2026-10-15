@@ -17,7 +17,7 @@ No browser automation is available here: headless Firefox **hangs** (no GPU). Do
 
 - **`src/core/*` must stay framework-free** (no `three` import, no DOM at module load). That is what lets the node test scripts exercise hex math, generators, geometry, and schema. `terrain.js` may touch `document` only inside functions. Components in `src/components` are the only place three.js enters.
 - **Element identity is positional**: `planet.elements[i]` corresponds to hex cell `i` of `getHexSphere(frequency)`; `elements.length` MUST equal `cellCountForFrequency(frequency)` = `10n²+2`. Grids are deterministically regenerated from `frequency` alone — never store per-cell coordinates.
-- **Radius/mass/volume are derived** (`core/planetMath.js`), never stored in the world document.
+- **Radius/mass/volume are derived** (`core/planetMath.js`), never stored in the world document. Radius = `√(cells/4π) · planet.scale`; `scale` (default 1) is a stored *size factor*, not a stored radius — elements stay at their grid's natural relief, so shrinking a world must scale `h` too.
 - `public/world.json` is generated from `core/starter.js` — after changing schema, starter, or generators run `npm run gen:world` (tests compare against it).
 - **Physics**: cannon world runs with zero global gravity; pairwise N-body is added per frame in `core/physics.js` with softening `eps² = 4`. `orbitalSpeed()` must stay consistent with that softened force law or spawned orbits destabilize.
 - **Live body positions/velocities live in the mutable registry in `core/physics.js`, outside React state.** Never route 60 Hz physics through zustand; the store holds only the document + UI state.
