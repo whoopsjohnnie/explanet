@@ -17,6 +17,7 @@
 
 import { getHexSphere } from './hexsphere.js'
 import { planetRadius } from './planetMath.js'
+import { sampleLodElements } from './lod.js'
 import { TERRAIN_TYPES, terrainDefaults } from './terrain.js'
 
 const INSET = 0.08 // fraction corners are pulled toward the cell center
@@ -141,4 +142,23 @@ export function buildPlanetGeometryData(planet) {
     })
   }
   return out
+}
+
+/**
+ * Geometry for one LOD level of a planet: the same batching as
+ * buildPlanetGeometryData but built from a coarser grid sampled from the
+ * document, with cellByTri remapped to the FINE (document) cell indices —
+ * painting a distant planet edits the cells that produced the texel you see.
+ * @param {object} planet world-document planet
+ * @param {number} frequency render frequency (>= planet.frequency → full res)
+ */
+export function buildLodGeometryData(planet, frequency) {
+  if (!(frequency < planet.frequency)) return buildPlanetGeometryData(planet)
+  const { elements, fineIndex } = sampleLodElements(planet, frequency)
+  const data = buildPlanetGeometryData({ frequency, elements, scale: planet.scale })
+  for (const [, b] of data) {
+    const cbt = b.cellByTri
+    for (let i = 0; i < cbt.length; i++) cbt[i] = fineIndex[cbt[i]]
+  }
+  return data
 }

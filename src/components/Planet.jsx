@@ -5,20 +5,24 @@
  *
  *  • Physics : spherical collider whose radius/mass are derived from the
  *              hex elements. Registers itself with the gravity registry.
- *  • Render  : geometry rebuilt from `planet.elements` (batched by terrain).
- *              Each triangle knows its cell index for picking.
+ *  • Render  : geometry rebuilt from `planet.elements` (batched by terrain),
+ *              held at every LOD level (halving frequency, sampled from the
+ *              fine grid); only the level matching the camera distance is
+ *              mounted, so draw *and* raycast cost fall off with distance.
+ *              Each triangle knows its DOCUMENT cell index for picking.
  *  • Paint   : pointer down/move with an active brush maps raycast hits to
  *              cells and mutates the world document.
  */
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { useSphere } from '@react-three/cannon'
-import { useThree } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useStore } from '../state/store.js'
-import { registerBody } from '../core/physics.js'
-import { buildPlanetGeometryData } from '../core/geometry.js'
+import { registerBody, registry } from '../core/physics.js'
+import { buildLodGeometryData } from '../core/geometry.js'
+import { lodChain, lodDistances } from '../core/lod.js'
 import { planetRadius, planetMass } from '../core/planetMath.js'
 import { getTerrainMaterials } from '../three/materials.js'
 
@@ -113,23 +117,60 @@ export default function Planet({ planet }) {
   }, [planet.center, planet.velocity, planet.spin, api])
 
   // -------------------------------------------------------------- render --
-  const meshes = useMemo(() => {
-    const data = buildPlanetGeometryData(planet)
-    const out = []
-    for (const [type, d] of data) {
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
-      g.setAttribute('color', new THREE.BufferAttribute(d.colors, 3))
-      g.setAttribute('uv', new THREE.BufferAttribute(d.uvs, 2))
-      g.computeVertexNormals()
-      g.userData.cellByTri = d.cellByTri
-      out.push({ type, geometry: g })
-    }
-    return out
+  // One geometry set per LOD level (full doc grid + halved chains down to
+  // 4). Built once per document edit; level switching just picks a set, and
+  // only the active set is mounted — so neither the GPU nor R3F's per-move
+  // raycast ever touches a level the camera can't see.
+  const lodLevels = useMemo(() => {
+    const chain = lodChain(planet.frequency)
+    return chain.map((f) => {
+      const data = buildLodGeometryData(planet, f)
+      const out = []
+      for (const [type, d] of data) {
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
+        g.setAttribute('color', new THREE.BufferAttribute(d.colors, 3))
+        g.setAttribute('uv', new THREE.BufferAttribute(d.uvs, 2))
+        g.computeVertexNormals()
+        g.userData.cellByTri = d.cellByTri
+        out.push({ type, geometry: g })
+      }
+      return { frequency: f, meshes: out }
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planet.elements, planet.frequency, planet.scale])
 
-  useEffect(() => () => meshes.forEach((m) => m.geometry.dispose()), [meshes])
+  const thresholds = useMemo(
+    () => lodDistances(lodChain(planet.frequency), radius),
+    [planet.frequency, radius]
+  )
+
+  const [level, setLevel] = useState(0)
+  const levelRef = useRef(0)
+  const camera = useThree((s) => s.camera)
+
+  useFrame(() => {
+    if (thresholds.length === 0) return
+    const body = registry.bodies.get(planet.id)
+    const c = body ? body.pos : planet.center
+    const dx = camera.position.x - c.x
+    const dy = camera.position.y - c.y
+    const dz = camera.position.z - c.z
+    const distR = Math.sqrt(dx * dx + dy * dy + dz * dz) / radius
+    // hysteresis (±20%) so orbits and zoom drags don't thrash level swaps
+    let want = levelRef.current
+    while (want < thresholds.length && distR > thresholds[want] * 1.2) want++
+    while (want > 0 && distR < thresholds[want - 1] / 1.2) want--
+    if (want !== levelRef.current) {
+      levelRef.current = want
+      setLevel(want)
+    }
+  })
+
+  useEffect(
+    () => () => lodLevels.forEach((l) => l.meshes.forEach((m) => m.geometry.dispose())),
+    [lodLevels]
+  )
 
   // -------------------------------------------------------------- paint --
   const painting = useRef(false)
@@ -180,7 +221,7 @@ export default function Planet({ planet }) {
   // ---------------------------------------------------------------- view --
   return (
     <group ref={bodyRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove}>
-      {meshes.map((m) => (
+      {lodLevels[level].meshes.map((m) => (
         <mesh key={m.type} geometry={m.geometry} material={materials[m.type]} />
       ))}
 
