@@ -302,6 +302,8 @@
 --------------------------------------------------------------------------------
 12. SURFACE MODE — LANDING AND WALKING ON A PLANET
 --------------------------------------------------------------------------------
+  (Full design rationale expanded in docs/landing.txt.)
+
   Goal: click a planet and descend onto it — fall to the ground, then walk
   around bound to the surface (follow contours, step up ledges, jump), and
   lift off again.

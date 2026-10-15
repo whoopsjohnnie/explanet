@@ -1,0 +1,265 @@
+================================================================================
+  ExPlanet — Landing & Surface Exploration
+  Design behind "descend onto a planet and walk around on it"
+================================================================================
+  Oct 2026 · deep-dive companion to docs/design.txt §12 (short version) and
+  README (usage). Code: src/core/surface.js (pure math),
+  src/components/Walker.jsx (frame loop), src/components/ui/WalkHud.jsx.
+
+
+--------------------------------------------------------------------------------
+ 1. WHAT IT DOES
+--------------------------------------------------------------------------------
+  Press 🚀 (PlanetList row) or "Land on surface" (Inspector) on any non-star
+  world. The camera snaps behind the walker hovering a few units above the
+  face of the planet currently turned toward you; you then FALL onto the
+  terrain and land. From there you walk the surface with WASD (camera-
+  relative), sprint with Shift, jump with Space — always bound to the hex
+  terrain: contour-following, stepping up low ledges, blocked (and sliding)
+  by tall tile walls, falling off cliffs under local gravity. Esc lifts off
+  and hands the camera back to the editor. The walk keeps working while the
+  planet orbits and spins, and even while the global sim is paused.
+
+
+--------------------------------------------------------------------------------
+ 2. THE CENTRAL PROBLEM: STANDING ON A HEX PLANET
+--------------------------------------------------------------------------------
+  The obvious move — drop a cannon rigid body onto the planet and let the
+  physics engine sort it out — fails here for two structural reasons:
+
+  * Collider vs surface mismatch. Planet bodies are SPHERES at the base
+    radius R (see Planet.jsx). The rendered surface is the star-shaped roof
+    of the hex elements: r(dir) = R + h(cell(dir)), up to ~3.7 units of
+    relief. A physical capsule would sink into every mountain, stand on
+    invisible air over valleys, and tumble off the invisible sphere.
+    A trimesh collider rebuilt on every terrain edit would be expensive,
+    and cannon's worker round-trip makes rebuilds visibly janky.
+
+  * The ground is not inertial. The planet is a fast-orbiting, spinning
+    body. A small body standing on a fast-rotating sphere is a classic
+    numerical misery: friction drags it, the contact solver ejects it, and
+    tunneling scales badly with the size ratio.
+
+  Also required by the brief: movement must follow surface CONTOURS exactly.
+  Exactness is easy the moment you stop simulating a body and instead treat
+  "standing on this planet" as what it really is for a star-shaped height
+  field: a radius that is a FUNCTION of direction.
+
+
+--------------------------------------------------------------------------------
+ 3. THE MODEL: A KINEMATIC WALKER ON A STAR-SHAPED SURFACE
+--------------------------------------------------------------------------------
+  core/surface.js integrates a tiny walker of its own:
+
+    state = { dir: unit vector (planet-local), r: radius, radialVel,
+              grounded: bool, cell: index under foot }
+
+  Everything is expressed in the PLANET-LOCAL frame. The world only ever
+  sees the composed pose:
+
+    worldPos = planet.pos + planet.quat · (dir · r)
+
+  where planet.pos / planet.quat are read every frame from the live body
+  registry (core/physics.js) — the same mutable 60 Hz side-channel the
+  gravity loop, the camera follower and the save snapshot already use.
+
+  Consequences:
+  * The walker rides the planet's spin and orbital flight FOR FREE: its own
+    state never mentions where the planet is in the solar system. Standing
+    still on the night side stays on the night side.
+  * Walking is exact against the same elements array the renderer builds
+    geometry from — the boot always touches the visible tile.
+  * The walk is independent of cannon: it works while planets orbit and
+    while <Physics isPaused>, which doubles as "explore a frozen world".
+  * It stays testable: the entire model is pure math that runs in node.
+
+  This follows the project's architectural rule: live 60 Hz physics lives
+  OUTSIDE React state (store.js holds only the walkMode session identity
+  { planetId }; the walker object itself is module-mutable state).
+
+
+--------------------------------------------------------------------------------
+ 4. WHICH TILE IS UNDER FOOT? (VORONOI LOOKUP)
+--------------------------------------------------------------------------------
+  The cell under a direction is the one whose CENTER direction is nearest —
+  the Voronoi cell of the geodesic dual grid. Rather than scanning all
+  cells, the walker funnels: starting from the previous cell (usually the
+  answer already), greedily hop to the neighbor with higher dot(center, dir)
+  until no neighbor improves. On a quasi-regular geodesic dual this is a
+  handful of steps per frame and has no local maxima; a brute-force
+  reference (also used when there is no hint) is cross-checked headlessly
+  over thousands of random directions (scripts/test-surface.mjs).
+
+  Height is PIECEWISE CONSTANT per cell — deliberately matching the
+  rendered look: the planet IS a mosaic of flat hex plates with wall
+  quads between height steps, so "flat plateau, step at tile edges" is
+  what the eyes already see.
+
+
+--------------------------------------------------------------------------------
+ 5. WALKING RULES: STEPS, WALLS, LEDGES
+--------------------------------------------------------------------------------
+  Each frame, the camera-relative wish vector is projected onto the tangent
+  plane at dir and rotates dir by (speed·dt)/r — motion along the sphere.
+  The height change into the new cell decides what happens:
+
+    rise ≤ stepUp (0.5)        → step up: r snaps to the new tile roof
+    drop ≤ stepDownSnap (0.55) → step down, stay grounded (no stair-jitter)
+    bigger drop                → start a real FALL from the old height
+    rise  > stepUp             → WALL: the move is blocked, and the wish
+                                 component into the wall is removed so you
+                                 SLIDE along it instead of sticking
+
+  Airborne you keep 75% air control and may drift over cliff edges (you
+  cannot fly: jump height is capped below the tallest wall class). Because
+  the surface is a single-valued r(dir), every fall terminates — there are
+  no caves or overhangs to fall past, which is what makes a tiny hand-rolled
+  integrator completely safe here.
+
+  Walls matter in practice mostly on player-EDITED terrain: natural fBm
+  presets vary smoothly enough that neighbors rarely differ by more than
+  half a step, so the world is very walkable, while raised cliffs you
+  paint become real barriers.
+
+
+--------------------------------------------------------------------------------
+ 6. GRAVITY, FALLS AND JUMPS
+--------------------------------------------------------------------------------
+  Surface gravity is the SAME softened law as the orbital sim:
+
+    a(r) = G · m / (r² + ε²) · gravityScale,   ε² = 4, scale 0.12
+                                          clamped into [1, 30]
+
+  — consistent with stepGravity/orbitalSpeed — scaled for feel (the sim's
+  raw G·m values are tuned for 20 s orbits, way too strong for legs) and
+  clamped so tiny moons stay fun and giants stay survivable.
+
+    world (starter)      g        fall from spawn    feel
+    Aqua (earthlike)     4.9      ~1.4 s             normal, jumpy
+    Rust (desert)        3.7      ~1.5 s             light
+    Pebble (moon)        1.6      ~2.4 s             floaty, bouncy
+
+  Jump velocity is derived from a TARGET APEX rather than a fixed impulse:
+  v = sqrt(2·g·jumpHeight). Every world then has the same jump HEIGHT
+  (~1.15 u) with gravity-appropriate hang time — the one most predictable
+  choice for a toy where g varies 10× between bodies. Max fall speed is
+  capped (30) so falling off a tall edited cliff can't produce absurd
+  frame-to-frame radius jumps.
+
+
+--------------------------------------------------------------------------------
+ 7. THE LANDING CHOREOGRAPHY
+--------------------------------------------------------------------------------
+  "When landing we should fall onto it" is honored literally:
+
+  * Spawn direction: the point of the planet currently facing the camera
+    (normalize(camPos − planetPos), rotated into the local frame). You
+    always land where you were looking.
+  * Spawn altitude: createWalker starts the walker at surface + 4.5 units,
+    radialVel = 0, airborne. The first thing it does is FALL — the camera,
+    delta-dragged with the walker, shows the ground rising. ~1.4 s on the
+    starter's earth world, ~2.4 s floaty on the small moon, then a
+    grounded landing.
+  * Camera takeover: on the first frame the orbit pivot is moved from
+    wherever it was to the walker's chest (EYE = 0.72 above the surface),
+    carrying the camera along (view direction preserved), then pulled to a
+    walking distance (clamped 3.2–14 units).
+  * Every following frame: the camera is TRANSLATED by the walker's
+    per-frame world delta and the pivot re-set to the chest. This is the
+    identical delta-drag trick as the editor's "Follow" mode, so drei's
+    OrbitControls keeps handling look-around and zoom while the walker
+    moves — walking and orbiting compose instead of fighting.
+  * Lift-off (unmount): the orbit pivot moves back to the planet center,
+    dragging the camera by the same delta, so there is no view jump and
+    normal editing resumes from a sane framing.
+
+  While walked on, a small flat-shaded astronaut (legs/torso/backpack/
+  helmet, oriented with the local up) stands at the walker's feet so the
+  view has an anchor; it is raycast-disabled and painting is guarded while
+  walking, so pointer input never paints by accident.
+
+
+--------------------------------------------------------------------------------
+ 8. INPUT, UI AND FRAMEWORK INTEGRATION
+--------------------------------------------------------------------------------
+  * Keyboard: Walker.jsx owns WASD/arrows/Shift, and Space is EDGE-triggered
+    (keydown, not repeat) and consumed per frame as the jump input.
+  * App.jsx's global shortcut handler short-circuits while walkMode is set:
+    Space is swallowed (a previously focused button must not be re-clicked
+    by the jump key), Esc exits surface mode, Ctrl/Cmd+S still saves.
+  * The palette (brushes) is hidden while walking; a WalkHud strip shows the
+    world name, grounded/falling state, live altitude & vertical speed,
+    the key legend, and a Lift off button.
+  * Live HUD numbers come from a tiny mutable telemetry object
+    (surface.js walkReadout) that the frame loop writes at 60 Hz and the
+    HUD POLLS at ~8 Hz — 60 Hz data never becomes React state.
+  * The body registry gained one field: Planet.jsx now also subscribes the
+    body QUATERNION, which is what makes the local↔world composition (and
+    therefore walking on a spinning planet) possible.
+  * Session lifecycle: store.landOnPlanet refuses star presets ("you'd
+    vaporize"); walkMode is cleared when a new world loads or is created,
+    and when the walked planet is deleted; the frame loop self-exits if the
+    planet's registry entry vanishes. Landing on a different planet remounts
+    the Walker via key={planetId}.
+  * The surface query is memoized on the planet document identity — the
+    same copy-on-write contract as the geometry rebuild memo: edit terrain
+    while walking (via a second control, e.g. keyboard during a pause) and
+    the walker is instantly on the new height field.
+
+
+--------------------------------------------------------------------------------
+ 9. TUNING REFERENCE (core/surface.js SURFACE)
+--------------------------------------------------------------------------------
+  walkSpeed 3.8 · sprintMult 1.8 · airControl 0.75
+  stepUp 0.5 · stepDownSnap 0.55
+  jumpHeight 1.15 · maxFallSpeed 30
+  spawnHover 4.5 · gravityScale 0.12 · gravity clamp [1, 30]
+
+  A cell spans ~1 area unit (tile "radius" ~0.6), so stepUp ≈ 1 tile of
+  relief and the jump reaches just over one tile — the planet reads as
+  climbable terrain with real barriers, not a wall.
+
+
+--------------------------------------------------------------------------------
+ 10. TESTING
+--------------------------------------------------------------------------------
+  All risky logic is in core/surface.js and runs headlessly
+  (scripts/test-surface.mjs, wired into npm test — 15 checks):
+
+  * funnel Voronoi lookup == brute-force nearest center, thousands of
+    random directions × frequencies, from random hints;
+  * heightAt at cell centers equals the element heights;
+  * surfaceGravity equals the softened law incl. clamps;
+  * spawn → fall → land: grounded within seconds, radius equals surface
+    radius, never below the surface during the fall;
+  * 25 s sprint: covers real arc length, never dips below the surface,
+    stays glued on flat relief, state finite;
+  * a synthetically raised tile blocks dead-on approach and lets angled
+    approach slide along it (natural fBm terrain has no walls this big —
+    they come from player edits);
+  * jump leaves the ground, apex lands within tolerance of the target,
+    re-lands;
+  * determinism (identical scripts → identical states) and a 30 s random
+    walk + jumps fuzz with all values finite.
+
+  The R3F half (camera, input, avatar) is verified by build + manual
+  browser testing, as everywhere else in this project.
+
+
+--------------------------------------------------------------------------------
+ 11. LIMITATIONS & NATURAL NEXT STEPS
+--------------------------------------------------------------------------------
+  * One walkable planet at a time (bound to its parent's gravity);
+    inter-planetary transfer / spaceflight is a separate feature.
+  * Piecewise-constant tiles mean a bumpy (correct) gait between plates —
+    a smoothed height interpolation is possible but would misrepresent
+    the rendered geometry, which is genuinely flat-topped.
+  * Water and lava tiles walk like solid ground; terrain-specific move
+    speed / damage is a small addition to stepWalker.
+  * No footstep dust, landing squash, or audio — the readout + fall are
+    doing the physical storytelling for now.
+  * Airborne wish keeps full steering; a jump ARC lock (locked heading)
+    would feel more "physical" if ever desired.
+  * The camera takeover is a cut; an eased descend animation into the
+    walking distance would polish the landing further.
+================================================================================
