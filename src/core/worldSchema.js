@@ -41,7 +41,7 @@ import { DEFAULT_DENSITY } from './planetMath.js'
 export const WORLD_VERSION = 1
 
 export function createPlanet(opts = {}) {
-  const frequency = clampInt(opts.frequency ?? 6, 1, 32)
+  const frequency = clampInt(opts.frequency ?? 6, 1, 64)
   const seed = opts.seed ?? Math.floor(Math.random() * 1e9)
   const preset = opts.preset ?? 'earthlike'
   return {
@@ -99,7 +99,7 @@ export function normalizeWorld(raw) {
   const planets = Array.isArray(raw.planets) ? raw.planets : []
   for (const p of planets) {
     if (!p || typeof p !== 'object') continue
-    const frequency = clampInt(p.frequency ?? 6, 1, 32)
+    const frequency = clampInt(p.frequency ?? 6, 1, 64)
     const wanted = cellCountForFrequency(frequency)
     let elements = Array.isArray(p.elements) ? p.elements : []
 

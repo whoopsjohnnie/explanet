@@ -19,13 +19,14 @@
  *   • Planet masses are the real solar mass ratios (densities back them out
  *     from each grid volume), so planet–planet perturbations are true to
  *     scale: the Sun dominates and the system is stable.
- *   • Sizes are EXACT true relative radii, anchored on Jupiter filling the
- *     largest legal grid (frequency 24). The per-planet `scale` field
- *     decouples physical size from grid resolution, so Earth can carry a
- *     frequency-32 grid (10,242 hex cells to paint and walk on) while still
- *     measuring exactly 0.091 Jupiter radii. Relief (element `h`) is scaled
- *     with the radius, so terrain proportions survive shrinking. The Sun —
- *     109 Earth radii true — keeps a reduced visual size; its mass is real.
+ *   • Sizes are EXACT true relative radii, anchored on Jupiter filling a
+ *     frequency-24 grid. The per-planet `scale` field decouples physical
+ *     size from grid resolution, so every world can carry a uniform
+ *     frequency-64 grid (40,962 hex cells to paint and walk on) while
+ *     Jupiter still dwarfs Earth exactly 10.97×. Relief (element `h`) is
+ *     scaled with the radius, so terrain proportions survive shrinking.
+ *     The Sun — 109 Earth radii true — keeps a reduced visual size; its
+ *     mass is real.
  *   • Orbits are circular at each world's mean distance, inclined by the
  *     real orbital inclinations; starting positions are the J2000 mean
  *     longitudes. Eccentricity is the only real effect left out.
@@ -90,15 +91,15 @@ function spin(day, tiltDeg) {
 // lon = J2000 mean longitude (deg); day = sidereal rotation period (Earth days);
 // tilt = axial obliquity (deg); mu = mass in solar masses.
 const PLANET_DATA = [
-  { name: 'Mercury', preset: 'moon',      res: 6,  rKm: 2439.7,  a: 0.3871,  inc: 7.0,   node: 48.3,  lon: 252.3, day: 58.646,  tilt: 0.03,   mu: 1.660e-7, seed: 101 },
-  { name: 'Venus',   preset: 'desert',    res: 8,  rKm: 6051.8,  a: 0.7233,  inc: 3.39,  node: 76.7,  lon: 181.0, day: 243.02,  tilt: 177.36, mu: 2.448e-6, seed: 202 },
-  { name: 'Earth',   preset: 'earthlike', res: 32, rKm: 6371.0,  a: 1.0,     inc: 0.0,   node: 0.0,   lon: 100.5, day: 0.99727, tilt: 23.44,  mu: 3.003e-6, seed: 42 },
-  { name: 'Mars',    preset: 'desert',    res: 6,  rKm: 3389.5,  a: 1.5237,  inc: 1.85,  node: 49.6,  lon: 355.5, day: 1.02595, tilt: 25.19,  mu: 3.227e-7, seed: 303 },
-  { name: 'Jupiter', preset: 'gas',       res: 24, rKm: 69911,   a: 5.2029,  inc: 1.3,   node: 100.5, lon: 34.4,  day: 0.41354, tilt: 3.13,   mu: 9.548e-4, seed: 404 },
-  { name: 'Saturn',  preset: 'gas',       res: 20, rKm: 58232,   a: 9.5367,  inc: 2.49,  node: 113.7, lon: 49.9,  day: 0.44401, tilt: 26.73,  mu: 2.858e-4, seed: 505 },
-  { name: 'Uranus',  preset: 'ice',       res: 12, rKm: 25362,   a: 19.1913, inc: 0.77,  node: 74.0,  lon: 313.2, day: 0.71833, tilt: 97.77,  mu: 4.366e-5, seed: 606 },
-  { name: 'Neptune', preset: 'ice',       res: 12, rKm: 24622,   a: 30.069,  inc: 1.77,  node: 131.8, lon: 304.9, day: 0.67125, tilt: 28.32,  mu: 5.150e-5, seed: 707 },
-  { name: 'Pluto',   preset: 'ice',       res: 4,  rKm: 1188.3,  a: 39.482,  inc: 17.16, node: 110.3, lon: 230.0, day: 6.3872,  tilt: 122.53, mu: 6.55e-9,  seed: 808 },
+  { name: 'Mercury', preset: 'moon',      res: 64,  rKm: 2439.7,  a: 0.3871,  inc: 7.0,   node: 48.3,  lon: 252.3, day: 58.646,  tilt: 0.03,   mu: 1.660e-7, seed: 101 },
+  { name: 'Venus',   preset: 'desert',    res: 64,  rKm: 6051.8,  a: 0.7233,  inc: 3.39,  node: 76.7,  lon: 181.0, day: 243.02,  tilt: 177.36, mu: 2.448e-6, seed: 202 },
+  { name: 'Earth',   preset: 'earthlike', res: 64, rKm: 6371.0,  a: 1.0,     inc: 0.0,   node: 0.0,   lon: 100.5, day: 0.99727, tilt: 23.44,  mu: 3.003e-6, seed: 42 },
+  { name: 'Mars',    preset: 'desert',    res: 64,  rKm: 3389.5,  a: 1.5237,  inc: 1.85,  node: 49.6,  lon: 355.5, day: 1.02595, tilt: 25.19,  mu: 3.227e-7, seed: 303 },
+  { name: 'Jupiter', preset: 'gas',       res: 64, rKm: 69911,   a: 5.2029,  inc: 1.3,   node: 100.5, lon: 34.4,  day: 0.41354, tilt: 3.13,   mu: 9.548e-4, seed: 404 },
+  { name: 'Saturn',  preset: 'gas',       res: 64, rKm: 58232,   a: 9.5367,  inc: 2.49,  node: 113.7, lon: 49.9,  day: 0.44401, tilt: 26.73,  mu: 2.858e-4, seed: 505 },
+  { name: 'Uranus',  preset: 'ice',       res: 64, rKm: 25362,   a: 19.1913, inc: 0.77,  node: 74.0,  lon: 313.2, day: 0.71833, tilt: 97.77,  mu: 4.366e-5, seed: 606 },
+  { name: 'Neptune', preset: 'ice',       res: 64, rKm: 24622,   a: 30.069,  inc: 1.77,  node: 131.8, lon: 304.9, day: 0.67125, tilt: 28.32,  mu: 5.150e-5, seed: 707 },
+  { name: 'Pluto',   preset: 'ice',       res: 64,  rKm: 1188.3,  a: 39.482,  inc: 17.16, node: 110.3, lon: 230.0, day: 6.3872,  tilt: 122.53, mu: 6.55e-9,  seed: 808 },
 ]
 
 // Scene scale for this set of worlds: ≈ 88.8 u/AU → Pluto at ≈ 3,506 u.
