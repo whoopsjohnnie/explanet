@@ -230,10 +230,37 @@ const landable = world.planets.find((p) => p.preset !== 'star')
     }
   }
   void g0
-  check(`jump leaves the ground and re-lands (peak ${peak.toFixed(2)} u)`, jumped && landedAgain)
+  check(`jump leaves the ground and re-lands (peak ${peak.toFixed(4)} u)`, jumped && landedAgain)
+  const jumpTarget = surface.metrics.jumpHeight
   check(
-    `jump apex is near target ${SURFACE.jumpHeight} u`,
-    peak > SURFACE.jumpHeight * 0.7 && peak < SURFACE.jumpHeight * 1.6
+    `jump apex is near target ${jumpTarget.toFixed(4)} u (tile-scaled)`,
+    peak > jumpTarget * 0.7 && peak < jumpTarget * 1.6
+  )
+}
+
+// ---------------------------------------------------------------------------
+// astronaut scale: every walker length follows the planet's TILE size, so
+// landing on a true-scale world never faces the giant-astronaut 45°-horizon
+// effect — and natural grids (scale 1) keep the original absolute tuning.
+// ---------------------------------------------------------------------------
+{
+  let ok = true
+  for (const p of world.planets.filter((q) => q.preset !== 'star')) {
+    const s = makeSurface(p)
+    const dip = Math.sqrt((2 * s.metrics.eye) / s.R) // radians the horizon sits below eye level
+    if (!(s.metrics.eye < s.R * 0.012 && dip < 0.16)) ok = false
+  }
+  check('astronaut scales with tile size: horizon dip < ~9° on every starter world', ok)
+
+  const nat = makeSurface({ frequency: 10, elements: generateElements('earthlike', 10, 5) })
+  const m = nat.metrics
+  check(
+    'natural-scale (scale 1) worlds reproduce the original walker tuning',
+    Math.abs(m.eye - 0.62) < 0.01 &&
+      Math.abs(m.walkSpeed - 3.8) < 0.05 &&
+      Math.abs(m.stepUp - 0.5) < 0.01 &&
+      Math.abs(m.jumpHeight - 1.15) < 0.01 &&
+      Math.abs(m.spawnHover - 4.5) < 0.02
   )
 }
 

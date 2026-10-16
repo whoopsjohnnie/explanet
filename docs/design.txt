@@ -353,7 +353,12 @@
   * Falls use the SAME softened gravity law as the orbital sim
     (G·m/(r²+ε²), scaled for feel) — heavy worlds pull harder, moons are
     floaty, and a fall always terminates because the surface is star-shaped.
-  * Spawns ~4.5u above the ground facing the camera → the "landing" is a
+  * The astronaut SCALES WITH THE WORLD: every body length (eye height,
+    stride, step, jump, spawn altitude) is a fixed multiple of the planet's
+    hex-tile radius (surface.metrics), so on true-scale planets the walker
+    shrinks with the grid — a uniform ~8° horizon dip instead of the 45°
+    "standing on a small ball" view a fixed-size astronaut gets on Earth.
+  * Spawns ~7 tiles above the ground facing the camera → the "landing" is a
     visible fall, matching the physicality the brief asked for.
   * Walking stays surface-bound even while the planet orbits/spins or the
     sim is paused (the walker's integrator is independent of cannon).

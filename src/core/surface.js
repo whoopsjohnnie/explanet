@@ -44,17 +44,29 @@ function norm3(a) {
 }
 
 // ---------------------------------------------------------------------------
-// Tuning
+// Tuning — the astronaut scales WITH its world
 // ---------------------------------------------------------------------------
+// Every LENGTH constant below is a multiple of the planet's TILE SCALE: the
+// circumradius of one hex plate on the planet being walked (makeSurface()
+// resolves these ratios into surface.metrics, in world units). The astronaut
+// is therefore always "one tile tall" — on a true-scale solar system, where
+// Earth's 40k-cell grid puts a tile at ~0.02 u, the walker shrinks with it.
+// A fixed eye height there would stand 30 tiles tall and tip the horizon
+// 45° down: every world would read as a small ball. Tying body, stride,
+// step and jump to the tile keeps the walk — and the visible curvature —
+// identical from a 0.4 u moon to a 21 u giant. The ratios are the original
+// absolute tuning (eye 0.62, speed 3.8, …) divided by the tile radius of a
+// natural grid (0.6204), so scale-1 worlds keep their exact old feel.
 export const SURFACE = {
-  walkSpeed: 3.8, // world units / s along the surface
+  eye: 1.0, // astronaut eye height above the tile under foot
+  walkSpeed: 6.12, // tiles / s along the surface (≈ eye-heights / s)
   sprintMult: 1.8,
   airControl: 0.75, // fraction of move speed available while airborne
-  stepUp: 0.5, // max tile height increase a stride can climb
-  stepDownSnap: 0.55, // descents up to this keep you grounded (snap down)
-  jumpHeight: 1.15, // target jump apex in world units (scaled by gravity)
-  maxFallSpeed: 30,
-  spawnHover: 4.5, // spawn this far above the surface → dramatic landing fall
+  stepUp: 0.81, // max tile height increase a stride can climb
+  stepDownSnap: 0.89, // descents up to this keep you grounded (snap down)
+  jumpHeight: 1.85, // target jump apex (scaled by gravity)
+  maxFallSpeed: 48.3,
+  spawnHover: 7.25, // spawn this far above the surface → dramatic landing fall
   gravityScale: 0.12, // feel scale: the sim's G values are huge by design
   minGravity: 1.0,
   maxGravity: 30,
@@ -124,7 +136,7 @@ export function cellAtDirection(hex, dir, hint) {
  * Build a surface query over a snapshot of a planet document. Rebuild when
  * `planet.elements` identity changes — the same copy-on-write contract as
  * the geometry memo.
- * @returns {{ hex, R: number, maxH: number, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
+ * @returns {{ hex, R: number, maxH: number, tile: number, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
  */
 export function makeSurface(planet) {
   const hex = getHexSphere(planet.frequency)
@@ -136,12 +148,26 @@ export function makeSurface(planet) {
     hs[i] = h
     if (h > maxH) maxH = h
   }
+  // Tile scale: circumradius s of a hex of area 4πR²/N  (hex area = 3√3/2·s²).
+  // ~0.6204 for a natural grid (scale 1); it shrinks with true-scale planets.
+  const tile = R * Math.sqrt((8 * Math.PI) / (3 * Math.sqrt(3) * hex.cellCount))
+  // The astronaut's resolved body metrics in world units — the one place the
+  // SURFACE ratios become lengths. Everything walker-side reads these.
+  const metrics = {
+    eye: SURFACE.eye * tile,
+    walkSpeed: SURFACE.walkSpeed * tile,
+    stepUp: SURFACE.stepUp * tile,
+    stepDownSnap: SURFACE.stepDownSnap * tile,
+    jumpHeight: SURFACE.jumpHeight * tile,
+    maxFallSpeed: SURFACE.maxFallSpeed * tile,
+    spawnHover: SURFACE.spawnHover * tile,
+  }
   const heightAt = (dir, hint) => {
     const cell = cellAtDirection(hex, dir, hint)
     const h = hs[cell]
     return { cell, h, radius: R + h }
   }
-  return { hex, R, maxH, hs, heightAt }
+  return { hex, R, maxH, hs, tile, metrics, heightAt }
 }
 
 /**
@@ -251,7 +277,7 @@ export function intersectHeightfield(surface, origin, dir) {
 // ---------------------------------------------------------------------------
 
 /**
- * Spawn a walker hovering `spawnHover` above the surface at `dir`
+ * Spawn a walker hovering `metrics.spawnHover` above the surface at `dir`
  * (planet-local unit vector) so the first thing it does is fall to the
  * ground — the "land on the planet" moment.
  */
@@ -260,7 +286,7 @@ export function createWalker(surface, dir) {
   const q = surface.heightAt(d)
   return {
     dir: d,
-    r: q.radius + SURFACE.spawnHover,
+    r: q.radius + surface.metrics.spawnHover,
     radialVel: 0,
     grounded: false,
     cell: q.cell,
@@ -281,6 +307,7 @@ export function createWalker(surface, dir) {
  * @returns {'landed'|'jumped'|null} discrete event raised this step
  */
 export function stepWalker(surface, w, gravity, wish, input, dt) {
+  const M = surface.metrics
   const step = Math.min(Math.max(dt || 0, 0), 0.05)
   let event = null
 
@@ -297,7 +324,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
     const tl = Math.sqrt(tx * tx + ty * ty + tz * tz)
     if (tl > 1e-9) {
       const speed =
-        SURFACE.walkSpeed *
+        M.walkSpeed *
         (input.sprint ? SURFACE.sprintMult : 1) *
         (w.grounded ? 1 : SURFACE.airControl)
       const k = (speed * step) / Math.max(w.r, 0.25) // angle swept on the sphere
@@ -309,7 +336,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
       let next = surface.heightAt(nd, w.cell)
       // Walls: while grounded you cannot step up more than stepUp. Slide
       // along the wall by removing the component into the blocked cell.
-      if (w.grounded && next.h - ground.h > SURFACE.stepUp) {
+      if (w.grounded && next.h - ground.h > M.stepUp) {
         const bn = norm3([
           nd[0] - d[0] * dot(d, nd),
           nd[1] - d[1] * dot(d, nd),
@@ -324,7 +351,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
           next = surface.heightAt(nd, w.cell)
         }
       }
-      if (!(w.grounded && next.h - ground.h > SURFACE.stepUp)) {
+      if (!(w.grounded && next.h - ground.h > M.stepUp)) {
         w.dir = nd
         w.cell = next.cell
       }
@@ -333,7 +360,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
 
   // ---- jump -----------------------------------------------------------------
   if (w.grounded && input.jump) {
-    w.radialVel = Math.sqrt(2 * gravity * SURFACE.jumpHeight)
+    w.radialVel = Math.sqrt(2 * gravity * M.jumpHeight)
     w.grounded = false
     event = 'jumped'
   }
@@ -342,7 +369,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
   ground = surface.heightAt(w.dir, w.cell)
   w.cell = ground.cell
   if (w.grounded) {
-    if (w.r - ground.radius <= SURFACE.stepDownSnap) {
+    if (w.r - ground.radius <= M.stepDownSnap) {
       // track the ground: small steps up/down and terrain edits
       w.r = ground.radius
     } else {
@@ -352,7 +379,7 @@ export function stepWalker(surface, w, gravity, wish, input, dt) {
     }
   }
   if (!w.grounded) {
-    w.radialVel = Math.max(w.radialVel - gravity * step, -SURFACE.maxFallSpeed)
+    w.radialVel = Math.max(w.radialVel - gravity * step, -M.maxFallSpeed)
     w.r += w.radialVel * step
     if (w.r <= ground.radius) {
       // contact — the surface is star-shaped so this always terminates

@@ -9,8 +9,10 @@
  *  • integrate the walker in the PLANET-LOCAL frame, so it rides the planet's
  *    spin and orbit for free; world pose = planetPos + quat·(dir·r), read
  *    from the live body registry every frame (never through React state),
- *  • first-person camera at all times: the camera sits at EYE height above
- *    the surface, exactly where the astronaut's eyes are, through the landing
+ *  • first-person camera at all times: the camera sits at the astronaut's
+ *    eye height (surface.metrics.eye — tied to the planet's tile scale, so
+ *    the astronaut is one tile tall on every world) above the surface,
+ *    exactly where the astronaut's eyes are, through the landing
  *    fall, the walk and every jump. The view heading is stored PLANET-LOCAL —
  *    exactly like the walker's position — so it composes through the planet's
  *    quaternion every frame: the view is WELDED to the surface, and a landmark
@@ -41,9 +43,9 @@ import { registry } from '../core/physics.js'
 import { planetMass } from '../core/planetMath.js'
 import { makeSurface, createWalker, stepWalker, surfaceGravity, walkReadout } from '../core/surface.js'
 
-const EYE = 0.62 // astronaut eye height above the surface (top of head ≈ 0.7)
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
 const PITCH_LIMIT = 1.45 // ±83° from the horizon; never flips past straight up/down
+const MIN_NEAR = 0.002 // never-nearer walk-mode near plane (depth-buffer sanity)
 
 export default function Walker({ planetId }) {
   const camera = useThree((s) => s.camera)
@@ -55,6 +57,22 @@ export default function Walker({ planetId }) {
   // (same copy-on-write contract as the geometry memo)
   const surface = useMemo(() => (planet ? makeSurface(planet) : null), [planet])
   const mass = useMemo(() => (planet ? planetMass(planet) : 0), [planet])
+
+  // First-person near plane: on a true-scale world the astronaut's eye sits
+  // ~0.02 u above the tiles — far inside the editor's near plane, which would
+  // clip away the ground under foot. Swap in a near plane just below eye
+  // height for the walk (floored to keep the far scene's depth precision);
+  // restore the editor's plane on unmount.
+  useEffect(() => {
+    if (!surface) return
+    const prev = camera.near
+    camera.near = Math.min(prev, Math.max(MIN_NEAR, surface.metrics.eye * 0.08))
+    camera.updateProjectionMatrix()
+    return () => {
+      camera.near = prev
+      camera.updateProjectionMatrix()
+    }
+  }, [camera, surface])
 
   // live session: { walker, fwdL (view heading, planet-local), lastFwd, placed }
   const stateRef = useRef(null)
@@ -292,8 +310,8 @@ export default function Walker({ planetId }) {
     // ---- world pose: the camera rides the astronaut's eyes -----------------
     tmp.dirW.set(w.dir[0], w.dir[1], w.dir[2]).applyQuaternion(tmp.q) // up at feet
     tmp.player.copy(tmp.planetPos).addScaledVector(tmp.dirW, w.r) // feet
-    tmp.eye.copy(tmp.player).addScaledVector(tmp.dirW, EYE) // eyes — through
-    camera.position.copy(tmp.eye) // fall, walk and jump alike
+    tmp.eye.copy(tmp.player).addScaledVector(tmp.dirW, surface.metrics.eye) // eyes —
+    camera.position.copy(tmp.eye) // through fall, walk and jump alike
     // gaze = local heading spun into the world: the view is WELDED to the
     // surface, so the horizon turns exactly with the planet, never under it
     tmp.gaze.copy(s.fwdL).applyQuaternion(tmp.q).add(tmp.eye)

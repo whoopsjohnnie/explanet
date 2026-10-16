@@ -30,8 +30,8 @@
 
   * Collider vs surface mismatch. Planet bodies are SPHERES at the base
     radius R (see Planet.jsx). The rendered surface is the star-shaped roof
-    of the hex elements: r(dir) = R + h(cell(dir)), up to ~3.7 units of
-    relief. A physical capsule would sink into every mountain, stand on
+    of the hex elements: r(dir) = R + h(cell(dir)), a few tiles of relief
+    (per-world scale). A physical capsule would sink into every mountain, stand on
     invisible air over valleys, and tumble off the invisible sphere.
     A trimesh collider rebuilt on every terrain edit would be expensive,
     and cannon's worker round-trip makes rebuilds visibly janky.
@@ -104,7 +104,7 @@
   plane at dir and rotates dir by (speed·dt)/r — motion along the sphere.
   The height change into the new cell decides what happens:
 
-    rise ≤ stepUp (0.5)        → step up: r snaps to the new tile roof
+    rise ≤ stepUp (0.81 tile)    → step up: r snaps to the new tile roof
     drop ≤ stepDownSnap (0.55) → step down, stay grounded (no stair-jitter)
     bigger drop                → start a real FALL from the old height
     rise  > stepUp             → WALL: the move is blocked, and the wish
@@ -136,15 +136,20 @@
   clamped so tiny moons stay fun and giants stay survivable.
 
     world (starter)      g        fall from spawn    feel
-    Aqua (earthlike)     4.9      ~1.4 s             normal, jumpy
-    Rust (desert)        3.7      ~1.5 s             light
-    Pebble (moon)        1.6      ~2.4 s             floaty, bouncy
+    Jupiter                1        ~1.8 s             long, moonlike
+    Earth                  1        ~0.55 s            quick drop
+    Pluto                  1        ~0.24 s            a hop
+
+   (All true-scale starter worlds clamp to g = 1: real surface gravity at
+   these scene scales sits below the floor — the clamp is what keeps
+   walking lively; edited/superdense worlds can pull harder.)
 
   Jump velocity is derived from a TARGET APEX rather than a fixed impulse:
   v = sqrt(2·g·jumpHeight). Every world then has the same jump HEIGHT
-  (~1.15 u) with gravity-appropriate hang time — the one most predictable
+  (~1.9 tiles — i.e. the same fraction of the astronaut, see §9) with
+  gravity-appropriate hang time — the one most predictable
   choice for a toy where g varies 10× between bodies. Max fall speed is
-  capped (30) so falling off a tall edited cliff can't produce absurd
+  capped (48 tiles/s) so falling off a tall edited cliff can't produce absurd
   frame-to-frame radius jumps.
 
 
@@ -156,14 +161,16 @@
   * Spawn direction: the point of the planet currently facing the camera
     (normalize(camPos − planetPos), rotated into the local frame). You
     always land where you were looking.
-  * Spawn altitude: createWalker starts the walker at surface + 4.5 units,
-    radialVel = 0, airborne. The first thing it does is FALL — the camera
+  * Spawn altitude: createWalker starts the walker at surface + 7.25 tiles
+    (surface.metrics.spawnHover), radialVel = 0, airborne. The first thing it
+    does is FALL — the camera
     is AT the astronaut's eyes, so the ground rising IS the landing.
-    ~1.4 s on the starter's earth world, ~2.4 s floaty on the small moon,
+    ~0.55 s on the starter's Earth, ~1.8 s on Jupiter,
     then a grounded landing.
   * First-person eye camera, at all times — fall, walk, jump, on a spinning
     orbiting world: every frame the camera is PLACED at feet + up·EYE
-    (EYE = 0.62 above the surface) and aimed by lookAt(eye, eye+gaze,
+    (EYE = surface.metrics.eye = one tile of that planet's grid, so the
+    astronaut is always one plate tall) and aimed by lookAt(eye, eye+gaze,
     localUp). The view heading is stored PLANET-LOCAL — exactly like the
     walker's dir + r — and composed every frame as gaze = quat·fwdL, so the
     view is WELDED to the surface: a landmark stays dead ahead while the
@@ -225,14 +232,31 @@
 --------------------------------------------------------------------------------
  9. TUNING REFERENCE (core/surface.js SURFACE)
 --------------------------------------------------------------------------------
-  walkSpeed 3.8 · sprintMult 1.8 · airControl 0.75
-  stepUp 0.5 · stepDownSnap 0.55
-  jumpHeight 1.15 · maxFallSpeed 30
-  spawnHover 4.5 · gravityScale 0.12 · gravity clamp [1, 30]
+  The astronaut scales WITH its world. Every LENGTH constant below is a
+  multiple of the planet's TILE SCALE — the circumradius of one hex plate,
+  tile = R·√(8π/(3√3·N)) — resolved once by makeSurface() into
+  surface.metrics (world units). The astronaut is always "one tile tall":
+  on the true-scale starter Earth's tile is 0.021 u, so the eye sits 0.021
+  u up and the horizon dips a uniform ~8° on every world. A FIXED eye
+  height cannot do that — 0.62 u on true-scale Earth stands 30 tiles tall
+  and tips the horizon 45° down, which made every planet read as a small
+  ball (the pre-scaling bug this section exists to prevent re-introducing).
 
-  A cell spans ~1 area unit (tile "radius" ~0.6), so stepUp ≈ 1 tile of
-  relief and the jump reaches just over one tile — the planet reads as
-  climbable terrain with real barriers, not a wall.
+    eye 1.0 · walkSpeed 6.12 · sprintMult 1.8 · airControl 0.75
+    stepUp 0.81 · stepDownSnap 0.89
+    jumpHeight 1.85 · maxFallSpeed 48.3 · spawnHover 7.25
+    (lengths are × tile; sprintMult/airControl are ratios; gravity stays
+    in world units: gravityScale 0.12, clamp [1, 30])
+
+  The ratios are the original absolute tuning (eye 0.62, speed 3.8, …)
+  divided by a natural grid's tile (0.6204), so scale-1 worlds keep their
+  exact old feel. stepUp ≈ 0.8 tiles and jumpHeight ≈ 1.9 tiles preserve
+  the original "climbable terrain with real barriers" character; stride,
+  sprint-lap time and horizon dip are now identical from a 0.4 u moon to a
+  21 u giant (a sprint lap of any starter world ≈ 52 s). Walker.jsx also
+  swaps in a walk-mode camera near plane (eye·0.08, floored at 0.002) so
+  the small astronaut does not clip the plates under foot, and restores
+  the editor's plane on lift-off.
 
 
 --------------------------------------------------------------------------------

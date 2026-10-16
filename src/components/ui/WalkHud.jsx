@@ -23,6 +23,9 @@ export default function WalkHud() {
   if (!planetId) return null
   const r = walkReadout
   const airborne = !r.grounded
+  // numbers scale with the astronaut (tile-sized), so keep 3 significant
+  // digits instead of fixed decimals: a true-scale Earth shows 0.0043, not 0.00
+  const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(2))
 
   return (
     <div className="walk-hud">
@@ -41,7 +44,7 @@ export default function WalkHud() {
       </div>
       <div className="walk-hud-stats">
         <span className={airborne ? 'walk-hud-air' : ''}>
-          {airborne ? 'falling' : 'grounded'} · alt {r.alt.toFixed(2)} · ↕ {r.vel.toFixed(1)}
+          {airborne ? 'falling' : 'grounded'} · alt {fmt(r.alt)} · ↕ {fmt(r.vel)}
           {r.sprint ? ' · sprint' : ''}
         </span>
       </div>
