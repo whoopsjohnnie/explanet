@@ -124,18 +124,126 @@ export function cellAtDirection(hex, dir, hint) {
  * Build a surface query over a snapshot of a planet document. Rebuild when
  * `planet.elements` identity changes — the same copy-on-write contract as
  * the geometry memo.
- * @returns {{ hex, R: number, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
+ * @returns {{ hex, R: number, maxH: number, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
  */
 export function makeSurface(planet) {
   const hex = getHexSphere(planet.frequency)
   const R = planetRadius(planet)
+  const hs = new Float64Array(planet.elements.length)
+  let maxH = 0
+  for (let i = 0; i < planet.elements.length; i++) {
+    const h = (planet.elements[i] && planet.elements[i].h) || 0
+    hs[i] = h
+    if (h > maxH) maxH = h
+  }
   const heightAt = (dir, hint) => {
     const cell = cellAtDirection(hex, dir, hint)
-    const el = planet.elements[cell]
-    const h = el ? el.h || 0 : 0
+    const h = hs[cell]
     return { cell, h, radius: R + h }
   }
-  return { hex, R, heightAt }
+  return { hex, R, maxH, hs, heightAt }
+}
+
+/**
+ * Ray → heightfield intersection in the planet-LOCAL frame: origin and dir
+ * are number[3] arrays (dir any nonzero length; normalized here), no
+ * triangle mesh involved. The signed penetration function
+ *   f(t) = |origin + t·dir| − (R + h(direction of that point))
+ * is negative inside the planet; the hit is its first zero, found by
+ * marching the enclosing sphere's chord and bisecting. This handles relief
+ * WALLS (jumps between cell heights) exactly, which sphere-column fixed
+ * point iterations cannot represent.
+ *
+ * Marching keeps the cost a flat ~1000 cheap hill-climbs — independent of
+ * grid resolution or terrain triangle counts — which is what keeps pointer
+ * events (R3F raycasts on every pointer move AND wheel tick, every planet)
+ * instant on full-resolution worlds. Returns the DOCUMENT cell under the ray.
+ *
+ * @returns {{ cell:number, h:number, radius:number, distance:number, point:number[] }|null}
+ *   `distance` is along the (unit-normalized) ray from `origin`; null when
+ *   the ray misses or starts inside the surface (mirrors FrontSide culling).
+ */
+export function intersectHeightfield(surface, origin, dir) {
+  const d = norm3(dir)
+  const hex = surface.hex
+  const R = surface.R
+  const hs = surface.hs
+  const maxR = R + surface.maxH
+  const oc = dot(origin, origin)
+  let hint = -1
+
+  // Scratch reused by every sample (single-threaded core, no allocation in
+  // the hot loop — this runs ~1000× per pointer event across the scene).
+  const dirS = [0, 0, 0]
+
+  // Signed penetration f(t): < 0 inside the planet. Mutates `hint`.
+  const evalAt = (t) => {
+    const px = origin[0] + d[0] * t
+    const py = origin[1] + d[1] * t
+    const pz = origin[2] + d[2] * t
+    const len = Math.sqrt(px * px + py * py + pz * pz)
+    dirS[0] = px / len
+    dirS[1] = py / len
+    dirS[2] = pz / len
+    hint = cellAtDirection(hex, dirS, hint)
+    return len - (R + hs[hint])
+  }
+
+  // Bisect f between an outside sample (lo) and an inside one (hi).
+  const refine = (lo, hi) => {
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) * 0.5
+      if (evalAt(mid) <= 0) hi = mid
+      else lo = mid
+    }
+    evalAt(hi) // leaves the cell under `hi` in `hint`
+    const h = hs[hint]
+    return {
+      cell: hint,
+      h,
+      radius: R + h,
+      distance: hi,
+      point: [origin[0] + d[0] * hi, origin[1] + d[1] * hi, origin[2] + d[2] * hi],
+    }
+  }
+
+  if (oc <= maxR * maxR) {
+    if (evalAt(0) <= 0) return null // inside planet
+    // Above the surface but inside the max-relief envelope (camera hugging a
+    // world): the chord solve would start past the planet, so march outward
+    // from the camera until the surface is crossed.
+    const step = Math.max(maxR * 0.004, 1e-5)
+    let lo = 0
+    for (let i = 1; i <= 250; i++) {
+      const t = i * step
+      if (evalAt(t) <= 0) return refine(lo, t)
+      lo = t
+    }
+    return null
+  }
+
+  const b = dot(origin, d)
+  const sq0 = b * b - (oc - maxR * maxR)
+  if (sq0 < 0) return null // misses even the tallest sphere
+  const tIn = -b - Math.sqrt(sq0)
+  if (tIn < 0) return null
+  const tOut = -b + Math.sqrt(sq0) // all crossings lie inside this chord
+
+  // March the chord to the first sample that penetrates the surface, then
+  // bisect to place the crossing. Penetration windows thinner than one step
+  // (chord/1024 — sub-pixel slivers where a ray grazes a relief wall) may be
+  // skipped; the answer then lands on the next surface the ray reaches.
+  const step = (tOut - tIn) / 1024
+  let hi = null
+  for (let i = 0; i <= 1024; i++) {
+    const t = tIn + step * i
+    if (evalAt(t) <= 0) {
+      hi = t
+      break
+    }
+  }
+  if (hi == null) return null // graze: nothing reaches the surface
+  return refine(Math.max(tIn, hi - step), hi)
 }
 
 // ---------------------------------------------------------------------------

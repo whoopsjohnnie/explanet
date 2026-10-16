@@ -16,6 +16,7 @@ import {
   createWalker,
   stepWalker,
   cellAtDirection,
+  intersectHeightfield,
 } from '../src/core/surface.js'
 
 let failures = 0
@@ -259,6 +260,126 @@ const landable = world.planets.find((p) => p.preset !== 'star')
   const allFinite = a.every((v) => Number.isFinite(v))
   check('walker integration is deterministic', identical)
   check('walker fuzz stays finite (30 s random walk + jumps)', allFinite)
+}
+
+// ---------------------------------------------------------------------------
+// intersectHeightfield: analytic ray pick (drives pointer events in Planet.jsx)
+// ---------------------------------------------------------------------------
+{
+  const scale3 = (v, s) => [v[0] * s, v[1] * s, v[2] * s]
+  const add3 = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+  const nrm = (v) => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1
+    return [v[0] / l, v[1] / l, v[2] / l]
+  }
+
+  const pickPlanet = { frequency: 5, scale: 1, elements: generateElements('earthlike', 5, 11) }
+  const surf = makeSurface(pickPlanet)
+  const R = surf.R
+
+  let radialOk = true
+  let maxDistErr = 0
+  for (let i = 0; i < surf.hex.cellCount; i++) {
+    const c = surf.hex.cells[i].center
+    const hit = intersectHeightfield(surf, scale3(c, 6 * R), scale3(c, -1))
+    if (!hit || hit.cell !== i) {
+      radialOk = false
+      break
+    }
+    maxDistErr = Math.max(maxDistErr, Math.abs(hit.distance - (6 * R - hit.radius)))
+  }
+  check(`radial pick: every cell picks itself (${surf.hex.cellCount} rays)`, radialOk && maxDistErr < 1e-9)
+
+  // raised tile: picks at its raised radius, and occludes what is behind it
+  const tall = 17
+  const tallDir = surf.hex.cells[tall].center
+  pickPlanet.elements[tall] = { ...pickPlanet.elements[tall], h: R * 0.5 }
+  const surf2 = makeSurface(pickPlanet)
+  const hitTop = intersectHeightfield(surf2, scale3(tallDir, 3 * R), scale3(tallDir, -1))
+  check('raised tile picks at raised radius', hitTop && hitTop.cell === tall && Math.abs(hitTop.radius - 1.5 * R) < 1e-12)
+  const tip = scale3(tallDir, 1.5 * R)
+  const origin = add3(scale3(tallDir, 3 * R), [R * 0.4, R * 0.2, 0])
+  const dirOblique = nrm([tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2]])
+  const hitOblique = intersectHeightfield(surf2, origin, dirOblique)
+  const dTip = Math.hypot(tip[0] - origin[0], tip[1] - origin[1], tip[2] - origin[2])
+  check('oblique ray is stopped by the raised tile', !!hitOblique && hitOblique.distance <= dTip + 1e-9)
+
+  check(
+    'ray missing the planet returns null',
+    intersectHeightfield(surf2, [4 * R, 5 * R, 4 * R], nrm([1, 0.3, 1])) === null
+  )
+  check('ray from inside the planet returns null', intersectHeightfield(surf2, [0, 0, 0], [0, 0, -1]) === null)
+
+  // brute-force march agreement on random rays
+  const rand = mulberry32(5150)
+  for (const [label, planet] of [['relief f5', pickPlanet], [landable.name, landable]]) {
+    const s = makeSurface(planet)
+    const maxRs = s.R + s.maxH
+    let ok = true
+    let hits = 0
+    let misses = 0
+    for (let k = 0; k < 50 && ok; k++) {
+      const o = scale3(randDir(rand), maxRs * 2.3)
+      const jitter = scale3(randDir(rand), maxRs * 0.9)
+      const d = nrm([jitter[0] - o[0], jitter[1] - o[1], jitter[2] - o[2]])
+      const step = maxRs * 0.001
+      let march = null
+      let marchCell = -1
+      for (let t = 0; t <= maxRs * 2.4; t += step) {
+        const q = add3(o, scale3(d, t))
+        const r = s.heightAt(nrm(q), marchCell)
+        marchCell = r.cell
+        if (Math.hypot(q[0], q[1], q[2]) <= r.radius) {
+          march = t
+          break
+        }
+      }
+      const hit = intersectHeightfield(s, o, d)
+      if (march == null && hit == null) {
+        misses++
+        continue
+      }
+      // How solid is the penetration the fine march found? Depth a few
+      // march steps past entry separates real walls from sub-step graze
+      // slivers, which the analytic pick may legitimately skip.
+      let solid = false
+      if (march != null) {
+        const q2 = add3(o, scale3(d, march + step * 8))
+        solid = s.heightAt(nrm(q2), -1).radius - Math.hypot(q2[0], q2[1], q2[2]) > step
+      }
+      if (march == null) ok = false // pick found what a finer march says misses
+      else if (hit == null) {
+        if (solid) ok = false // skipped a real penetration
+      } else {
+        const pLen = Math.hypot(hit.point[0], hit.point[1], hit.point[2])
+        if (pLen - hit.radius > 1e-6 * Math.max(1, hit.radius)) ok = false // never floats above the surface
+        if (solid) {
+          if (hit.distance > march + step * 4) ok = false
+          const mc = cellAtDirection(s.hex, nrm(add3(o, scale3(d, march))))
+          if (hit.cell !== mc && !s.hex.cells[hit.cell].neighbors.includes(mc)) ok = false
+        }
+      }
+      if (ok) hits++
+    }
+    check(`analytic pick matches brute-force march (${label}: ${hits} hits, ${misses} misses)`, ok)
+  }
+
+  // cost guard: this runs per pointer/wheel event, per planet
+  const surfH = makeSurface(landable)
+  const maxRh = surfH.R + surfH.maxH
+  const t0 = Date.now()
+  let n = 0
+  for (let k = 0; k < 5000; k++) {
+    const o = scale3(randDir(rand), maxRh * 1.8)
+    const dd = nrm([
+      -o[0] + (rand() - 0.5) * maxRh,
+      -o[1] + (rand() - 0.5) * maxRh,
+      -o[2] + (rand() - 0.5) * maxRh,
+    ])
+    if (intersectHeightfield(surfH, o, dd)) n++
+  }
+  const ms = Date.now() - t0
+  check(`5000 analytic picks on a ${landable.elements.length}-cell world in ${ms} ms (${n} hits)`, ms < 1500 && n > 0)
 }
 
 process.exit(failures === 0 ? 0 : 1)

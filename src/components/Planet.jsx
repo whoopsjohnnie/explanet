@@ -8,13 +8,17 @@
  *  • Render  : geometry rebuilt from `planet.elements` (batched by terrain),
  *              held at every LOD level (halving frequency, sampled from the
  *              fine grid); only the level matching the camera distance is
- *              mounted, so draw *and* raycast cost fall off with distance.
- *              Each triangle knows its DOCUMENT cell index for picking.
- *  • Paint   : pointer down/move with an active brush maps raycast hits to
- *              cells and mutates the world document.
+ *              mounted, so draw cost falls off with distance.
+ *  • Pick    : analytic — the first batch mesh raycasts against the surface
+ *              heightfield (core/surface.js), not against triangles, and the
+ *              hit carries the DOCUMENT cell index. Cost is independent of
+ *              resolution and constant across LOD, which is what keeps
+ *              R3F's per-pointer-move/wheel raycasts instant up close.
+ *  • Paint   : pointer down/move with an active brush maps picks to cells
+ *              and mutates the world document.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { useSphere } from '@react-three/cannon'
 import { useFrame, useThree } from '@react-three/fiber'
@@ -23,8 +27,16 @@ import { useStore } from '../state/store.js'
 import { registerBody, registry } from '../core/physics.js'
 import { buildLodGeometryData } from '../core/geometry.js'
 import { lodChain, lodDistances } from '../core/lod.js'
+import { makeSurface, intersectHeightfield } from '../core/surface.js'
 import { planetRadius, planetMass } from '../core/planetMath.js'
 import { getTerrainMaterials } from '../three/materials.js'
+
+// scratch objects for the analytic pick (single-threaded, per-call)
+const _ray = new THREE.Ray()
+const _inv = new THREE.Matrix4()
+// terrain batches share one heightfield pick (on meshes[0]); everything else
+// opts out of raycasting entirely
+const NO_RAYCAST = () => null
 
 export default function Planet({ planet }) {
   const materials = getTerrainMaterials()
@@ -119,8 +131,8 @@ export default function Planet({ planet }) {
   // -------------------------------------------------------------- render --
   // One geometry set per LOD level (full doc grid + halved chains down to
   // 4). Built once per document edit; level switching just picks a set, and
-  // only the active set is mounted — so neither the GPU nor R3F's per-move
-  // raycast ever touches a level the camera can't see.
+  // only the active set is mounted — the GPU never draws a level the camera
+  // can't see. (Picking is analytic and LOD-independent, see paint below.)
   const lodLevels = useMemo(() => {
     const chain = lodChain(planet.frequency)
     return chain.map((f) => {
@@ -176,7 +188,36 @@ export default function Planet({ planet }) {
   const painting = useRef(false)
   const lastCell = useRef(-1)
 
+  // Analytic pick: the first terrain batch replaces three's per-triangle
+  // raycast with a ray→heightfield march (core/surface.js). R3F raycasts the
+  // scene on *wheel* events too — one full pick per scroll tick — so this is
+  // what keeps zooming close to a world smooth: ~10³ hinted cell lookups
+  // instead of ~600k triangle tests, exact at every LOD. Intersections carry
+  // the document cell index directly (cellByTri stays on the geometry as a
+  // fallback path); the remaining batches opt out of raycasting.
+  const surface = useMemo(
+    () => makeSurface(planet),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [planet.elements, planet.frequency, planet.scale]
+  )
+  const pickRaycast = useCallback(
+    function (raycaster, intersects) {
+      _inv.copy(this.matrixWorld).invert()
+      _ray.copy(raycaster.ray).applyMatrix4(_inv)
+      const hit = intersectHeightfield(
+        surface,
+        [_ray.origin.x, _ray.origin.y, _ray.origin.z],
+        [_ray.direction.x, _ray.direction.y, _ray.direction.z]
+      )
+      if (!hit) return
+      const point = new THREE.Vector3(hit.point[0], hit.point[1], hit.point[2]).applyMatrix4(this.matrixWorld)
+      intersects.push({ distance: raycaster.ray.origin.distanceTo(point), point, object: this, cell: hit.cell })
+    },
+    [surface]
+  )
+
   const cellFromEvent = (e) => {
+    if (e.cell != null) return e.cell
     const cbt = e.object?.geometry?.userData?.cellByTri
     if (!cbt || e.faceIndex == null) return undefined
     return cbt[e.faceIndex]
@@ -221,8 +262,13 @@ export default function Planet({ planet }) {
   // ---------------------------------------------------------------- view --
   return (
     <group ref={bodyRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove}>
-      {lodLevels[level].meshes.map((m) => (
-        <mesh key={m.type} geometry={m.geometry} material={materials[m.type]} />
+      {lodLevels[level].meshes.map((m, i) => (
+        <mesh
+          key={m.type}
+          geometry={m.geometry}
+          material={materials[m.type]}
+          raycast={i === 0 ? pickRaycast : NO_RAYCAST}
+        />
       ))}
 
       {planet.preset === 'star' && (
