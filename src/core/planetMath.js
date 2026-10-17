@@ -89,11 +89,28 @@ export function planetScale(planet) {
   return Number.isFinite(s) && s > 0 ? s : 1
 }
 
+/**
+ * Hex count a planet covers. A DB-stubbed planet (atoms not streamed yet,
+ * `elements: null`) answers from its grid: cell count is exact from the
+ * frequency alone, which is what keeps radius — and every orbit — correct
+ * while the atoms are still on their way.
+ */
+export function planetCellCount(planet) {
+  return planet.elements ? planet.elements.length : cellCountForFrequency(planet.frequency)
+}
+
 export function planetRadius(planet) {
-  return radiusFromCellCount(planet.elements.length) * planetScale(planet)
+  return radiusFromCellCount(planetCellCount(planet)) * planetScale(planet)
 }
 
 export function planetVolume(planet, radius = planetRadius(planet)) {
+  if (!planet.elements) {
+    // Stub: exact equal-area integral with the database's stored mean relief
+    // — V = (1/3)·4πR²·(R + avg h). Error vs. the true integral is only the
+    // grid's cell-area variance (< 0.1% on these grids).
+    const avgH = Number(planet.stubAvgHeight) || 0
+    return (4 / 3) * Math.PI * radius * radius * (radius + avgH)
+  }
   const hex = getHexSphere(planet.frequency)
   if (hex.cellCount === planet.elements.length) {
     // Cell areas are measured on the unit sphere; rescale so they sum to 4π
@@ -119,6 +136,20 @@ export function planetStats(planet) {
   const radius = planetRadius(planet)
   const volume = planetVolume(planet, radius)
   const mass = (planet.density ?? DEFAULT_DENSITY) * volume
+  if (!planet.elements) {
+    // stub: size stats are exact from the grid; terrain tallies arrive with
+    // the atoms (null = unknown, not zero)
+    return {
+      cellCount: planetCellCount(planet),
+      radius,
+      volume,
+      mass,
+      landCells: null,
+      seaCells: null,
+      minH: 0,
+      maxH: 0,
+    }
+  }
   let landCells = 0
   let minH = Infinity
   let maxH = -Infinity

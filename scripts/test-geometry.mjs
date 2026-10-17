@@ -10,13 +10,16 @@ import { cellCountForFrequency } from '../src/core/hexsphere.js'
 import {
   planetRadius,
   planetMass,
+  planetVolume,
+  planetStats,
+  planetCellCount,
   MAX_FREQUENCY,
   radiusForFrequency,
   frequencyForRadius,
   radiusForMass,
   frequencyForMass,
 } from '../src/core/planetMath.js'
-import { normalizeWorld } from '../src/core/worldSchema.js'
+import { normalizeWorld, isPlanetStub, serializeWorld } from '../src/core/worldSchema.js'
 import { generateElements, PRESETS } from '../src/core/generators.js'
 import { readFileSync } from 'node:fs'
 
@@ -157,5 +160,56 @@ check(
 // corrupt-file healing
 const broken = normalizeWorld({ planets: [{ frequency: 3 }, { frequency: 'garbage', elements: [{ t: 'nope', h: 'x' }] }] })
 check('corrupt worlds are healed with defaults', broken.planets.length === 2 && broken.planets[0].elements.length === 92)
+
+// ---------------------------------------------------------------------------
+// DB streaming model: skeleton planets with elements == null (stubs)
+// ---------------------------------------------------------------------------
+const stubDoc = {
+  version: 1,
+  name: 'Skeleton',
+  gravity: 40,
+  planets: [
+    {
+      dbId: 24, id: 'p-jup', name: 'Jupiter', preset: 'rocky', seed: 5, frequency: 203,
+      scale: 1, center: { x: 800 }, velocity: { z: 1 }, spin: { y: 0.2 }, density: 0.05,
+      isStatic: false, elements: null, stubAvgHeight: 0.02,
+      preview: { frequency: 16, elements: [{ t: 'sand', h: 0.5 }, { t: 'nope', h: 'x' }] },
+    },
+    {
+      dbId: 28, id: 'p-plu', name: 'Pluto', preset: 'rocky', frequency: 3, density: 0.05,
+      elements: generateElements('rocky', 3, 7),
+    },
+  ],
+}
+const skel = normalizeWorld(stubDoc)
+const stub = skel.planets[0]
+const inline = skel.planets[1]
+const stubVolume = planetVolume(stub)
+const stubStats = planetStats(stub)
+check('isPlanetStub sees stubs and only stubs',
+  isPlanetStub(stub) && !isPlanetStub(inline) && !isPlanetStub({ elements: [] }))
+check('stub stays a stub (elements null, dbId + preview kept)',
+  stub.elements === null && stub.dbId === 24 && stub.preview?.frequency === 16)
+check('stub cell count / radius are exact from the grid alone',
+  planetCellCount(stub) === cellCountForFrequency(203) &&
+    Math.abs(planetRadius(stub) - radiusForFrequency(203)) < 1e-12)
+check('stub volume integrates the stored mean relief: (4/3)πR²(R+avg h)',
+  Math.abs((4 / 3) * Math.PI * planetRadius(stub) ** 2 * (planetRadius(stub) + 0.02) -
+    stubVolume) < 1e-9)
+check('stub mass = density × that volume (orbit-grade without atoms)',
+  Math.abs(planetMass(stub) / (0.05 * stubVolume) - 1) < 1e-12)
+check('stub stats: terrain tallies unknown (null), not zero',
+  stubStats.landCells === null && stubStats.seaCells === null && stubStats.cellCount === cellCountForFrequency(203))
+check('preview sample is repaired to its full grid (padded + healed)',
+  stub.preview.elements.length === cellCountForFrequency(16) &&
+    stub.preview.elements[1].t === 'grass' && stub.preview.elements[1].h === 0.12)
+check('small DB bodies inline whole', inline.elements.length === 92 && !inline.preview)
+check('serializeWorld drops db internals (dbId/preview/stubAvgHeight)',
+  ['dbId', 'preview', 'stubAvgHeight'].every((k) => !(k in serializeWorld(skel).planets[0])))
+check('serializeWorld keeps elements of loaded bodies',
+  serializeWorld(skel).planets[1].elements.length === 92)
+// preview renders as a valid planet (Planet.jsx feeds it to the geometry pipeline)
+const previewAsPlanet = { frequency: 16, elements: stub.preview.elements, scale: 1 }
+check('preview grid builds geometry', buildPlanetGeometryData(previewAsPlanet).size > 0)
 
 process.exit(failures === 0 ? 0 : 1)

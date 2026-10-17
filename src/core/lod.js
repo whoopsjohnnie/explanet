@@ -31,6 +31,15 @@ export function lodChain(frequency) {
 }
 
 /**
+ * Angular tuning constant: a hex is ~4-5 px when its level retires. Also the
+ * criterion for streaming a planet's atoms in — beyond distance LOD_SWITCH·R/n
+ * a grid of frequency n is no finer than the eye gets, so a body whose
+ * preview has frequency pf only needs its full atoms once the camera is
+ * closer than (LOD_SWITCH / pf) · R.
+ */
+export const LOD_SWITCH = 570
+
+/**
  * Switch distances (from the planet CENTER) for the chain, in world units:
  * level k is used while distance < thresholds[k], so the FIRST entry belongs
  * to chain[1] (the distance at which we drop off full resolution).
@@ -39,9 +48,9 @@ export function lodChain(frequency) {
  * of planet size or level; LOD_SWITCH is tuned so a hex is ~4-5 px when its
  * level retires.
  */
-export function lodDistances(chain, radius, LOD_SWITCH = 570) {
+export function lodDistances(chain, radius, switchK = LOD_SWITCH) {
   const out = []
-  for (let k = 1; k < chain.length; k++) out.push((LOD_SWITCH * radius) / chain[k])
+  for (let k = 1; k < chain.length; k++) out.push((switchK * radius) / chain[k])
   return out
 }
 
