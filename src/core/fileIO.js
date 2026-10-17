@@ -1,7 +1,9 @@
 /**
  * fileIO.js
  * ---------------------------------------------------------------------------
- * world.json persistence.
+ * world.json FILE persistence — save/open/export. (World LOADING happens
+ * from the world database via core/db.js; picking a file stays available as
+ * an import path, and saving to a file stays the way to carry a world out.)
  *
  * Uses the File System Access API when available (Chrome/Edge): the user
  * picks a real `world.json` once and the file handle is remembered in
@@ -152,11 +154,4 @@ export async function openWorld() {
     }
     input.click()
   })
-}
-
-/** Load the bundled default world (public/world.json). */
-export async function fetchDefaultWorld() {
-  const res = await fetch('/world.json')
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return await res.json()
 }
