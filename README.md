@@ -5,12 +5,17 @@ orbit each other under real N-body gravity — in the style of classic low-poly
 "hex planet" generators (the sphere is always tiled by hexagons plus exactly
 12 pentagons, like the reference asset on Fab).
 
-All world data lives in a local **`world.json`** file: planets, their hex
-elements, positions, velocities — everything.
+All worlds live in a PostgreSQL database (the **world database**, schema in
+`db/schema.sql`): planets, their hex atoms, positions, velocities —
+everything. The app streams what it needs: the solar system opens instantly
+from a skeleton, and each giant's atoms stream in when you approach, select
+it, or land on it. `world.json` files remain the import/export format.
 
 ```
 npm install
-npm run dev        # → http://localhost:5173
+npm run dev        # → http://localhost:5173   (uses the world database; falls
+                   #                            back to the built-in starter
+                   #                            world if it is unreachable)
 ```
 
 ## What it does
@@ -38,10 +43,12 @@ npm run dev        # → http://localhost:5173
   along cliffs, jumping, sprinting. All of it in first person: the camera
   sits at the astronaut's eyes through the fall, the walk and every jump,
   riding the planet's spin and orbit. Hold & drag to look around.
-- **world.json everywhere** — Open, Save (Ctrl+S) and drag-&-drop. In
-  Chrome/Edge the file handle is remembered (File System Access API +
-  IndexedDB), so Ctrl+S writes to the same file on disk. Elsewhere it falls
-  back to download/upload.
+- **world.json import/export** — Open, Save (Ctrl+S) and drag-&-drop. Bodies
+  whose atoms still live only in the database are streamed in before a save,
+  so exported files are always complete (database-internal fields never leak
+  into files). In Chrome/Edge the file handle is remembered (File System
+  Access API + IndexedDB), so Ctrl+S writes to the same file on disk.
+  Elsewhere it falls back to download/upload.
 - **Live painting** — click or drag on a planet with the paint / raise /
   lower brushes (with brush size & power). Geometry updates instantly.
 - **Procedural presets** — Earth-like, rocky, desert, ice, volcanic, gas
@@ -111,7 +118,37 @@ onto a planet. While landed:
 `public/world.json` is the bundled demo system (the Sun and the nine planets
 at true relative distances — each world's hex count derived from its real
 radius, up to the frequency-203 cap: Jupiter 412,092 hexes, Earth 3,242,
-Pluto a chunky 92). Regenerate it with `npm run gen:world`.
+Pluto a chunky 92). Regenerate it with `npm run gen:world` — and import it
+into the world database with `npm run db:import`.
+
+## The world database
+
+Worlds are stored relationally in PostgreSQL (`<db-name>` on `<db-host>`,
+schema in [`db/schema.sql`](db/schema.sql)): `worlds → bodies → atoms`, with
+`materials` as the terrain palette. Because atoms are rows, a browser never
+has to swallow the whole 90 MB document again:
+
+- **Skeleton first** — on boot the app fetches every body's document fields
+  with atoms only for the small bodies (≤ 10,000 cells); giants arrive as
+  *stubs*: `elements: null`, a frequency-16 preview sample, and the DB's mean
+  relief. Stub radius is exact (it depends only on cell count) and stub mass
+  integrates the stored mean height, so orbits fly correctly before a single
+  atom has loaded. Boot payload: ~220 KB gzipped instead of 90 MB.
+- **Atoms stream in** — selecting a body, flying closer than its preview
+  grid's angular-resolution limit, or landing on it fetches that body's full
+  atoms (Jupiter's 412,092 in ~350 ms warm). Painting and walking always
+  operate on the real grid; the preview only ever renders from a distance.
+- **API** (dev: mounted into Vite; prod: `npm run serve`, which also serves
+  `dist/`):
+  `GET /api/worlds`, `GET /api/worlds/:id` (skeleton, `?refresh=1` rebakes),
+  `GET /api/bodies/:dbId/elements` (compact columnar atoms, gzipped),
+  `GET /api/health`.
+- **Connection**: `PGHOST` (default `<db-host>`), `PGPORT`, `PGDATABASE`
+  (default `<db-name>`), `PGUSER` (default `<db-user>`); the password comes
+  from `PGPASSWORD` or `~/.pgpass`. The served world defaults to the newest
+  import — pin one with `EXPLANET_WORLD=8` or `?world=8` in the browser URL.
+- **Smoke test**: `node scripts/check-db-live.mjs` runs the real client path
+  against a live API and reports the staged-load picture.
 
 ## Architecture
 
@@ -120,24 +157,32 @@ src/
   core/                 ← framework-free, unit-tested logic
     hexsphere.js        geodesic icosphere + dual hex/pent cells (areas, neighbors)
     geometry.js         elements → vertex batches (per terrain) w/ pick maps
-    planetMath.js       radius / volume / mass derived from elements
+    planetMath.js       radius / volume / mass derived from elements (stub-safe)
     generators.js       seeded fBm terrain presets
-    worldSchema.js      world.json shape, creation, validation & repair
+    worldSchema.js      world.json shape, creation, validation & repair (+ stubs)
     starter.js          demo system (also writes public/world.json)
     physics.js          N-body gravity step + live body registry
     surface.js          surface queries + kinematic walker (land & walk mode)
+    lod.js              render LOD chains + sampled preview grids
     terrain.js          terrain registry + procedural canvas textures
+    db.js               world-database client (skeleton + streamed atoms)
     fileIO.js           File System Access API + IndexedDB handle + fallbacks
-  state/store.js        zustand: world document + editor state
+  state/store.js        zustand: world document + editor state + hydratePlanet()
   components/
     Scene.jsx           R3F canvas, cannon <Physics>, camera follow
     Planet.jsx          one planet = sphere body + per-terrain meshes + painting
     Walker.jsx          surface mode: walk integration, first-person eye camera
     ui/                 TopBar, PlanetList, Inspector, Palette, WalkHud, AddPlanetDialog
+server/
+  db.mjs                pg pool + skeleton/body queries + LRU + preview sampling
+  api.mjs               /api endpoints (shared by the Vite dev middleware + serve)
+  serve.mjs             production: static dist/ + /api on one port
 scripts/
   gen-sample-world.mjs  regenerates public/world.json
+  import-db.mjs         streams a world.json into the world database (COPY)
+  check-db-live.mjs     end-to-end smoke test against a live /api
   test-hexsphere.mjs    grid correctness (12 pentagons, symmetry, equal areas)
-  test-geometry.mjs     generators + geometry + schema round-trips
+  test-geometry.mjs     generators + geometry + schema/stub round-trips
   test-surface.mjs      walker math (cell lookup, landing, walking, walls, jumps)
 ```
 
