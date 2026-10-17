@@ -3,23 +3,36 @@
  */
 
 import { useStore } from '../../state/store.js'
+import { isPlanetStub, serializeWorld } from '../../core/worldSchema.js'
 import * as fileIO from '../../core/fileIO.js'
 
-/** Serialize the live world (with captured physics positions). */
-function snapshot() {
+/**
+ * Serialize the live world (with captured physics positions). Bodies whose
+ * atoms are still in the database are streamed in first — a file save must
+ * never write a stub.
+ */
+async function snapshot() {
   const store = useStore.getState()
-  store.capturePositions()
-  const { world } = useStore.getState()
-  return {
-    version: world.version,
-    name: world.name,
-    gravity: world.gravity,
-    planets: world.planets,
+  const stubs = store.world.planets.filter(isPlanetStub)
+  if (stubs.length) {
+    useStore.setState({
+      statusMsg: `Streaming ${stubs.length} ${stubs.length === 1 ? 'body' : 'bodies'} from the database for export…`,
+    })
+    const done = await Promise.all(stubs.map((p) => store.hydratePlanet(p.id)))
+    if (done.some((ok) => !ok)) throw new Error('could not load every body from the database')
   }
+  store.capturePositions()
+  return serializeWorld(useStore.getState().world)
 }
 
 export async function saveWorldUI(asNew = false) {
-  const doc = snapshot()
+  let doc
+  try {
+    doc = await snapshot()
+  } catch (err) {
+    useStore.setState({ statusMsg: `Save failed: ${err.message}` })
+    return null
+  }
   const res = await fileIO.saveWorld(doc, { forcePicker: asNew })
   if (res) {
     useStore.setState({ dirty: false, fileName: res.fileName, statusMsg: `Saved → ${res.fileName}` })

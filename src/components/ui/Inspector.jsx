@@ -52,6 +52,7 @@ export default function Inspector() {
   const walkingHere = useStore((s) => s.walkMode?.planetId)
 
   const planet = world.planets.find((p) => p.id === selectedId)
+  const stats = planet ? planetStats(planet) : null
 
   return (
     <div className="panel panel-right">
@@ -70,30 +71,34 @@ export default function Inspector() {
 
           <div className="stat-grid">
             <div className="stat">
-              <b>{planet.elements.length}</b>
+              <b>{stats.cellCount}</b>
               <span title="hex cells — atoms of one area unit each, the same size on every planet">atoms</span>
             </div>
             <div className="stat">
-              <b>{planetStats(planet).radius.toFixed(2)}</b>
+              <b>{stats.radius.toFixed(2)}</b>
               <span>radius</span>
             </div>
             <div className="stat">
-              <b>{planetStats(planet).mass.toFixed(1)}</b>
+              <b>{stats.mass.toFixed(1)}</b>
               <span>mass</span>
             </div>
             <div className="stat">
-              <b>{planetStats(planet).volume.toFixed(0)}</b>
+              <b>{stats.volume.toFixed(0)}</b>
               <span>volume</span>
             </div>
             <div className="stat">
-              <b>{planetStats(planet).landCells}</b>
+              <b>{stats.landCells ?? '…'}</b>
               <span>land</span>
             </div>
             <div className="stat">
-              <b>{planetStats(planet).seaCells}</b>
+              <b>{stats.seaCells ?? '…'}</b>
               <span>sea</span>
             </div>
           </div>
+
+          {!planet.elements && (
+            <div className="hint">⏳ Streaming this body's atoms from the world database…</div>
+          )}
 
           <div className="surface-actions">
             {planet.preset === 'star' ? (

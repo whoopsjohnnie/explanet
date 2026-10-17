@@ -8,7 +8,9 @@ import { TERRAIN_TYPES } from '../../core/terrain.js'
 
 function dominantColor(planet) {
   const counts = new Map()
-  for (const el of planet.elements) counts.set(el.t, (counts.get(el.t) || 0) + 1)
+  // stubbed bodies paint with their preview sample's colors
+  for (const el of planet.elements ?? planet.preview?.elements ?? [])
+    counts.set(el.t, (counts.get(el.t) || 0) + 1)
   let best = 'grass'
   let max = -1
   for (const [t, n] of counts) {

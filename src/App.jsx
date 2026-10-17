@@ -114,7 +114,7 @@ export default function App() {
           {statusMsg && <div className="toast">{statusMsg}</div>}
         </>
       )}
-      {!ready && <div className="boot">Generating worlds…</div>}
+      {!ready && <div className="boot">Loading worlds…</div>}
     </div>
   )
 }
