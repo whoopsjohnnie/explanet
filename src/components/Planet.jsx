@@ -26,7 +26,7 @@ import { Html } from '@react-three/drei'
 import { useStore } from '../state/store.js'
 import { registerBody, registry } from '../core/physics.js'
 import { buildLodGeometryData } from '../core/geometry.js'
-import { lodChain, lodDistances, LOD_SWITCH } from '../core/lod.js'
+import { lodChain, lodDistances } from '../core/lod.js'
 import { makeSurface, intersectHeightfield } from '../core/surface.js'
 import { planetRadius, planetMass, planetScale, radiusForFrequency } from '../core/planetMath.js'
 import { getTerrainMaterials } from '../three/materials.js'
@@ -46,7 +46,6 @@ export default function Planet({ planet }) {
   const walking = useStore((s) => !!s.walkMode)
   const applyBrush = useStore((s) => s.applyBrush)
   const select = useStore((s) => s.select)
-  const hydratePlanet = useStore((s) => s.hydratePlanet)
   const controls = useThree((s) => s.controls)
 
   const radius = planetRadius(planet)
@@ -54,13 +53,15 @@ export default function Planet({ planet }) {
   const isStatic = !!planet.isStatic
 
   // ------------------------------------------------------------ streaming --
-  // A DB stub (atoms not streamed yet) renders its preview sample: the
+  // A stub (atoms not streamed yet) renders its preview sample: the
   // server-sampled coarse grid re-scaled so its core radius equals the true
   // one. Everything downstream (LOD chain, surface pick) treats it as a
   // small planet; when the atoms arrive, `planet.elements` changes identity
-  // and the full grid takes over. Physics never used the preview — stub
-  // radius/mass are exact-orbit values from frequency + density (+ mean
-  // relief), so nothing jumps when the stream completes.
+  // and the full grid takes over. Atoms are requested by the STORE — on
+  // select / land / paint attempt, never by the camera — this component
+  // just renders whatever grain of the body it has. Physics never used the
+  // preview: stub radius/mass are exact-orbit values from frequency +
+  // density (+ mean relief), so nothing jumps when the stream completes.
   const renderPlanet = useMemo(() => {
     if (planet.elements) return planet
     const pv = planet.preview
@@ -182,17 +183,6 @@ export default function Planet({ planet }) {
   const camera = useThree((s) => s.camera)
 
   useFrame(() => {
-    // proximity streaming: once the camera is closer than the preview grid's
-    // angular-resolution limit ((LOD_SWITCH/pf)·R), the sample stops matching
-    // what the full chain would render — start the atom download (guarded,
-    // fire-and-forget; hydratePlanet dedupes concurrent requests)
-    if (renderPlanet !== planet && planet.preview) {
-      const body = registry.bodies.get(planet.id)
-      const c = body ? body.pos : planet.center
-      const dR =
-        Math.hypot(camera.position.x - c.x, camera.position.y - c.y, camera.position.z - c.z) / radius
-      if (dR * planet.preview.frequency < LOD_SWITCH) hydratePlanet(planet.id)
-    }
     if (thresholds.length === 0) return
     const body = registry.bodies.get(planet.id)
     const c = body ? body.pos : planet.center

@@ -48,6 +48,9 @@ export const useStore = create((set, get) => ({
   // mutable state in core/surface.js, same as the physics body registry.
 
   // -------------------------------------------------------------- startup --
+  // The boot payload is the skeleton and NOTHING else: no body's atoms are
+  // fetched until the editor asks for that body (select / land / paint).
+  // Streaming only ever starts from hydratePlanet().
   init: async () => {
     try {
       const doc = await fetchWorldDocument()
@@ -60,8 +63,6 @@ export const useStore = create((set, get) => ({
         fileName: doc.source || 'world database',
         statusMsg: `Loaded ${world.planets.length} bodies from ${doc.source || 'the world database'}`,
       })
-      // the first selected body (usually the star) streams in immediately
-      get().hydratePlanet(world.planets[0]?.id)
     } catch (err) {
       // offline / empty database: the starter world keeps the app usable
       const world = makeStarterWorld()
@@ -245,7 +246,14 @@ export const useStore = create((set, get) => ({
     const idx = world.planets.findIndex((p) => p.id === planetId)
     if (idx === -1) return
     const planet = world.planets[idx]
-    if (isPlanetStub(planet)) return // atoms still streaming; nothing to edit
+    if (isPlanetStub(planet)) {
+      // painting counts as asking for the body: stream it in (deduped) so the
+      // next stroke lands; this stroke has nothing to edit yet
+      if (!hydrating.has(planetId))
+        set({ statusMsg: `Loading ${planet.name}'s atoms — paint again once they arrive` })
+      get().hydratePlanet(planetId)
+      return
+    }
     const hex = getHexSphere(planet.frequency)
     const cells = getNeighborhood(hex, cellIndex, brushSize)
 

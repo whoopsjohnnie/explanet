@@ -134,10 +134,11 @@ has to swallow the whole 90 MB document again:
   relief. Stub radius is exact (it depends only on cell count) and stub mass
   integrates the stored mean height, so orbits fly correctly before a single
   atom has loaded. Boot payload: ~220 KB gzipped instead of 90 MB.
-- **Atoms stream in** — selecting a body, flying closer than its preview
-  grid's angular-resolution limit, or landing on it fetches that body's full
-  atoms (Jupiter's 412,092 in ~350 ms warm). Painting and walking always
-  operate on the real grid; the preview only ever renders from a distance.
+- **Atoms stream in on intent** — selecting a body, landing on it, or making
+  a paint stroke at it fetches that body's full atoms (Jupiter's 412,092 in
+  ~350 ms warm); boot fetches the skeleton and nothing else. Flying past a
+  giant never downloads it. Painting and walking always operate on the real
+  grid; the preview only ever renders until the body is asked for.
 - **API** (dev: mounted into Vite; prod: `npm run serve`, which also serves
   `dist/`):
   `GET /api/worlds`, `GET /api/worlds/:id` (skeleton, `?refresh=1` rebakes),
