@@ -65,8 +65,13 @@
     the cell's corners. Corners ordered counter-clockwise = cell outline;
     the primal vertex direction = cell center. Degree 6 -> hexagon,
     degree 5 -> pentagon (exactly 12).
-  * Each cell stores: center dir, corner dirs, per-edge neighbor indices,
-    and its exact spherical polygon area (Oosterom-Strackee fan).
+  * Grid storage is FLAT typed arrays, not per-cell objects: centers
+    (Float64), corners (Float32 — render-only; areas stay float64-exact),
+    per-edge neighbor indices (Int32, padded to 6 slots, -1 past sides),
+    sides and exact spherical polygon areas (Oosterom-Strackee fan). One
+    object graph per cell costs ~1.4 KB, which caps the atom ladder around
+    frequency 64; the flat layout keeps a frequency-203 grid (412,092
+    atoms, Jupiter in the bundled system) at ~40 MB and ~125 ms to build.
   * Cell index === icosphere vertex index, which makes elements[i] <->
     cells[i] a stable identity across sessions (same frequency => same
     grid => element i is always the same tile).
@@ -96,6 +101,18 @@
     (b) raising terrain increases mass and therefore gravity — the
     simulation follows the art, not the other way round; (c) files can never
     contain inconsistent derived data.
+
+    THE ATOM MODEL: at the default scale = 1, one hex covers exactly ONE
+    area unit on EVERY planet — hexagons are atoms of a universal size, and
+    the ladder R(n) = sqrt((10n^2+2)/4*pi) enumerates the only radii a
+    planet may have. Mass quantizes with it: a target mass at a density
+    resolves to the nearest legal grid via planetMath.frequencyForMass /
+    frequencyForRadius (nearest in RADIUS, not nearest in n — the ladder is
+    not linear in n). Small worlds are genuinely chunky — the smallest legal
+    world is a 12-cell dodecahedron (the bundled Pluto, scaled to its true
+    radius, is a 92-cell ball). `scale` stays in the schema only as an
+    escape hatch (fine-mesh small planets, legacy files); the starter world
+    and the Add Planet dialog use strict atoms.
 
   * "Same surface area" is quantified honestly: cell areas are computed
     exactly and used for volume; deviations (<1% for n>=3) are inherent to
@@ -353,11 +370,13 @@
   * Falls use the SAME softened gravity law as the orbital sim
     (G·m/(r²+ε²), scaled for feel) — heavy worlds pull harder, moons are
     floaty, and a fall always terminates because the surface is star-shaped.
-  * The astronaut SCALES WITH THE WORLD: every body length (eye height,
+  * The astronaut SCALES WITH THE TILE: every body length (eye height,
     stride, step, jump, spawn altitude) is a fixed multiple of the planet's
-    hex-tile radius (surface.metrics), so on true-scale planets the walker
-    shrinks with the grid — a uniform ~8° horizon dip instead of the 45°
-    "standing on a small ball" view a fixed-size astronaut gets on Earth.
+    hex-tile radius (surface.metrics). Under the atom model the tile is
+    universal (circumradius 0.6204), so the SAME astronaut stands one tile
+    tall on every world — and the horizon is honestly close on small ones:
+    on a 12-atom Pluto it sits ~60° below your eyes, which is exactly what
+    twelve atoms across looks like.
   * Spawns ~7 tiles above the ground facing the camera → the "landing" is a
     visible fall, matching the physicality the brief asked for.
   * Walking stays surface-bound even while the planet orbits/spins or the

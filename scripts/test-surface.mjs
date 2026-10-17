@@ -7,7 +7,7 @@
 
 import { makeStarterWorld } from '../src/core/starter.js'
 import { generateElements } from '../src/core/generators.js'
-import { getHexSphere } from '../src/core/hexsphere.js'
+import { getHexSphere, dotCenter, hasNeighbor } from '../src/core/hexsphere.js'
 import { planetMass } from '../src/core/planetMath.js'
 import {
   SURFACE,
@@ -27,6 +27,7 @@ const check = (name, cond) => {
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const centerOf = (hex, i) => [hex.centers[i * 3], hex.centers[i * 3 + 1], hex.centers[i * 3 + 2]]
 
 function mulberry32(seed) {
   return function () {
@@ -65,7 +66,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
       let best = 0
       let bd = -2
       for (let i = 0; i < hex.cellCount; i++) {
-        const dd = dot(hex.cells[i].center, d)
+        const dd = dotCenter(hex, i, d)
         if (dd > bd) {
           bd = dd
           best = i
@@ -73,7 +74,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
       }
       const got = cellAtDirection(hex, d, hint)
       // ties only occur at exact boundaries (measure zero) — accept equal-dot
-      if (got !== best && dot(hex.cells[got].center, d) < bd - 1e-12) ok = false
+      if (got !== best && dotCenter(hex, got, d) < bd - 1e-12) ok = false
       tested++
     }
   }
@@ -87,7 +88,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
   const surface = makeSurface(planet)
   let ok = true
   for (let i = 0; i < hex.cellCount; i++) {
-    const q = surface.heightAt(hex.cells[i].center, -1)
+    const q = surface.heightAt(centerOf(hex, i), -1)
     if (q.cell !== i || Math.abs(q.h - (planet.elements[i].h || 0)) > 1e-12) ok = false
   }
   check('surface height at cell centers matches element heights', ok)
@@ -169,9 +170,9 @@ const landable = world.planets.find((p) => p.preset !== 'star')
   elements[HIGH] = { t: 'rock', h: 2.2 } // a raised pillar
   const planet = { frequency: 2, elements }
   const surface = makeSurface(planet)
-  const low = hex.cells[HIGH].neighbors[0]
+  const low = hex.neighbors[HIGH * 6]
   const w = {
-    dir: [...hex.cells[low].center],
+    dir: centerOf(hex, low),
     r: surface.R + 0,
     radialVel: 0,
     grounded: true,
@@ -179,8 +180,8 @@ const landable = world.planets.find((p) => p.preset !== 'star')
     landedOnce: true,
   }
   // push straight from the low cell's center toward the tall cell's center
-  const ci = hex.cells[low].center
-  const cn = hex.cells[HIGH].center
+  const ci = centerOf(hex, low)
+  const cn = centerOf(hex, HIGH)
   const wd = dot(ci, cn)
   const wish = [cn[0] - ci[0] * wd, cn[1] - ci[1] * wd, cn[2] - ci[2] * wd]
   let crossed = false
@@ -192,7 +193,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
 
   // and diagonal approach slides along the wall instead of sticking dead-on:
   // start moving at ~60° into the wall, expect continued motion
-  const w2 = { ...w, dir: [...hex.cells[low].center], cell: low }
+  const w2 = { ...w, dir: centerOf(hex, low), cell: low }
   const tangent = [wish[2], wish[0], wish[1]] // some non-parallel direction
   let moved2 = 0
   for (let i = 0; i < 60 * 2; i++) {
@@ -239,18 +240,34 @@ const landable = world.planets.find((p) => p.preset !== 'star')
 }
 
 // ---------------------------------------------------------------------------
-// astronaut scale: every walker length follows the planet's TILE size, so
-// landing on a true-scale world never faces the giant-astronaut 45°-horizon
-// effect — and natural grids (scale 1) keep the original absolute tuning.
+// astronaut scale: hexes are universal atoms (scale-1 grids), so the tile —
+// and every SURFACE length derived from it — is the SAME absolute size on
+// every starter world. The horizon gets genuinely close on small worlds:
+// that is the honest consequence of Pluto being twelve atoms across.
 // ---------------------------------------------------------------------------
 {
-  let ok = true
-  for (const p of world.planets.filter((q) => q.preset !== 'star')) {
-    const s = makeSurface(p)
-    const dip = Math.sqrt((2 * s.metrics.eye) / s.R) // radians the horizon sits below eye level
-    if (!(s.metrics.eye < s.R * 0.012 && dip < 0.16)) ok = false
-  }
-  check('astronaut scales with tile size: horizon dip < ~9° on every starter world', ok)
+  const landables = world.planets.filter((q) => q.preset !== 'star')
+  const surfs = landables.map((p) => makeSurface(p))
+  check(
+    'universal atoms: tile size identical (0.6204) on every starter world',
+    surfs.every((s) => Math.abs(s.tile - 0.6204) < 1e-3)
+  )
+  check(
+    'the astronaut is literally one being: all walker metrics identical across worlds',
+    surfs.every(
+      (s) =>
+        Math.abs(s.metrics.eye - surfs[0].metrics.eye) < 1e-9 &&
+        Math.abs(s.metrics.walkSpeed - surfs[0].metrics.walkSpeed) < 1e-9 &&
+        Math.abs(s.metrics.jumpHeight - surfs[0].metrics.jumpHeight) < 1e-9
+    )
+  )
+  const giant = landables.reduce((a, b) => (a.elements.length >= b.elements.length ? a : b))
+  const gs = makeSurface(giant)
+  const dip = Math.sqrt((2 * gs.metrics.eye) / gs.R) // radians the horizon sits below eye level
+  check(
+    `horizon sits comfortably far on the largest world (${giant.name}: ${(dip * 57.3).toFixed(1)}°)`,
+    dip < 0.16
+  )
 
   const nat = makeSurface({ frequency: 10, elements: generateElements('earthlike', 10, 5) })
   const m = nat.metrics
@@ -307,7 +324,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
   let radialOk = true
   let maxDistErr = 0
   for (let i = 0; i < surf.hex.cellCount; i++) {
-    const c = surf.hex.cells[i].center
+    const c = centerOf(surf.hex, i)
     const hit = intersectHeightfield(surf, scale3(c, 6 * R), scale3(c, -1))
     if (!hit || hit.cell !== i) {
       radialOk = false
@@ -319,7 +336,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
 
   // raised tile: picks at its raised radius, and occludes what is behind it
   const tall = 17
-  const tallDir = surf.hex.cells[tall].center
+  const tallDir = centerOf(surf.hex, tall)
   pickPlanet.elements[tall] = { ...pickPlanet.elements[tall], h: R * 0.5 }
   const surf2 = makeSurface(pickPlanet)
   const hitTop = intersectHeightfield(surf2, scale3(tallDir, 3 * R), scale3(tallDir, -1))
@@ -383,7 +400,7 @@ const landable = world.planets.find((p) => p.preset !== 'star')
         if (solid) {
           if (hit.distance > march + step * 4) ok = false
           const mc = cellAtDirection(s.hex, nrm(add3(o, scale3(d, march))))
-          if (hit.cell !== mc && !s.hex.cells[hit.cell].neighbors.includes(mc)) ok = false
+          if (hit.cell !== mc && !hasNeighbor(s.hex, hit.cell, mc)) ok = false
         }
       }
       if (ok) hits++

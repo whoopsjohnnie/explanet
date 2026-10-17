@@ -30,7 +30,7 @@
  * state — the same rule as the body registry in physics.js.
  */
 
-import { getHexSphere } from './hexsphere.js'
+import { getHexSphere, dotCenter } from './hexsphere.js'
 import { planetRadius } from './planetMath.js'
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ function nearestCellBrute(hex, dir) {
   let best = 0
   let bestDot = -Infinity
   for (let i = 0; i < hex.cellCount; i++) {
-    const d = dot(hex.cells[i].center, dir)
+    const d = dotCenter(hex, i, dir)
     if (d > bestDot) {
       bestDot = d
       best = i
@@ -116,11 +116,13 @@ function nearestCellBrute(hex, dir) {
 export function cellAtDirection(hex, dir, hint) {
   let best =
     Number.isInteger(hint) && hint >= 0 && hint < hex.cellCount ? hint : nearestCellBrute(hex, dir)
-  let bestDot = dot(hex.cells[best].center, dir)
+  let bestDot = dotCenter(hex, best, dir)
   for (let guard = 0; guard < hex.cellCount; guard++) {
     let improved = false
-    for (const n of hex.cells[best].neighbors) {
-      const d = dot(hex.cells[n].center, dir)
+    const nb = best * 6
+    for (let s = 0, sn = hex.sides[best]; s < sn; s++) {
+      const n = hex.neighbors[nb + s]
+      const d = dotCenter(hex, n, dir)
       if (d > bestDot + 1e-12) {
         bestDot = d
         best = n
@@ -224,13 +226,21 @@ export function intersectHeightfield(surface, origin, dir) {
     }
     evalAt(hi) // leaves the cell under `hi` in `hint`
     const h = hs[hint]
-    return {
-      cell: hint,
-      h,
-      radius: R + h,
-      distance: hi,
-      point: [origin[0] + d[0] * hi, origin[1] + d[1] * hi, origin[2] + d[2] * hi],
+    const radius = R + h
+    // f(t) jumps where the ray crosses a boundary between cells of unequal
+    // height, and the bisection can land exactly on such a jump: the point at
+    // `hi` may then sit above the radius of the cell the funnel reports.
+    // Snap it radially onto that cell's surface so a hit never floats, while
+    // `distance` keeps the ray parameter of the entry itself.
+    const point = [origin[0] + d[0] * hi, origin[1] + d[1] * hi, origin[2] + d[2] * hi]
+    const len = Math.sqrt(point[0] * point[0] + point[1] * point[1] + point[2] * point[2])
+    if (len > 0) {
+      const s = radius / len
+      point[0] *= s
+      point[1] *= s
+      point[2] *= s
     }
+    return { cell: hint, h, radius, distance: hi, point }
   }
 
   if (oc <= maxR * maxR) {

@@ -73,7 +73,7 @@ export default function Scene() {
   return (
     <Canvas
       className="scene"
-      camera={{ position: [70, 52, 112], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
+      camera={{ position: [222, 165, 355], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
       dpr={[1, 2]}
       onPointerMissed={() => {
         // clicking empty space with the select tool keeps the selection;

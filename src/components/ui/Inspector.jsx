@@ -71,7 +71,7 @@ export default function Inspector() {
           <div className="stat-grid">
             <div className="stat">
               <b>{planet.elements.length}</b>
-              <span>hex cells</span>
+              <span title="hex cells — atoms of one area unit each, the same size on every planet">atoms</span>
             </div>
             <div className="stat">
               <b>{planetStats(planet).radius.toFixed(2)}</b>

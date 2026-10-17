@@ -1,12 +1,25 @@
 /**
  * AddPlanetDialog.jsx — modal for spawning a new body.
+ *
+ * Size is specified as a TARGET MASS: the atom model resolves it to the
+ * nearest legal hex grid (frequencyForMass), so every new planet is made
+ * of the right number of same-size hexagonal atoms and its true mass is
+ * quantized to that ladder.
  */
 
 import { useState } from 'react'
 import { useStore } from '../../state/store.js'
 import { PRESETS } from '../../core/generators.js'
-import { cellCountForFrequency, radiusFromCellCount } from '../../core/hexsphere.js'
-import { planetStats } from '../../core/planetMath.js'
+import { cellCountForFrequency } from '../../core/hexsphere.js'
+import {
+  planetStats,
+  planetRadius,
+  frequencyForMass,
+  radiusForFrequency,
+} from '../../core/planetMath.js'
+
+const fmt = (v) =>
+  v >= 1e5 || (v > 0 && v < 0.01) ? v.toExponential(1) : v >= 100 ? v.toFixed(0) : v.toFixed(2)
 
 export default function AddPlanetDialog() {
   const setShowAddDialog = useStore((s) => s.setShowAddDialog)
@@ -16,15 +29,24 @@ export default function AddPlanetDialog() {
 
   const [name, setName] = useState('New Planet')
   const [preset, setPreset] = useState('earthlike')
-  const [frequency, setFrequency] = useState(6)
+  const [massLog, setMassLog] = useState(3.2) // target mass = 10^massLog
   const [density, setDensity] = useState(0.05)
   const [spinY, setSpinY] = useState(0.4)
   const [orbit, setOrbit] = useState(true)
   const [orbitDistance, setOrbitDistance] = useState(28)
 
   const parent = planets.find((p) => p.id === selectedId)
-  const cells = cellCountForFrequency(frequency)
   const isStar = preset === 'star'
+
+  // mass → atom ladder: the grid (and every derived property) snaps to it
+  const targetMass = 10 ** massLog
+  const frequency = frequencyForMass(targetMass, density)
+  const cells = cellCountForFrequency(frequency)
+  const radius = radiusForFrequency(frequency)
+  const achievedMass = density * (4 / 3) * Math.PI * radius ** 3
+
+  const minOrbit = Math.ceil((parent ? planetRadius(parent) : 0) + radius + 2)
+  const dist = Math.max(orbitDistance, minOrbit)
 
   const create = () => {
     addPlanet({
@@ -34,7 +56,7 @@ export default function AddPlanetDialog() {
       density,
       spin: { x: 0, y: spinY, z: 0 },
       orbit: !isStar && orbit && parent ? parent.id : null,
-      orbitDistance,
+      orbitDistance: dist,
     })
   }
 
@@ -60,16 +82,14 @@ export default function AddPlanetDialog() {
         </label>
 
         <label className="form-field">
-          <span>
-            Size — {cells} hex cells · radius {radiusFromCellCount(cells).toFixed(1)}
-          </span>
+          <span>Mass ≈ {fmt(targetMass)}</span>
           <input
             type="range"
-            min="2"
-            max="14"
-            step="1"
-            value={frequency}
-            onChange={(e) => setFrequency(parseInt(e.target.value))}
+            min="0"
+            max="8"
+            step="0.02"
+            value={massLog}
+            onChange={(e) => setMassLog(parseFloat(e.target.value))}
           />
         </label>
 
@@ -84,6 +104,12 @@ export default function AddPlanetDialog() {
             onChange={(e) => setDensity(parseFloat(e.target.value))}
           />
         </label>
+
+        <div className="hint">
+          ⬡ {cells.toLocaleString()} atoms · radius {radius.toFixed(2)} · mass quantizes to ≈{' '}
+          {fmt(achievedMass)} — every hex is the same size on every planet, so mass sets the
+          atom count.
+        </div>
 
         <label className="form-field">
           <span>Spin (y) {spinY.toFixed(2)}</span>
@@ -114,13 +140,13 @@ export default function AddPlanetDialog() {
 
         {!isStar && orbit && parent && (
           <label className="form-field">
-            <span>Orbit distance {orbitDistance}</span>
+            <span>Orbit distance {dist}</span>
             <input
               type="range"
-              min="8"
-              max="140"
+              min={minOrbit}
+              max={Math.max(140, minOrbit + 100)}
               step="1"
-              value={orbitDistance}
+              value={dist}
               onChange={(e) => setOrbitDistance(parseInt(e.target.value))}
             />
           </label>

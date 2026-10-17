@@ -26,22 +26,26 @@
  * }
  *
  * Radius, volume and mass are derived from `elements` (see planetMath.js):
- * radius = √(cells / 4π) · scale. `scale` decouples grid resolution from
- * physical size (a small planet can carry a fine mesh); it defaults to 1,
- * and `h` in elements stays in absolute world units — scale it alongside
- * the radius when shrinking a generated grid.
+ * radius = √(cells / 4π) · scale. At scale 1 — THE ATOM MODEL — each cell
+ * covers exactly one area unit on every planet: hexagons are atoms of a
+ * universal size, a planet's mass is quantized in whole hexes, and its
+ * frequency is derived from its target mass via frequencyForMass().
+ * `scale` remains as an escape hatch (a small planet can carry a fine
+ * mesh; older files keep loading); it defaults to 1, and `h` in elements
+ * stays in absolute world units — scale it alongside the radius when
+ * shrinking a generated grid.
  */
 
 import { nanoid } from 'nanoid'
 import { cellCountForFrequency } from './hexsphere.js'
 import { generateElements, defaultElement } from './generators.js'
 import { TERRAIN_TYPES } from './terrain.js'
-import { DEFAULT_DENSITY } from './planetMath.js'
+import { DEFAULT_DENSITY, MAX_FREQUENCY } from './planetMath.js'
 
 export const WORLD_VERSION = 1
 
 export function createPlanet(opts = {}) {
-  const frequency = clampInt(opts.frequency ?? 6, 1, 64)
+  const frequency = clampInt(opts.frequency ?? 6, 1, MAX_FREQUENCY)
   const seed = opts.seed ?? Math.floor(Math.random() * 1e9)
   const preset = opts.preset ?? 'earthlike'
   return {
@@ -99,7 +103,7 @@ export function normalizeWorld(raw) {
   const planets = Array.isArray(raw.planets) ? raw.planets : []
   for (const p of planets) {
     if (!p || typeof p !== 'object') continue
-    const frequency = clampInt(p.frequency ?? 6, 1, 64)
+    const frequency = clampInt(p.frequency ?? 6, 1, MAX_FREQUENCY)
     const wanted = cellCountForFrequency(frequency)
     let elements = Array.isArray(p.elements) ? p.elements : []
 

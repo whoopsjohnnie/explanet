@@ -84,10 +84,14 @@ function mixHex(c1, c2, t) {
  */
 export function generateElements(preset, frequency, seed = Math.floor(Math.random() * 1e9)) {
   const hex = getHexSphere(frequency)
-  const elements = new Array(hex.cells.length)
+  const { cellCount, centers } = hex
+  const elements = new Array(cellCount)
 
-  for (let i = 0; i < hex.cells.length; i++) {
-    const [x, y, z] = hex.cells[i].center
+  for (let i = 0; i < cellCount; i++) {
+    const b = i * 3
+    const x = centers[b]
+    const y = centers[b + 1]
+    const z = centers[b + 2]
     let el
 
     switch (preset) {

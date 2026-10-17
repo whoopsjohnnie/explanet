@@ -21,10 +21,14 @@ npm run dev        # → http://localhost:5173
 - **Per-hex elements** — every element stores terrain type, height and an
   optional color override. Terrain: grass, dirt, rock, sand, snow, water,
   lava, void, star — each with a procedurally generated texture.
-- **Derived physical properties** — a planet's radius, volume and mass come
-  from its hex elements only:
+- **Derived physical properties — hexes are atoms** — a planet's radius,
+  volume and mass come from its hex elements only:
   `R = √(cells / 4π)`, `V = Σ ⅓·Aᵢ·(R + hᵢ)`, `m = ρ·V`.
-  More (and taller) hexes → bigger, heavier planet with stronger pull.
+  One hex always covers exactly **one area unit on every planet**, so a hex
+  is an atom of a universal size: heavier worlds are literally built from
+  more hexes, and mass is quantized in whole atoms (the smallest possible
+  world is a 12-cell dodecahedron). "Add Planet" asks for a target **mass**
+  and resolves it to the nearest legal grid.
 - **N-body gravity** — the cannon-es world runs with zero global gravity;
   every frame all bodies attract pairwise with
   `F = G·m₁·m₂ / (d² + ε²)`. Planets orbit, moons wobble, collisions bounce.
@@ -87,7 +91,9 @@ onto a planet. While landed:
       "name": "Aqua",
       "preset": "earthlike",           // informational (generator seed type)
       "seed": 42,
-      "frequency": 6,                  // geodesic frequency → 10n²+2 cells
+      "frequency": 6,                  // geodesic frequency → 10n²+2 cells;
+                                       // at scale 1 each cell = 1 area unit
+      "scale": 1,                      // optional size factor (default 1)
       "center":   { "x": 46, "y": 0, "z": 0 },
       "velocity": { "x": 0,  "y": 0, "z": -13.8 },
       "spin":     { "x": 0,  "y": 0.5, "z": 0 },
@@ -102,8 +108,10 @@ onto a planet. While landed:
 }
 ```
 
-`public/world.json` is the bundled demo system (star + 2 planets + moon).
-Regenerate it with `npm run gen:world`.
+`public/world.json` is the bundled demo system (the Sun and the nine planets
+at true relative distances — each world's hex count derived from its real
+radius, up to the frequency-203 cap: Jupiter 412,092 hexes, Earth 3,242,
+Pluto a chunky 92). Regenerate it with `npm run gen:world`.
 
 ## Architecture
 

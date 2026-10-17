@@ -58,7 +58,9 @@ export function sampleLodElements(planet, frequency) {
   const fineIndex = new Uint32Array(coarse.cellCount)
   let hint = -1
   for (let i = 0; i < coarse.cellCount; i++) {
-    const f = cellAtDirection(fine, coarse.cells[i].center, hint)
+    const b = i * 3
+    const cdir = [coarse.centers[b], coarse.centers[b + 1], coarse.centers[b + 2]]
+    const f = cellAtDirection(fine, cdir, hint)
     hint = f
     fineIndex[i] = f
     const src = planet.elements[f]

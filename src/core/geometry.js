@@ -89,8 +89,7 @@ export function buildPlanetGeometryData(planet) {
     b.tri.push(cellIdx)
   }
 
-  for (let i = 0; i < hex.cells.length; i++) {
-    const cell = hex.cells[i]
+  for (let i = 0; i < hex.cellCount; i++) {
     const el = elements[i]
     if (!el) continue
     const type = TERRAIN_TYPES[el.t] ? el.t : 'grass'
@@ -100,31 +99,38 @@ export function buildPlanetGeometryData(planet) {
 
     const h = el.h || 0
     const r = R + h
-    const centerDir = cell.center
+    const c3 = i * 3
+    const centerDir = [hex.centers[c3], hex.centers[c3 + 1], hex.centers[c3 + 2]]
+    const n = hex.sides[i]
 
     // Inset corner directions so adjacent hexes leave a thin groove.
-    const corners = cell.corners.map((dir) => norm3(addv(mul(dir, 1 - INSET), mul(centerDir, INSET))))
+    const corners = new Array(n)
+    for (let k = 0; k < n; k++) {
+      const k3 = (i * 6 + k) * 3
+      const dir = [hex.corners[k3], hex.corners[k3 + 1], hex.corners[k3 + 2]]
+      corners[k] = norm3(addv(mul(dir, 1 - INSET), mul(centerDir, INSET)))
+    }
     const top = corners.map((dir) => mul(dir, r))
     const centerPoint = mul(centerDir, r)
 
     // ---- top polygon (fan) --------------------------------------------
-    for (let k = 0; k < corners.length; k++) {
-      pushTri(b, centerPoint, top[(k + 1) % corners.length], top[k], centerDir, centerDir, rgb, i)
+    for (let k = 0; k < n; k++) {
+      pushTri(b, centerPoint, top[(k + 1) % n], top[k], centerDir, centerDir, rgb, i)
     }
 
     // ---- walls ----------------------------------------------------------
-    for (let k = 0; k < corners.length; k++) {
-      const nIdx = cell.neighbors[k]
+    for (let k = 0; k < n; k++) {
+      const nIdx = hex.neighbors[i * 6 + k]
       const nEl = elements[nIdx]
       const nH = nEl ? nEl.h || 0 : h
       const equal = Math.abs(h - nH) < 1e-4
       const hb = Math.min(h, nH) - (equal ? GROOVE : 0)
       if (h - hb < 1e-4) continue
       const a0 = top[k]
-      const a1 = top[(k + 1) % corners.length]
-      const wallDir = norm3(addv(corners[k], corners[(k + 1) % corners.length]))
+      const a1 = top[(k + 1) % n]
+      const wallDir = norm3(addv(corners[k], corners[(k + 1) % n]))
       const b0 = mul(corners[k], R + hb)
-      const b1 = mul(corners[(k + 1) % corners.length], R + hb)
+      const b1 = mul(corners[(k + 1) % n], R + hb)
       pushTri(b, a0, a1, b1, wallDir, centerDir, rgb, i)
       pushTri(b, a0, b1, b0, wallDir, centerDir, rgb, i)
     }

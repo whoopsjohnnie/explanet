@@ -108,7 +108,7 @@ export const useStore = create((set, get) => ({
       selectedId: planet.id,
       dirty: true,
       showAddDialog: false,
-      statusMsg: `Added ${planet.name} (${planet.elements.length} hex cells, radius ${planetStats(planet).radius.toFixed(1)})`,
+      statusMsg: `Added ${planet.name} (${planet.elements.length} atoms, radius ${planetStats(planet).radius.toFixed(1)})`,
     }))
     return planet.id
   },
