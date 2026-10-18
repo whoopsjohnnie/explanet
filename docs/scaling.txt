@@ -485,6 +485,50 @@
   display true km, kg and orbital periods. Radius/mass stay DERIVED exactly
   as always — these columns calibrate the units, they store nothing derived.
 
+  8.3 THE SOLAR SYSTEM AT THE 32 km ANCHOR
+
+  Same atoms everywhere (unit_km = 31.883, hex area 1,016.5 km², flat width
+  34.3 km); each body snaps to the nearest legal frequency; mass per hex =
+  true mass / hex count — which is exactly the game's DERIVED mass
+  (planetMass) divided by cells, so no new physics is needed to state it.
+
+  +-----------+----------+--------+------------+-------------+-------------+
+  | Planet    |  R km    | freq n | hexes      | mass/hex kg | @2M cap (§7)|
+  +-----------+----------+--------+------------+-------------+-------------+
+  | Mercury   |  2,439.7 |     86 |     73,962 |    4.46e18  | stored      |
+  | Venus     |  6,051.8 |    213 |    453,692 |    1.07e19  | stored      |
+  | Earth     |  6,371.0 |    224 |    501,762 |    1.19e19  | stored      |
+  | Mars      |  3,389.5 |    119 |    141,612 |    4.53e18  | stored      |
+  | Jupiter   | 69,911   |  2,458 | 60,417,642 |    3.14e19  | generated   |
+  | Saturn    | 58,232   |  2,047 | 41,902,092 |    1.36e19  | generated   |
+  | Uranus    | 25,362   |    892 |  7,956,642 |    1.09e19  | generated   |
+  | Neptune   | 24,622   |    866 |  7,499,562 |    1.37e19  | generated   |
+  +-----------+----------+--------+------------+-------------+-------------+
+  | Moon      |  1,737.4 |     61 |     37,212 |    1.97e18  | stored      |
+  | Pluto d.  |  1,188.3 |     42 |     17,642 |    7.39e17  | stored      |
+  | Ceres d.  |    469.7 |     17 |      2,892 |    3.24e17  | stored      |
+  | Sun       | 696,340  | 24,483 | ~5.99e9    |    3.32e20  | generated   |
+  +-----------+----------+--------+------------+-------------+-------------+
+
+  (d. = dwarf planets, for scale. The Sun's frequency is NOMINAL ONLY — its
+  grid may never be constructed, §5.2.)
+
+  What the table says about the design:
+
+  * Every terrestrial world — all four planets, the Moon, Pluto, Ceres —
+    fits in stored atoms at well under half a million hexes. A realistic
+    inner solar system is ~1.2M hexes TOTAL: trivial for the DB, the worker,
+    and (with chunking) the renderer.
+  * Mass per hex ∝ rho x R (the hex column is R/3 deep) and tracks it
+    smoothly: Mercury/Mars 4.5e18, Venus/Earth ~1.1e19, giant columns
+    1.1-3.1e19, the Sun's hexes 3.3e20 — a ~1000x spread across ONE unit
+    system. A body property through and through, as expected; the world
+    only calibrates units.
+  * Everything past Mars crosses the ~2M-cell storage cap — Uranus/Neptune
+    "only" ~4x over, Jupiter 30x, the Sun 3000x. The generated-body split
+    is not an optimization for the outer system; at 32 km atoms it IS the
+    outer system.
+
 
 --------------------------------------------------------------------------------
  9. OPEN QUESTIONS (to settle before this becomes design.txt prose)
