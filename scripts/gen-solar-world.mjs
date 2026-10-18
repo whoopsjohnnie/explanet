@@ -18,9 +18,10 @@
  * dwarfs Earth, and orbits sit at their real distances — a compressed layout
  * cannot hold a real Sun (its radius would reach past Jupiter's orbit).
  * Orbits are circular at the true mean distances with the real inclinations;
- * the solar mass is solved from the engine's softened law for a 60 s Earth
- * year; planet densities reproduce the real mass ratios (so the Sun
- * dominates and the system is stable).
+ * the solar mass is solved from the engine's softened law for a REAL 365-day
+ * Earth year, and spin vectors give true sidereal rotation rates; planet
+ * densities reproduce the real mass ratios (so the Sun dominates and the
+ * system is stable).
  *
  * Writes public/solar-trial.json; import with:
  *   node scripts/import-db.mjs public/solar-trial.json
@@ -32,8 +33,13 @@ import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } f
 import { orbitalSpeed } from '../src/core/physics.js'
 
 const G = 40
-const EARTH_YEAR = 60 // seconds for one Earth orbit — the starter's tempo
-const SPIN_RATE = 0.6 // rad/s for a 1-Earth-day rotation
+// TRUE tempo: one orbit per real year, one spin per real day. The engine
+// integrates at a fixed 1/60 s step per frame, so document seconds ARE
+// wall-clock seconds (at 60 Hz). The starter world runs a theatrical
+// 60 s year / 0.6 rad/s spin; this trial keeps reality instead — Earth
+// drifts ~0.85 u/s along its 2.7M-u orbit and turns once per 24 h.
+const EARTH_YEAR = 365.25 * 86400 // seconds
+const SPIN_RATE = (2 * Math.PI) / 86400 // rad/s for a 1-Earth-day rotation
 const DEG = Math.PI / 180
 
 // ---- anchors ---------------------------------------------------------------

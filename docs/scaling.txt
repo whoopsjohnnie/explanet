@@ -675,8 +675,11 @@
     anchor taken seriously (Earth FILLS the ladder: f203, ~35.2 km/hex) at
     TRUE ratios: AU ≈ 4.25M u, Sun f96 × 231 = 19,793 u ≈ 109 Earths. True
     ratios are forced by the Sun itself — at the starter's compressed 282
-    u/AU a real Sun would swallow Jupiter's orbit. 60 s Earth year solved
-    through the softened force law; real mass ratios via per-body density
+    u/AU a real Sun would swallow Jupiter's orbit. REAL tempo — cannon's
+    fixed 1/60 s step makes document seconds wall-clock seconds, so the
+    solar mass solves (softened law) for an actual 365.25-day Earth year
+    and the spin vectors are true sidereal rates (Earth 23.9 h, Jupiter
+    9.9 h); real mass ratios via per-body density
     (trial Sun = 333,000 Earth masses). Stored: Mercury f78, Venus f193,
     Earth f203, Mars f108, Pluto f38 — 976,510 real atom rows; generated:
     Sun, Jupiter, Saturn, Uranus, Neptune — 0 rows. public/solar-trial.json
