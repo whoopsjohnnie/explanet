@@ -16,7 +16,7 @@
  */
 
 import { getHexSphere } from './hexsphere.js'
-import { planetRadius } from './planetMath.js'
+import { planetRadius, radiusForFrequency } from './planetMath.js'
 import { sampleLodElements } from './lod.js'
 import { TERRAIN_TYPES, terrainDefaults } from './terrain.js'
 import { hexToInt } from './atoms.js'
@@ -184,13 +184,20 @@ export function buildPlanetGeometryData(planet) {
  * buildPlanetGeometryData but built from a coarser grid sampled from the
  * document, with cellByTri remapped to the FINE (document) cell indices —
  * painting a distant planet edits the cells that produced the texel you see.
+ *
+ * A coarse level is the SAME planet seen at lower resolution, not a smaller
+ * atom planet: build from a size factor that holds the base radius at the
+ * document radius, so hexes grow to cover the cells they replaced and the
+ * silhouette never changes with LOD. (Heights are absolute world units and
+ * ride along unchanged — same convention as the stub preview rescale.)
  * @param {object} planet world-document planet
  * @param {number} frequency render frequency (>= planet.frequency → full res)
  */
 export function buildLodGeometryData(planet, frequency) {
   if (!(frequency < planet.frequency)) return buildPlanetGeometryData(planet)
   const { elements, fineIndex } = sampleLodElements(planet, frequency)
-  const data = buildPlanetGeometryData({ frequency, elements, scale: planet.scale })
+  const scale = planetRadius(planet) / radiusForFrequency(frequency)
+  const data = buildPlanetGeometryData({ frequency, elements, scale })
   for (const [, b] of data) {
     const cbt = b.cellByTri
     for (let i = 0; i < cbt.length; i++) cbt[i] = fineIndex[cbt[i]]

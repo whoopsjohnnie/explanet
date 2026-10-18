@@ -78,6 +78,21 @@ for (const [, d] of lodData) {
   for (const ci of d.cellByTri) if (ci < 0 || ci >= merc.elements.length) lodOk = false
 }
 check(`LOD build (freq ${coarseF}): ${lodTris} tris, finite, picks map to document cells`, lodOk && lodTris > 100)
+// silhouette invariance: a coarse level is the SAME planet seen at lower
+// resolution — its outer radius must stay at the document radius (plus that
+// level's sampled relief); the hexes grow, the ball does not shrink
+const Rmerc = planetRadius(merc)
+const silhouette = chain.map((f) => {
+  const sel = f < merc.frequency ? sampleLodElements(merc, f).elements : merc.elements
+  let maxH = -Infinity
+  for (const e of sel) maxH = Math.max(maxH, e.h || 0)
+  let mx = 0
+  for (const [, b] of buildLodGeometryData(merc, f))
+    for (let i = 0; i < b.positions.length; i += 3)
+      mx = Math.max(mx, Math.hypot(b.positions[i], b.positions[i + 1], b.positions[i + 2]))
+  return Math.abs(mx - (Rmerc + maxH)) < 1e-3
+})
+check('every LOD level keeps the document radius (hexes grow, silhouette does not)', silhouette.every(Boolean))
 const thr = lodDistances(chain, 1)
 check('LOD switch distances strictly increase', thr.length === chain.length - 1 && thr.every((v, i) => i === 0 || v > thr[i - 1]))
 
