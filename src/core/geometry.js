@@ -19,6 +19,7 @@ import { getHexSphere } from './hexsphere.js'
 import { planetRadius } from './planetMath.js'
 import { sampleLodElements } from './lod.js'
 import { TERRAIN_TYPES, terrainDefaults } from './terrain.js'
+import { hexToInt } from './atoms.js'
 
 const INSET = 0.08 // fraction corners are pulled toward the cell center
 const GROOVE = 0.05 // extra wall depth for equal-height neighbours
@@ -40,12 +41,40 @@ const norm3 = (a) => {
 }
 
 function hexToRgb(hex) {
-  if (typeof hex !== 'string') return null
-  let s = hex.replace('#', '')
-  if (s.length === 3) s = s.split('').map((c) => c + c).join('')
-  const n = parseInt(s, 16)
-  if (Number.isNaN(n)) return null
+  const n = hexToInt(hex)
+  if (n === null) return null
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
+}
+
+/**
+ * Vertex normals for the non-indexed batches this module emits: per-face
+ * unit normals (three's computeVertexNormals on unshared vertices), computed
+ * as raw math so the geometry worker never needs three. Matches
+ * BufferGeometry.computeVertexNormals to float32 rounding.
+ * @param {Float32Array} positions
+ * @returns {Float32Array}
+ */
+export function computeFaceNormals(positions) {
+  const n = new Float32Array(positions.length)
+  for (let i = 0; i + 8 < positions.length; i += 9) {
+    const e1x = positions[i + 3] - positions[i]
+    const e1y = positions[i + 4] - positions[i + 1]
+    const e1z = positions[i + 5] - positions[i + 2]
+    const e2x = positions[i + 6] - positions[i]
+    const e2y = positions[i + 7] - positions[i + 1]
+    const e2z = positions[i + 8] - positions[i + 2]
+    let nx = e1y * e2z - e1z * e2y
+    let ny = e1z * e2x - e1x * e2z
+    let nz = e1x * e2y - e1y * e2x
+    const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1
+    nx /= l
+    ny /= l
+    nz /= l
+    n[i] = n[i + 3] = n[i + 6] = nx
+    n[i + 1] = n[i + 4] = n[i + 7] = ny
+    n[i + 2] = n[i + 5] = n[i + 8] = nz
+  }
+  return n
 }
 
 /**

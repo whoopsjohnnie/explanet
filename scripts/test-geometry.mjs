@@ -204,12 +204,104 @@ check('preview sample is repaired to its full grid (padded + healed)',
   stub.preview.elements.length === cellCountForFrequency(16) &&
     stub.preview.elements[1].t === 'grass' && stub.preview.elements[1].h === 0.12)
 check('small DB bodies inline whole', inline.elements.length === 92 && !inline.preview)
-check('serializeWorld drops db internals (dbId/preview/stubAvgHeight)',
-  ['dbId', 'preview', 'stubAvgHeight'].every((k) => !(k in serializeWorld(skel).planets[0])))
 check('serializeWorld keeps elements of loaded bodies',
   serializeWorld(skel).planets[1].elements.length === 92)
 // preview renders as a valid planet (Planet.jsx feeds it to the geometry pipeline)
 const previewAsPlanet = { frequency: 16, elements: stub.preview.elements, scale: 1 }
 check('preview grid builds geometry', buildPlanetGeometryData(previewAsPlanet).size > 0)
+inline.atomsPacked = { materials: ['grass'] } // hydration mirror must not leak
+check('serializeWorld drops db internals (dbId/preview/stubAvgHeight/atomsPacked)',
+  ['dbId', 'preview', 'stubAvgHeight', 'atomsPacked'].every((k) => !(k in serializeWorld(skel).planets[0])))
+
+// ---------------------------------------------------------------------------
+// Packed atoms + worker pipeline (core side): what geometry.worker.js runs
+// ---------------------------------------------------------------------------
+const { packElements, packFromWire, elementsFromPacked, patchPackedCell, hexToInt } =
+  await import('../src/core/atoms.js')
+const { computeFaceNormals } = await import('../src/core/geometry.js')
+const THREE = await import('three')
+
+// round trip: pack → unpack must reproduce the document semantics exactly
+const mars = world.planets.find((p) => p.name === 'Mars')
+const packed = packElements(mars.elements)
+const revived = elementsFromPacked(packed)
+const rtOk =
+  revived.length === mars.elements.length &&
+  revived.every((e, i) => {
+    const o = mars.elements[i]
+    if (e.t !== o.t || e.h !== (Number.isFinite(o.h) ? o.h : 0)) return false
+    if (o.c === undefined) return e.c === undefined
+    return hexToInt(e.c) === hexToInt(o.c) // color-equal, canonical spelling
+  })
+check('pack → unpack round-trips elements (terrain, height, color)', rtOk)
+
+// wire form agrees with element packing, including validation + sparse colors
+const wire = {
+  materials: ['rock', 'bogus'],
+  t: [0, 1, 0],
+  h: [0.5, -1, Number.NaN],
+  c: [[1, '#abc'], [2, '#112233'], [9, '#zzz']],
+}
+const fromWire = packFromWire(wire)
+const wireEls = elementsFromPacked(fromWire)
+check(
+  'wire packing validates materials/heights/colors like the document path',
+  fromWire.materials.join(',') === 'rock,grass' &&
+    wireEls.every((e, i) =>
+      [
+        e.t === 'rock' && e.h === 0.5 && e.c === undefined,
+        e.t === 'grass' && e.h === -1 && e.c === '#aabbcc',
+        e.t === 'rock' && e.h === 0 && e.c === '#112233',
+      ][i]
+    )
+)
+
+// the worker's build path (elements from packed) is bit-identical to the
+// synchronous document build across the whole LOD chain
+const wp = { frequency: mars.frequency, elements: mars.elements, scale: 1 }
+const wpPacked = { frequency: mars.frequency, elements: revived, scale: 1 }
+let workerPathOk = true
+for (const f of lodChain(mars.frequency)) {
+  const a = buildLodGeometryData(wp, f)
+  const b = buildLodGeometryData(wpPacked, f)
+  if (a.size !== b.size) workerPathOk = false
+  for (const [type, da] of a) {
+    const db_ = b.get(type)
+    if (!db_ || db_.triangles !== da.triangles) workerPathOk = false
+    else
+      for (const k of ['positions', 'colors', 'uvs', 'cellByTri'])
+        for (let i = 0; i < da[k].length; i++)
+          if (da[k][i] !== db_[k][i]) workerPathOk = false
+  }
+}
+check('packed-fed LOD builds are identical to document-fed builds', workerPathOk)
+
+// paint mirror patching keeps packed arrays current without re-reading
+patchPackedCell(fromWire, 0, { t: 'lava', h: 2.5 })
+check(
+  'patchPackedCell adds new materials and writes heights',
+  elementsFromPacked(fromWire)[0].t === 'lava' && fromWire.h[0] === 2.5
+)
+patchPackedCell(fromWire, 2, { t: 'rock', h: 1, c: '#00ff00' })
+check('patch with el.c keeps writing color overrides', fromWire.rgb[2] === 0x00ff00 && fromWire.hasC[2] === 1)
+patchPackedCell(fromWire, 2, { t: 'rock', h: 1 }) // paint deletes el.c
+check('patch without el.c clears the color override', fromWire.hasC[2] === 0)
+
+// face normals: unit-length, finite, and matching three's computeVertexNormals
+const mdata = buildPlanetGeometryData(mars).get('rock') || buildPlanetGeometryData(mars).values().next().value
+const fnorm = computeFaceNormals(mdata.positions)
+let normalsOk = fnorm.length === mdata.positions.length
+for (let i = 0; i < fnorm.length; i += 3) {
+  const l = Math.hypot(fnorm[i], fnorm[i + 1], fnorm[i + 2])
+  if (!Number.isFinite(l) || Math.abs(l - 1) > 1e-6) normalsOk = false
+}
+const refGeo = new THREE.BufferGeometry()
+refGeo.setAttribute('position', new THREE.BufferAttribute(mdata.positions, 3))
+refGeo.computeVertexNormals()
+const refN = refGeo.getAttribute('normal').array
+let maxNDiff = 0
+for (let i = 0; i < refN.length; i++) maxNDiff = Math.max(maxNDiff, Math.abs(refN[i] - fnorm[i]))
+check(`computeFaceNormals matches three computeVertexNormals (Δ≤${maxNDiff.toExponential(1)})`,
+  normalsOk && maxNDiff < 1e-6)
 
 process.exit(failures === 0 ? 0 : 1)

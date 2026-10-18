@@ -14,6 +14,7 @@
  */
 
 import { TERRAIN_TYPES } from './terrain.js'
+import { packFromWire } from './atoms.js'
 
 async function getJson(path) {
   const res = await fetch(path)
@@ -45,13 +46,34 @@ export async function fetchWorldDocument(worldId) {
 }
 
 /**
- * Full atoms for one DB body (planet.dbId), as document-shaped elements.
- * Terrain keys are validated here so the store can take the array as-is.
+ * Full atoms for one DB body (planet.dbId), as document-shaped elements plus
+ * their packed mirror (core/atoms.js) — the mirror rides along on the planet
+ * as `atomsPacked` so geometry rebuilds feed the worker without re-reading
+ * 400k element objects. Terrain keys are validated here so the store can
+ * take the array as-is.
+ *
+ * The main thread pays for the JSON parse and the element assembly (~150 ms
+ * for a Jupiter), so the loop yields every chunk between: the payload is
+ * only wanted while the user waits on it, and a responsive world with the
+ * atoms arriving a few frames later beats one long block. The heavy vertex
+ * build that follows happens in the geometry worker.
  */
 export async function fetchPlanetElements(dbId) {
-  const { frequency, materials, t, h, c } = await getJson(`/api/bodies/${dbId}/elements`)
+  const res = await fetch(`/api/bodies/${dbId}/elements`)
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      message = (await res.json()).error || message
+    } catch {
+      /* keep the status text */
+    }
+    throw new Error(message)
+  }
+  const wire = await res.json()
+  const { frequency, materials, t, h, c } = wire
   if (!Array.isArray(h) || !Array.isArray(t) || t.length !== h.length)
     throw new Error('malformed atoms payload')
+  await new Promise((r) => setTimeout(r)) // let a frame through before assembling
   const colors = new Map(Array.isArray(c) ? c : [])
   const elements = new Array(h.length)
   for (let i = 0; i < h.length; i++) {
@@ -62,6 +84,7 @@ export async function fetchPlanetElements(dbId) {
       h: Number.isFinite(h[i]) ? h[i] : 0,
       ...(typeof col === 'string' ? { c: col } : {}),
     }
+    if ((i & 0x3ffff) === 0x3ffff) await new Promise((r) => setTimeout(r))
   }
-  return { frequency, elements }
+  return { frequency, elements, packed: packFromWire(wire) }
 }

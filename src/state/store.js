@@ -20,6 +20,7 @@ import { registry, orbitalSpeed } from '../core/physics.js'
 import { planetMass, planetStats } from '../core/planetMath.js'
 import { getHexSphere, getNeighborhood } from '../core/hexsphere.js'
 import { fetchWorldDocument, fetchPlanetElements } from '../core/db.js'
+import { patchPackedCell } from '../core/atoms.js'
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 
@@ -93,14 +94,14 @@ export const useStore = create((set, get) => ({
     let inflight = hydrating.get(planetId)
     if (!inflight) {
       inflight = fetchPlanetElements(planet.dbId)
-        .then(({ elements }) => {
+        .then(({ elements, packed }) => {
           const cur = find() // the world may have moved on (new doc loaded)
           if (cur && isPlanetStub(cur)) {
             set((s) => ({
               world: {
                 ...s.world,
                 planets: s.world.planets.map((p) =>
-                  p.id === planetId ? { ...p, elements, preview: null } : p
+                  p.id === planetId ? { ...p, elements, atomsPacked: packed, preview: null } : p
                 ),
               },
             }))
@@ -277,6 +278,11 @@ export const useStore = create((set, get) => ({
       }
       elements[ci] = el
     }
+
+    // keep the packed mirror (if any) consistent so the geometry worker is
+    // fed without re-reading the element objects
+    if (planet.atomsPacked)
+      for (const ci of cells) patchPackedCell(planet.atomsPacked, ci, elements[ci])
 
     const planets = [...world.planets]
     planets[idx] = { ...planet, elements }

@@ -179,6 +179,6 @@ export function serializeWorld(world) {
     version: world.version ?? WORLD_VERSION,
     name: world.name,
     gravity: world.gravity,
-    planets: world.planets.map(({ dbId, preview, stubAvgHeight, ...doc }) => doc),
+    planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, ...doc }) => doc),
   }
 }
