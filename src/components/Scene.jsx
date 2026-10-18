@@ -9,6 +9,7 @@ import { Physics } from '@react-three/cannon'
 import { OrbitControls, Stars } from '@react-three/drei'
 import { useStore } from '../state/store.js'
 import { registry, stepGravity } from '../core/physics.js'
+import { planetRadius } from '../core/planetMath.js'
 import { animateTerrainMaterials } from '../three/materials.js'
 import Planet from './Planet.jsx'
 import Walker from './Walker.jsx'
@@ -70,10 +71,20 @@ export default function Scene() {
   const starR = Math.max(900, sysR * 2.7) // starfield sits beyond the zoom limit
   const starCount = Math.min(16000, Math.round(7000 * Math.sqrt(starR / 900)))
 
+  // Opening vantage OUTSIDE a true-size star: the classic camera position
+  // above sits at ~450 u, which a real Sun (≈20,000 u at a 35 km anchor)
+  // would swallow whole. Any star under ~140 u — every stored world to date
+  // — keeps the classic vantage untouched (the factor is exactly 1).
+  const camK = useMemo(() => {
+    let sunR = 0
+    for (const p of planets) if (p.isStatic) sunR = Math.max(sunR, planetRadius(p))
+    return Math.max(1, (sunR * 3.2) / 450)
+  }, [planets])
+
   return (
     <Canvas
       className="scene"
-      camera={{ position: [222, 165, 355], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
+      camera={{ position: [222 * camK, 165 * camK, 355 * camK], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
       dpr={[1, 2]}
       onPointerMissed={() => {
         // clicking empty space with the select tool keeps the selection;

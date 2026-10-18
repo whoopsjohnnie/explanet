@@ -14,12 +14,13 @@
  *     their surfaces on demand from {fn:'preset', preset, seed, relief} —
  *     hydration, previews, walking included, with nothing stored.
  *
- * Scene proportions match the current starter world (whose Jupiter-anchored
- * unit is 10.97× coarser): distances scale with the anchor, so the view you
- * know, eleven times more granular. Orbits are circular at the true mean
- * distances with the real inclinations; the solar mass is solved from the
- * engine's softened law for a 60 s Earth year; planet densities reproduce
- * the real mass ratios (so the Sun dominates and the system is stable).
+ * TRUE ratios throughout: the Sun is the Sun (≈109 Earth radii), Jupiter
+ * dwarfs Earth, and orbits sit at their real distances — a compressed layout
+ * cannot hold a real Sun (its radius would reach past Jupiter's orbit).
+ * Orbits are circular at the true mean distances with the real inclinations;
+ * the solar mass is solved from the engine's softened law for a 60 s Earth
+ * year; planet densities reproduce the real mass ratios (so the Sun
+ * dominates and the system is stable).
  *
  * Writes public/solar-trial.json; import with:
  *   node scripts/import-db.mjs public/solar-trial.json
@@ -42,15 +43,17 @@ const EARTH_R_KM = 6371.009
 const KM2U = radiusForFrequency(MAX_FREQUENCY) / EARTH_R_KM // units per km
 const RELIEF_REF = radiusForFrequency(MAX_FREQUENCY) // generator h is tuned Earth-size
 
-// Scene distances: the starter's AU (281.8 u/AU at its anchor) grown by the
-// anchor ratio (Jupiter/Earth radii) — identical planet-vs-orbit proportions.
-const AU = 281.8 * (69911 / EARTH_R_KM)
+// Scene distances: TRUE ratios — 1 AU in units (≈4.25 million). A real-Sun
+// trial forces this: the Sun's true radius (≈19,800 u) would swallow every
+// orbit of the starter's compressed 282-u/AU layout, Jupiter's included.
+// The camera machinery scales with the system extent (Scene.jsx).
+const AU_KM = 149_597_870.7
+const AU = AU_KM * KM2U
 
 // Generated-body grids: coarse meshes scaled to true size (the trial's
 // "functional bodies"). Frequency must stay > the server's preview freq (16).
 const GIANT_GRID = 64
 const SUN_GRID = 96
-const SUN_VISUAL_KM = 67.85 * (69911 / EARTH_R_KM) / KM2U // starter's visual Sun, re-anchored
 
 // ---- data (same table + constants as starter.js) ---------------------------
 // Stored: frequency derives from the true radius on the new anchor.
@@ -63,7 +66,7 @@ const STORED = [
 ]
 // Generated: coarse grid, scale to true radius, nothing stored.
 const GENERATED = [
-  { name: 'Sun', preset: 'star', rKm: SUN_VISUAL_KM, grid: SUN_GRID, a: 0, inc: 0, node: 0, lon: 0, day: 25.38, tilt: 7.25, mu: 1, seed: 1207, isStatic: true },
+  { name: 'Sun', preset: 'star', rKm: 696340, grid: SUN_GRID, a: 0, inc: 0, node: 0, lon: 0, day: 25.38, tilt: 7.25, mu: 1, seed: 1207, isStatic: true },
   { name: 'Jupiter', preset: 'gas', rKm: 69911, grid: GIANT_GRID, a: 5.2029, inc: 1.3, node: 100.5, lon: 34.4, day: 0.41354, tilt: 3.13, mu: 9.548e-4, seed: 404 },
   { name: 'Saturn', preset: 'gas', rKm: 58232, grid: GIANT_GRID, a: 9.5367, inc: 2.49, node: 113.7, lon: 49.9, day: 0.44401, tilt: 26.73, mu: 2.858e-4, seed: 505 },
   { name: 'Uranus', preset: 'ice', rKm: 25362, grid: GIANT_GRID, a: 19.1913, inc: 0.77, node: 74.0, lon: 313.2, day: 0.71833, tilt: 97.77, mu: 4.366e-5, seed: 606 },

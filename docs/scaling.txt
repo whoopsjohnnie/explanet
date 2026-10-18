@@ -664,7 +664,7 @@
     skeleton for observability only — normalizeWorld() strips it.
 
   * The trial took FORK B (§5.3): coarse grid × scale (gas/ice giants on f64,
-    the Sun on f96, scales 8.7–34.8), never a nominal mega-frequency — so no
+    the Sun on f96, scales 12–231), never a nominal mega-frequency — so no
     §5.2 gate was needed, and previews/LOD/walking work untouched. relief is
     PRE-MULTIPLIED into h at generation time (geometry treats h as absolute,
     scale does not resize relief) and recorded in the descriptor.
@@ -672,20 +672,30 @@
   * Import: scripts/import-db.mjs passes planets[].generation through to the
     jsonb column (bodies without elements now stream zero atom lines instead
     of one junk line). World builder: scripts/gen-solar-world.mjs — the §8.3
-    anchor taken seriously (Earth FILLS the ladder: f203, ~35.2 km/hex;
-    AU ≈ 3092 u with starter-identical proportions; 60 s Earth year solved
-    through the softened force law; real mass ratios via per-body density).
-    Stored: Mercury f78, Venus f193, Earth f203, Mars f108, Pluto f38 —
-    976,510 real atom rows; generated: Sun, Jupiter, Saturn, Uranus,
-    Neptune — 0 rows. public/solar-trial.json is a 38 MB generated artifact,
-    gitignored; the script regenerates it deterministically.
+    anchor taken seriously (Earth FILLS the ladder: f203, ~35.2 km/hex) at
+    TRUE ratios: AU ≈ 4.25M u, Sun f96 × 231 = 19,793 u ≈ 109 Earths. True
+    ratios are forced by the Sun itself — at the starter's compressed 282
+    u/AU a real Sun would swallow Jupiter's orbit. 60 s Earth year solved
+    through the softened force law; real mass ratios via per-body density
+    (trial Sun = 333,000 Earth masses). Stored: Mercury f78, Venus f193,
+    Earth f203, Mars f108, Pluto f38 — 976,510 real atom rows; generated:
+    Sun, Jupiter, Saturn, Uranus, Neptune — 0 rows. public/solar-trial.json
+    is a 38 MB generated artifact, gitignored; the script regenerates it
+    deterministically.
+
+  * One app touch was required: at true-Sun size the classic opening camera
+    vantage (~450 u) sits INSIDE the star, so Scene.jsx scales the opening
+    position out past 3.2 star radii — a factor of exactly 1 for any star
+    under ~140 u, i.e. every stored world opens untouched. (far plane, fog,
+    starfield and zoom limits already scaled with the system extent.)
 
   Measurements (dev server, check-db-live.mjs + direct API probes):
 
-      skeleton, all 10 bodies                          341 ms
-      Earth   (stored, 412,092 atoms) hydrate        1,009 ms  ΔR 0, M ×1.0000
-      Jupiter (generated, f64) synthesize + wire        56 ms  mean h = avgHeight
-      Sun     (generated, f96) hydrate                  170 ms  ΔR 0, M ×1.0000
+      skeleton, all 10 bodies (first build, previews synthesized; cached after)
+                                                       2,550 ms
+      Earth   (stored, 412,092 atoms) hydrate          1,270 ms  ΔR 0, M ×1.0000
+      Jupiter (generated, f64) synthesize + wire        ~110 ms  mean h = avgHeight
+      Sun     (generated, f96 × 231) hydrate             187 ms  ΔR 0, M ×1.0000
       old world "Sol System" (stored Jupiter f203): skeleton and atoms
       endpoints unchanged, no generated field present
       npm test + npm run build: green
