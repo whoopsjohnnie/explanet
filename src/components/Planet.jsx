@@ -25,11 +25,12 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { useStore } from '../state/store.js'
 import { registerBody, registry } from '../core/physics.js'
-import { buildLodGeometryData } from '../core/geometry.js'
+import { buildLodGeometryData, computeFaceNormals } from '../core/geometry.js'
 import { lodChain, lodDistances } from '../core/lod.js'
 import { makeSurface, intersectHeightfield } from '../core/surface.js'
 import { planetRadius, planetMass, planetScale, radiusForFrequency } from '../core/planetMath.js'
 import { getTerrainMaterials } from '../three/materials.js'
+import { buildLevelsAsync, ASYNC_MIN_CELLS } from '../three/geometryService.js'
 
 // scratch objects for the analytic pick (single-threaded, per-call)
 const _ray = new THREE.Ray()
@@ -37,6 +38,53 @@ const _inv = new THREE.Matrix4()
 // terrain batches share one heightfield pick (on meshes[0]); everything else
 // opts out of raycasting entirely
 const NO_RAYCAST = () => null
+const EMPTY_LEVELS = []
+
+/** Synchronous LOD chain build — small planets, and the worker-failed path. */
+function buildLevelsSync(renderPlanet) {
+  return lodChain(renderPlanet.frequency).map((f) => {
+    const data = buildLodGeometryData(renderPlanet, f)
+    const out = []
+    for (const [type, d] of data) {
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
+      g.setAttribute('color', new THREE.BufferAttribute(d.colors, 3))
+      g.setAttribute('uv', new THREE.BufferAttribute(d.uvs, 2))
+      g.setAttribute('normal', new THREE.BufferAttribute(computeFaceNormals(d.positions), 3))
+      g.userData.cellByTri = d.cellByTri
+      out.push({ type, geometry: g })
+    }
+    return { frequency: f, meshes: out }
+  })
+}
+
+/**
+ * The level to mount for camera level `want`, tolerating holes: an async
+ * build fills levels as they land (coarse first), so pick the nearest level
+ * that exists, preferring a coarser one over a missing finer one.
+ */
+function pickLevel(levels, want) {
+  let best = null
+  let bestD = Infinity
+  for (let i = 0; i < levels.length; i++) {
+    const l = levels[i]
+    if (!l || l.meshes.length === 0) continue
+    const d = i <= want ? (want - i) * 2 : i - want
+    if (d < bestD) {
+      bestD = d
+      best = l
+    }
+  }
+  return best
+}
+
+/** Dispose geometries present in `prev` but not in `next` (partial swaps). */
+function disposeNotIn(prev, next) {
+  if (!prev) return
+  const keep = new Set()
+  for (const l of next || []) for (const m of l?.meshes || []) keep.add(m.geometry)
+  for (const l of prev) for (const m of l?.meshes || []) if (!keep.has(m.geometry)) m.geometry.dispose()
+}
 
 export default function Planet({ planet }) {
   const materials = getTerrainMaterials()
@@ -149,29 +197,42 @@ export default function Planet({ planet }) {
 
   // -------------------------------------------------------------- render --
   // One geometry set per LOD level (the document grid — or the preview grid
-  // while stubbed — plus halved chains down to 4). Built once per document
-  // edit; level switching just picks a set, and only the active set is
+  // while stubbed — plus halved chains down to 4). Only the active set is
   // mounted — the GPU never draws a level the camera can't see. (Picking is
   // analytic and LOD-independent, see paint below.)
-  const lodLevels = useMemo(() => {
-    if (!renderPlanet) return []
-    const chain = lodChain(renderPlanet.frequency)
-    return chain.map((f) => {
-      const data = buildLodGeometryData(renderPlanet, f)
-      const out = []
-      for (const [type, d] of data) {
-        const g = new THREE.BufferGeometry()
-        g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
-        g.setAttribute('color', new THREE.BufferAttribute(d.colors, 3))
-        g.setAttribute('uv', new THREE.BufferAttribute(d.uvs, 2))
-        g.computeVertexNormals()
-        g.userData.cellByTri = d.cellByTri
-        out.push({ type, geometry: g })
-      }
-      return { frequency: f, meshes: out }
+  //
+  // Small planets build synchronously: the chain is a few ms and lands in
+  // the same render. Giants build in the geometry worker (core/geometry.js
+  // runs there unmodified) — a Jupiter chain is seconds of vertex math that
+  // would otherwise freeze the sim, the camera and every input. The previous
+  // set — the preview, then each coarser delivery — stays on screen while
+  // the next one streams in level by level, so the world never stops.
+  const bigRender = !!renderPlanet && renderPlanet.elements.length > ASYNC_MIN_CELLS
+  const [workerFailed, setWorkerFailed] = useState(false)
+  const useAsync = bigRender && !workerFailed
+  const syncLevels = useMemo(
+    () => (!useAsync && renderPlanet ? buildLevelsSync(renderPlanet) : null),
+    [renderPlanet, useAsync]
+  )
+  const [asyncSet, setAsyncSet] = useState(null)
+  // The set currently displayed; it survives across builds (stale sets stay
+  // visible while a replacement streams) and seeds the next build so nothing
+  // blanks mid-swap.
+  const levelsRef = useRef(null)
+  const nextLevels = useAsync ? asyncSet : syncLevels
+  if (nextLevels) levelsRef.current = nextLevels
+  const lodLevels = levelsRef.current || EMPTY_LEVELS
+
+  useEffect(() => {
+    if (!useAsync || !renderPlanet) return undefined
+    return buildLevelsAsync(planet.id, renderPlanet, {
+      atomsPacked: renderPlanet === planet ? planet.atomsPacked : null,
+      seed: levelsRef.current,
+      onLevels: setAsyncSet,
+      onError: () => setWorkerFailed(true),
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderPlanet])
+  }, [planet.id, renderPlanet, useAsync])
 
   const thresholds = useMemo(
     () => lodDistances(lodChain(renderPlanet ? renderPlanet.frequency : planet.frequency), radius),
@@ -200,9 +261,20 @@ export default function Planet({ planet }) {
     }
   })
 
+  // geometries freed on swap (partial async deliveries share levels, so
+  // dispose by identity difference) and on unmount
+  const prevLevelsRef = useRef(null)
+  useEffect(() => {
+    const prev = prevLevelsRef.current
+    prevLevelsRef.current = lodLevels
+    if (prev && prev !== lodLevels) disposeNotIn(prev, lodLevels)
+  }, [lodLevels])
   useEffect(
-    () => () => lodLevels.forEach((l) => l.meshes.forEach((m) => m.geometry.dispose())),
-    [lodLevels]
+    () => () => {
+      disposeNotIn(levelsRef.current, null)
+      levelsRef.current = null
+    },
+    []
   )
 
   // -------------------------------------------------------------- paint --
@@ -282,7 +354,7 @@ export default function Planet({ planet }) {
   }, [controls])
 
   // ---------------------------------------------------------------- view --
-  const shown = lodLevels[Math.min(level, lodLevels.length - 1)]
+  const shown = pickLevel(lodLevels, level)
   return (
     <group ref={bodyRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove}>
       {shown &&
