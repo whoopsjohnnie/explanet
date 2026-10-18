@@ -1,0 +1,542 @@
+================================================================================
+  ExPlanet — Scaling to a Realistic Solar System
+  500k-hex Earths, generated giants, and dynamic scale
+================================================================================
+  Oct 2026 · DESIGN PROPOSAL — NOT FINAL. No code has been changed on the
+  strength of this document. Companion to docs/design.txt (current design) and
+  docs/landing.txt (surface mode). Everything below marked (measured) was
+  observed in this codebase; everything else is analysis or proposal.
+
+
+--------------------------------------------------------------------------------
+ 0. STATUS & SCOPE
+--------------------------------------------------------------------------------
+  Status: DRAFT for discussion. Several genuine forks remain (see §9); the
+  document is written to expose them, not to decide them.
+
+  The question: now that worlds live in PostgreSQL and loading is staged
+  (skeleton -> stubs -> streamed atoms) and rendering uses an LOD chain, what
+  still prevents a realistic solar system where an Earth-sized world carries
+  ~500k hexes? Larger bodies would then carry millions — or, proposed here,
+  stars and hard-to-reach gas giants become FUNCTIONAL bodies: procedurally
+  generated from a seed, never stored as atoms, because landing on a star has
+  no point and paying storage for a Jupiter's surface has little of it.
+
+  In scope: the atom-count coupling math, per-cell cost analysis, the
+  generated-body model, the physics and camera-scale problems that are
+  independent of hex count, and a phased path.
+
+  Out of scope: rendering aesthetics (atmospheres, sun shaders), collision/
+  destruction gameplay, multiplayer, and the UI design of the Add Planet
+  dialog beyond what the data model forces.
+
+
+--------------------------------------------------------------------------------
+ 1. THE HEADLINE ANSWER
+--------------------------------------------------------------------------------
+  Nothing fundamental prevents it, and the "generate the giants, store the
+  worlds" instinct is the correct escape hatch — but the blockers are not
+  where intuition puts them:
+
+  * The binding constraint is THE UNIVERSAL ATOM ITSELF (§2). Because one hex
+    covers exactly one area unit on EVERY planet, cell count scales with
+    SURFACE AREA. "Earth at 500k" is not an isolated choice: it silently
+    mandates ~60M cells for a Jupiter and ~6 BILLION for a Sun. The
+    MAX_FREQUENCY = 203 cap and the DB's CHECK (frequency BETWEEN 1 AND 203)
+    are merely the tripwires that make this explicit. A realistic system with
+    fine rocky worlds is only possible if resolution is decoupled per body —
+    which is exactly what generated bodies do.
+
+  * Most per-cell machinery survives 500k cells per body; a few specific
+    things do not survive tens of millions (§3–§5). The worst offender is not
+    storage, streaming, or the DB — it is that geometry is built as ONE
+    monolithic mesh per LOD level and a single paint stroke rebuilds the
+    whole chain for the whole planet.
+
+  * The realistic-solar-system part has two blockers that have nothing to do
+    with hexes at all (§6): the fixed-timestep pairwise N-body integrator
+    cannot hold a real hierarchy of orbital periods, and float32 render space
+    breaks at AU-scale coordinate magnitudes. "Dynamic scale" addresses the
+    second; the first needs a real decision (Kepler mode vs adaptive N-body).
+
+
+--------------------------------------------------------------------------------
+ 2. THE ATOM COUPLING (the math that drives every other decision)
+--------------------------------------------------------------------------------
+  Current invariant (design.txt §3): at scale = 1 one hex covers exactly ONE
+  area unit on every planet; radius R(n) = sqrt((10n^2+2)/4*pi). Therefore,
+  for a fixed atom size:
+
+      cells  ∝ surface area ∝ R^2        and        frequency n ∝ R
+
+  Anchor the atom at "Earth = ~500k cells" (frequency 224, 501,762 cells) and
+  the true-size neighbours follow automatically:
+
+  +-------------------+-----------+--------------+--------+-------------+-------------+
+  | Body              | area/Earth| cells        | freq.  | grid bytes  | tile width  |
+  +-------------------+-----------+--------------+--------+-------------+-------------+
+  | Earth   (6371 km) | 1x        |      501,762 |    224 |      ~65 MB |      ~35 km |
+  | Jupiter (69911 km)| ~120x     |   ~60 million|  ~2,460|    ~7.9 GB  |     ~3.2 km |
+  | Sun  (696340 km)  | ~11,900x  |  ~6 billion  | ~24,500|    ~780 GB  |     ~0.3 km |
+  +-------------------+-----------+--------------+--------+-------------+-------------+
+
+  (grid bytes ≈ 130 B/cell, the flat typed-array layout of hexsphere.js —
+  centers Float64 + corners Float32 + neighbors Int32 + sides + areas.
+  "tile width" = corner-to-corner of the hex in km at that anchor; a 500k-hex
+  Earth is ~35 km tiles, i.e. a large city per hex.)
+
+  Consequences to accept explicitly:
+
+  a) "Larger bodies in the millions of hexes" is optimistic by two orders of
+     magnitude for stars. Under the universal atom, a true-size Sun is a
+     6-billion-cell body. It cannot be stored, streamed, or meshed; not even
+     its GRID can be materialized client-side (780 GB).
+
+  b) Resolution is a SYSTEM-WIDE choice under the invariant. Raising Earth to
+     500k re-anchors the atom (today's anchor is Jupiter = top grid; see
+     starter.js KM2U = radiusForFrequency(MAX_FREQUENCY)/69911) and re-
+     quantizes every body in every world, including saved files. This is a
+     world-version bump, not a feature flag.
+
+  c) The ONLY way to have fine rocky worlds and realistic giants at once is
+     to stop requiring every body to share the atom size. Generated bodies
+     (§5) do this by simply opting out: they carry their own hex scale. The
+     alternative, which the starter world demonstrates today, is accepting
+     that Jupiter's hexes are ~120x larger than Earth's — the same decoupling
+     expressed through the ladder (Jupiter "fills the top grid" at ~412k).
+
+  d) Mass is NOT a blocker. Mass = density x volume, volume integrates the
+     heightfield; with atoms stored, realistic mass ratios come from the
+     per-body `density` field. Quantization error at 500k cells is one cell
+     in half a million — irrelevant. (For generated bodies see §5.4: radius
+     stays derived from `frequency` even when no grid exists, which keeps the
+     "never store derived data" contract intact.)
+
+
+--------------------------------------------------------------------------------
+ 3. COST ANALYSIS AT 500k CELLS (one large stored body)
+--------------------------------------------------------------------------------
+  Measured/derived numbers for THIS codebase at ~500k cells, and where each
+  cost lands:
+
+  SURVIVES FINE
+  * DB storage & import. Row-per-atom at ~90 B/row (schema.sql note): ~45 MB
+    per body, COPY-streamed. The schema comment's "comfortable into the tens
+    of millions" holds; import is a batch job, not a UX path.
+  * Picking. Analytic ray->heightfield march (surface.js intersectHeight-
+    field); cost is LOD-independent and cell-count-independent. No change.
+  * Walking. Surface mode integrates r(dir) = R + h(cell(dir)) against the
+    heightfield; it needs a lookup, not a mesh. A 500k world walks fine —
+    and note this means ground-level detail has ZERO mesh requirement (see
+    the mesh budget, §4).
+  * N-body cost. Pairwise physics depends on BODY count, not cell counts.
+  * LOD machinery. Chain from 224 is [224,112,56,28,14,7,4]; sampling cost
+    (sampleLodElements) is proportional to the COARSE grid, so fine levels
+    cost nothing extra. Only the active level is mounted.
+  * Copy-on-write paints. applyBrush copies the elements ARRAY (500k
+    pointers, ~4 MB) — cheap in itself.
+  * Stub/skeleton path. Radius/mass stay orbit-grade from `frequency` alone;
+    planetVolume handles elements == null via stubAvgHeight. This machinery
+    is body-size-agnostic and becomes the foundation of §5.
+
+  COSTS NOTICEABLY BUT LIVES
+  * Document elements as JS objects. elements[i] = { t, h, c } costs
+    ~60–100 B + GC pressure per cell: ~50–70 MB of heap per 500k world, and
+    EVERY hot loop walks it (planetVolume, planetStats, sampleLodElements,
+    normalizeWorld, serializeWorld). The packed mirror (atomsPacked,
+    ~15 B/cell) already exists for geometry; the DOCUMENT staying object-
+    shaped is now the main memory line item. Survivable at 500k; it is one
+    of the first walls past ~5M.
+  * Hydration. fetchPlanetElements -> elementsFromPacked rebuilds 500k
+    document objects ON THE MAIN THREAD (~0.5–1 s measured class of cost —
+    atoms.js header already counts "400k small objects ~ 100 ms" per pure
+    pack pass; the document-object build is the bigger share). Acceptable
+    per-intent; must never become ambient.
+  * Wire format. /api/bodies/:id/elements is gzip'd JSON with Float64 heights
+    as TEXT: ~10 MB of text / ~3–5 MB gz per 500k atoms, JSON.parse'd on the
+    main thread. Fine-ish at 500k; absurd at 60M (GB-scale text). The fix is
+    nearly free because core/atoms.js IS the binary shape already — serve the
+    packed typed arrays as an ArrayBuffer and skip JSON entirely.
+  * Grid cache. getHexSphere memoizes per frequency in an UNBOUNDED module
+    Map. At ~65 MB per 500k grid, a session touching a few large frequencies
+    needs eviction (LRU of 2–3 grids is plenty; grids are cheap-ish to
+    rebuild, ~125 ms at 412k (measured), and the worker can eat that).
+  * Skeleton bake & previews. Server preview samples at freq-16 via core/lod.js
+    — cost tracks the coarse grid. Fine.
+
+  BREAKS AT 500k ALREADY (and this is the real engineering target)
+  * MONOLITHIC GEOMETRY + WHOLE-CHAIN PAINT REBUILDS. Geometry is non-indexed
+    triangle fans: 18 verts/hex at pos+col+uv (+normals) ≈ ~0.8 KB/cell. A
+    500k world's TOP LOD level is ~3M triangles / ~400 MB of buffers, built
+    and uploaded as single per-material batches per planet; the chain build
+    scales linearly from the measured ~3.5 s at 412k, so ~4–5 s per build;
+    and because element updates are copy-on-write ON THE WHOLE ARRAY, every
+    paint stroke rebuilds the ENTIRE chain for the entire planet. Landable
+    means paintable, so a 500k Earth ships with 4–5 s per brush stroke.
+    There is also no frustum culling inside a planet: from low orbit you pay
+    to draw the far hemisphere. This is THE blocker for large stored worlds,
+    and its fix — chunked geometry (patch the icosahedron, mount/stream/
+    rebuild per patch, dirty-patch on paint) — is the one real project in
+    this document. See §7 phase 2.
+
+
+--------------------------------------------------------------------------------
+ 4. THE MESH BUDGET (what rendering actually needs)
+--------------------------------------------------------------------------------
+  The instinct "500k cells needs 3M-triangle meshes" is wrong and worth
+  writing down, because it changes what the project is:
+
+  * LOD_SWITCH keeps a hex ~4–5 px at its level's retirement distance. At any
+    camera distance only ONE level is mounted; to see full frequency 224 the
+    camera must be inside ~LOD_SWITCH·R/224, i.e. skimming the surface.
+  * Surface mode uses NO mesh — it is a heightfield walker.
+  * Therefore the full-resolution mesh is only needed in a small neighborhood
+    when the camera is close — exactly the patch-streaming model. A chunked
+    renderer could keep a 500k-cell world at ~a few hundred thousand drawn
+    triangles while never building the whole top-level mesh. Chunking is
+    ALSO what makes paint rebuilds O(patch) instead of O(planet).
+
+  Conclusion: cell count is not a rendering problem; monoliths are.
+
+
+--------------------------------------------------------------------------------
+ 5. GENERATED BODIES (functional / procedural, not stored)
+--------------------------------------------------------------------------------
+  5.1 THE MODEL
+
+  A generated body is a STUB THAT NEVER HYDRATES: no atoms rows, no wire
+  fetch. Its surface is a pure function of (seed, generator params, requested
+  frequency). Where a stored stub's hydration means "stream the rows", a
+  generated body's hydration means "run the generator in the worker".
+
+  Most seams already exist — this is the argument that the change is small
+  where it counts:
+
+  * Radius/mass without atoms: planetCellCount/planetRadius answer from
+    `frequency` alone; planetVolume's stub branch integrates stubAvgHeight
+    analytically; the skeleton already ships stubs with preview samples built
+    by the app's own core/lod.js. isPlanetStub() is already the gate the code
+    base agreed on ("never assume planet.elements exists").
+  * The geometry worker already consumes PACKED typed arrays as transferables
+    (core/atoms.js). A generator emitting { t, h, rgb } per level needs no new
+    plumbing — it looks like hydration from the worker's point of view.
+  * bodies.seed already exists in the schema.
+  * The renderer mounts sampled LOD levels; for a generated body the
+    generator produces the level DIRECTLY at that frequency instead of
+    sampling a finer one (sampling is only an implementation of "get elements
+    at frequency f"; for generated bodies it is the wrong implementation —
+    you cannot sample a grid you refuse to build).
+
+  5.2 THE FINE POINT: RADIUS WITHOUT THE GRID
+
+  A Sun needs frequency ~24,500 to state its radius on the atom ladder — but
+  getHexSphere(24500) is a 780 GB grid that must NEVER be constructed. Note
+  the radius math itself never needs the grid (cellCountForFrequency is
+  closed-form). So the rule is:
+
+      A generated body may carry a NOMINAL frequency far above any
+      constructable grid, and every code path that calls
+      getHexSphere(planet.frequency) must be gated for generated bodies.
+
+  That is an invariant to enforce (a helper like `gridMayBeBuilt(planet)`),
+  and it is also a trap: surface.js, lod.js's sampleLodElements, planetVolume's
+  non-stub branch, geometry builds, cellAtDirection — all of them touch the
+  grid and all of them must respect the gate. This is the sharpest edge in
+  the design and the main reason the stub-aware discipline in AGENTS.md
+  already exists.
+
+  5.3 ALTERNATIVE FORK: THE SCALE ESCAPE HATCH, REHABILITATED
+
+  Instead of a nominal mega-frequency, a generated body could be:
+
+      modest grid frequency (say 16–64)  x  scale (large)  +  generator
+
+  i.e. take the "legacy escape hatch" (scale != 1, radius = grid radius x
+  scale) and make it the NATURAL home of generated bodies: their hex size is
+  set by scale, deliberately off-ladder, and the generator supplies relief at
+  whatever resolution the viewer asks for. Nothing huge is ever constructed;
+  walking (at grid frequency) and meshing become possible on gas giants if we
+  want them; radius stays derived.
+
+  The fork (decide in final design):
+  * Option A (nominal mega-frequency): keeps "scale = 1 strict atom" pure for
+    every stored body and pushes all generated bodies out of the grid
+    business entirely; walking/meshing a generated body beyond preview LOD
+    is off the table by construction.
+  * Option B (generated x scale): one coherent mechanism (scale finally means
+    "this body defines its own atom size"), everything remains possible, but
+    "scale is legacy" in AGENTS.md/design.txt must be rewritten and every
+    scale-sensitive path (relief scaling with h!) must be re-audited.
+
+  5.4 MASS WITHOUT ATOMS
+
+  The "radius/mass are never stored" contract survives both options: radius
+  derives from frequency (x scale under B). Volume for a generated body comes
+  from stubAvgHeight (already the stub contract) — and since the generator is
+  a known function, its mean relief and relief variance can be computed once
+  at creation (or analytically) and stored, exactly like a stub's stubAvg-
+  Height. A Sun's mass is then density x analytic volume, with the full
+  333,000-Earths ratio available through `density`, no 6-billion-cell integral.
+
+  5.5 EDITING GENERATED BODIES: OVERRIDES, NOT HYDRATION
+
+  Painting a generated body must NOT materialize 6 billion cells. The model:
+  base = (seed, generator); edits = sparse overrides keyed by cell at the
+  body's working grid; "materialize" = explicitly convert to a stored body at
+  a chosen (capped) frequency. Until materialized, brush strokes either
+  record overrides at the current view LOD or are dropped with feedback.
+  DB shape: an atom_overrides table (or atoms rows with a per-body
+  base='generated' flag) — details are §9 open questions, not decided here.
+
+  5.6 POLICY
+
+  * Stars: generated, never landable, never paintable. (planetStats already
+    knows the terrain key 'star'.)
+  * Gas giants: generated BY DEFAULT, walkable/paintable IF the design keeps
+    them reachable (option B makes this cheap; option A forbids walking).
+  * Rocky/habitable worlds: stored atoms (this is what the DB is for).
+  * The default choice is a per-body document field, not a global rule.
+
+
+--------------------------------------------------------------------------------
+ 6. THE NON-HEX BLOCKERS (realistic-system physics & camera)
+--------------------------------------------------------------------------------
+  6.1 THE INTEGRATOR
+
+  Current physics (core/physics.js): zero global gravity, pairwise N-body per
+  frame with fixed stepping and softening eps^2 = 4. That is correct for the
+  current playground scale and WRONG for a real hierarchy: orbital periods
+  span ~10^4 (Mercury 88 d vs Neptune 165 y); no single fixed dt integrates
+  both without either the inner planet precessing into a spiral or the outer
+  one crawling. Options, in rough order of honesty vs cost:
+
+  a) Kepler mode: bodies with parent_body_id follow conic sections (closed-
+     form, exact, free of drift), N-body retained for unpARENTED/free bodies
+     and optional perturbation. The schema ALREADY carries parent_body_id as
+     "an UI hint the N-body solver ignores" — this proposal makes it load-
+     bearing. Matches expectations for a "solar system"; abandons true N-body
+     chaos (acceptable: the current sim is already not Keplerian — softened,
+     slightly precessing, by design).
+  b) Adaptive substepping: symplectic/leapfrog with per-body dt (or shared
+     dt driven by the closest pair). Physically pure, harder to keep stable,
+     60 Hz presentation needs fixed substep budgets per frame.
+
+  Either way: orbitalSpeed() must stay consistent with whatever force law
+  wins (AGENTS.md invariant), softening's meaning changes when world units
+  change meaning (eps = 2 units is ~800 km at the 500k-Earth anchor, but
+  ~0.6 AU at a solar-system anchor — softening must be re-expressed relative
+  to body radii or distances, not absolute).
+
+  6.2 FLOAT32 RENDER SPACE
+
+  three.js positions are float32. At AU-scale coordinate magnitudes: vertex
+  jitter, orbit-line shimmer, and camera near/far dynamic range collapse.
+  The proposal — "dynamic scale of the solar system" — is the right frame,
+  and should be implemented as a VIEW-layer concern:
+
+  * Document units stay atom units (document math never sees display scale).
+  * The view composes: origin shift (render around camera / origin re-center)
+    x display unit remap (a "system scale" chosen per world or continuously,
+    e.g. AU<->px), with camera near/far derived from the active scale — the
+    same trick Walker.jsx already plays with camera.near (§ AGENTS.md).
+  * LOD_SWITCH distances are RATIOS (K·R/n), so they survive any uniform view
+    scale untouched — LOD needs no change.
+  * Live registry positions stay float64 (core/physics.js already keeps them
+    outside React state); float32 enters only at the GPU boundary.
+
+
+--------------------------------------------------------------------------------
+ 7. PHASED PATH (each phase independently useful; order is a proposal)
+--------------------------------------------------------------------------------
+  PHASE 1 — make a 500k stored world work end-to-end (small, boring):
+    * Bump MAX_FREQUENCY (and bodies CHECK constraint, tests, docs). For
+      stored bodies a cap at ~2M cells (n ~ 448) covers super-Earths with
+      headroom; mega-frequencies belong to generated bodies (§5.2), not to
+      the storage cap.
+    * Binary atom wire: serve/fetch packed ArrayBuffers (core/atoms.js shape);
+      keep gzip. JSON skeleton unchanged.
+    * getHexSphere cache: bounded LRU (2–3 large grids).
+    * Hydration: move document-object build off the main thread or make it
+      lazy (packed-first document; see open question §9.1).
+    * Test-quirk note: test-geometry/test-hexsphere loop 1..MAX_FREQUENCY —
+      bumping the cap multiplies runtime quadratically; tests need a sampled
+      strategy (spot frequencies + one large) BEFORE the bump lands.
+
+  PHASE 2 — chunked geometry (the real project; prerequisite for >~1M):
+    * Patch the icosahedron: geometry per (patch x LOD level); mount by
+      frustum + distance; paint rebuilds only dirty patches; GPU buffers per
+      patch. geometryService grows a patch-addressed API; the worker and the
+      packed transfer model carry over unchanged.
+    * This is also the frustum-culling fix and the paint-latency fix (§3).
+
+  PHASE 3 — generated bodies:
+    * kind/generation field in the document + schema; generator registry
+      (stars: emissive noisy shells; giants: banded noise); preview bake
+      from the generator at freq-16.
+    * The getHexSphere gate (§5.2) + stub-aware audit of every grid-touching
+      path; serializeWorld/save must NEVER hydrate generated bodies (they
+      have nothing to hydrate — verify, don't assume).
+    * Overrides-on-paint or materialize flow (§5.5); Add Planet / heal paths
+      for the new body kind.
+
+  PHASE 4 — realistic dynamics & scale:
+    * Kepler mode (or adaptive substepping) per §6.1; softening re-anchored
+      to body radii.
+    * View-layer dynamic scale + origin shift per §6.2.
+    * Starter: a true-scale-ish solar system (Sun + rocky worlds stored at
+      100–500k cells + generated giants/star) as the showcase world.
+
+
+--------------------------------------------------------------------------------
+ 8. PER-WORLD UNIT SYSTEM — SCALE & PRECISION CONSTANTS (PROPOSED)
+--------------------------------------------------------------------------------
+  PROPOSAL ONLY — no schema has been touched. Everything below is arithmetic
+  on the §2 anchor ("Earth ≈ 500k hexes") plus standard astronomy constants
+  (R⊕ 6371.009 km, area 510.07 Mkm², M⊕ 5.9722e24 kg).
+
+  8.1 THE REFERENCE: A 32 km-HEX EARTH
+
+  Hexes needed for a full-size Earth at ~32 km hexes:
+
+      510.07e6 km² / (32 km)² ≈ 498,000 hexes
+      → the geodesic ladder only allows counts 10n²+2:  FREQUENCY 224,
+        501,762 HEXES  (the legal grid nearest "half a million").
+
+  That grid fixes the hex geometry and the mass quantum:
+
+      hex area        1,016.5 km²        (= sqrt: 31.9 km "size")
+      hex side        19.8 km   (flat-to-flat 34.3 km, point-to-point 39.6)
+      MASS PER HEX    5.9722e24 / 501,762 = 1.190e19 kg
+
+  Scale of one atom of such a world: ~1.3% of Ceres (the dwarf planet is 79
+  hexes), ~1/6,200 of the Moon, a couple billion Great Pyramids. A single
+  paint stroke on a realistic Earth moves mountains in the literal sense —
+  worth remembering for any future "terraform score".
+
+  8.2 THE TWO WORLD CONSTANTS (and the derived third)
+
+  What §8.1 computes for Earth generalizes to a per-world unit system with
+  exactly two calibration constants — these are the proposed worlds-table
+  extension:
+
+    unit_km        real kilometres per one world LENGTH unit.  Because the
+                   atom is one area unit, hex area = unit_km² exactly; this
+                   single number IS the world's "scale and precision".
+                   Earth anchor: unit_km = 6371.009 / R(224) = 31.883.
+
+    unit_mass_kg   real kilograms per one world MASS unit, calibrated so a
+                   reference-density (default 0.05) body gets its true mass:
+                   Earth at freq 224 has m_game = 0.05 x (4/3)pi·199.822³
+                   = 1.671e6, so unit_mass_kg = M⊕ / 1.671e6 = 3.574e18.
+                   Game density then maps linearly to real density
+                   (rho_game 1 ↔ 110.3 g/cm³): Earth 0.05 → 5.51 g/cm³ ✓,
+                   Sun 0.0128 → 1.41 g/cm³ ✓.
+
+  Two deliberate clarifications:
+
+  * "Mass per hex" is a BODY property, not a world constant: at radius R the
+    hex column is (1/3)·1·R game-units deep, so m_hex = m_body / cells(body)
+    = rho_real · unit_km² · R_body / 3 — it grows with the body (a
+    Jupiter-density column under a 32 km hex is ~10x Earth's per hex). The
+    WORLD fixes unit_km and unit_mass_kg; per-body precision stays exactly
+    what it always was: the `frequency` column.
+  * Under the universal atom, "scale" and "precision" are the SAME knob for
+    stored worlds — a finer unit_km gives every body more hexes. They only
+    decouple for generated / per-body-scaled bodies (§5.3): there, unit_km
+    calibrates the stored (landable) fraction of the world and the giants
+    run their own hex sizes.
+
+  The anchor ladder, for choosing a world's precision:
+
+  +----------+---------+--------------+-----------------+
+  | hex km   | freq.   | Earth cells  | Earth mass/hex  |
+  +----------+---------+--------------+-----------------+
+  |    128   |    56   |     31,362   |    1.90e20 kg   |
+  |     64   |   112   |    125,442   |    4.76e19 kg   |
+  |     32   |   224   |    501,762   |    1.19e19 kg   |
+  |     16   |   446   |  1,989,162   |    3.00e18 kg   |
+  |      8   |   893   |  7,974,492   |    7.49e17 kg   |
+  +----------+---------+--------------+-----------------+
+
+  Side effects of the 32 km anchor worth knowing: the Moon becomes a modest
+  n=61 (37k hexes) and Ceres a chunky n=17 — believable atoms at believable
+  cost — while Jupiter lands at n≈2,458 (60.4M cells), i.e. the §5 generated-
+  body requirement in numbers. The 8 km row (~8M cells) is roughly where the
+  "stored giant" path dies and generation takes over (§3 limits).
+
+  The implicit THIRD constant is TIME, and it comes for free: G is already a
+  per-world column (`gravity`). If the three (unit_km, unit_mass_kg, gravity)
+  are set so gravity IS the real G in world units, the sim's time unit is
+  forced: at the 32 km anchor with gravity = 40, one tick ≈ 2,331 s ≈ 39
+  real minutes, so an Earth year ≈ 13,500 ticks ≈ 3.8 minutes of wall clock
+  at 60 fps — a playable pace — and 1 AU ≈ 4.69e6 units. (The float32
+  dynamic range at AU distances is still a §6.2 origin-shift problem; the
+  unit system does not solve it, it just makes the numbers meaningful.)
+
+  Proposed columns (NOT applied; shape only):
+
+      ALTER TABLE worlds
+        ADD COLUMN unit_km       double precision CHECK (unit_km > 0),
+        ADD COLUMN unit_mass_kg  double precision CHECK (unit_mass_kg > 0);
+
+  NULL on both = UNCALIBRATED world: today's feel-based playground semantics
+  (gravity 40 "because it feels good", mass in abstract units). Existing and
+  bundled worlds keep NULL; realistic worlds set both, and the UI can then
+  display true km, kg and orbital periods. Radius/mass stay DERIVED exactly
+  as always — these columns calibrate the units, they store nothing derived.
+
+
+--------------------------------------------------------------------------------
+ 9. OPEN QUESTIONS (to settle before this becomes design.txt prose)
+--------------------------------------------------------------------------------
+  1) DOCUMENT SHAPE: should elements become packed-first (document stores
+     typed arrays; the {t,h,c} objects dematerialized to an editing
+     view)? At 500k cells the object document is the single largest memory
+     item and the largest hydration cost; but "boring human-readable JSON"
+     is a founding goal (design.txt §1) — a packed document saves the file
+     but loses the hand-editable ideal unless the file format keeps objects.
+     Likely split: wire + runtime packed, FILE stays objects (files are for
+     small/hand-made worlds; big worlds live in the DB only).
+  2) GENERATED-BODY FORK: nominal mega-frequency (Option A) vs scale
+     rehabilitation (Option B), §5.3. Everything about walking/meshing
+     giants hangs on this.
+  3) STORAGE CAP: max cells for a STORED body (proposal ~2M). Determines
+     the CHECK constraint, the Add Planet ladder, and test strategy.
+  4) OVERRIDE MODEL: separate atom_overrides table vs atoms rows with
+     base flag; override resolution at hydrate time (merge cost, paint UX:
+     does a stroke land in overrides or force materialize?).
+  5) PHYSICS FORK (§6.1): Kepler-hierarchy vs adaptive N-body. Also: does
+     Kepler mode change what `isStatic`/gravity_immune means?
+  6) DYNAMIC SCALE UX: per-world constant, continuous slider, or automatic
+     with view distance? Does the document store anything (proposal: NO —
+     pure view state, document units are sacred).
+  7) WORLD FILES vs generated bodies: how does a generated body appear in a
+     hand-written world.json? Proposal: { generated: { fn, params } } with
+     no elements; normalizeWorld heals it; gen:world emits one for demo.
+  8) What happens to the CURRENT starter world (atom anchor move, §2b):
+     re-anchor everything, or ship the realistic system as a NEW world and
+     keep the playground world at the current anchor? (Recommend: new world;
+     bump document version; keep normalizeWorld lenient.)
+  9) Unit columns (§8.2): confirm the NULL = uncalibrated semantics, and
+     decide whether the skeleton/API should surface unit_km / unit_mass_kg
+     for display (true km radii, kg masses, orbital periods) or keep them
+     server-side for now.
+
+
+--------------------------------------------------------------------------------
+ 10. WHAT THIS DOCUMENT DOES NOT CHANGE (invariants that survive the design)
+--------------------------------------------------------------------------------
+  * Radius/mass/volume stay DERIVED — from frequency (x scale), never stored,
+    with analytic mean relief for generated/stub bodies.
+  * Element identity stays positional; grids stay deterministically
+    regenerable from (frequency) alone.
+  * core/* stays framework-free (generators live in core/, run in worker and
+    server alike — this is what lets the preview bake reuse them).
+  * Picking stays analytic; the walker stays kinematic (it merely gains a
+    second heightfield provider: stored elements | generator).
+  * 60 Hz physics stays outside React state; geometry stays off the main
+    thread; the LOD model (sampled levels, one mounted, remapped pick
+    indices) stays — generated bodies produce levels instead of sampling.
+  * Loading stays lenient (normalizeWorld heals generated-body documents too).
+
+  ================================================================================
