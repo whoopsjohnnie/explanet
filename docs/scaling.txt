@@ -12,7 +12,10 @@
  0. STATUS & SCOPE
 --------------------------------------------------------------------------------
   Status: DRAFT for discussion. Several genuine forks remain (see §9); the
-  document is written to expose them, not to decide them.
+  document is written to expose them, not to decide them. A minimal trial of
+  the generated-body idea has LANDED (§11): bodies.generation exists and
+  world "Sol Trial" runs against the real database; everything else here is
+  still proposal.
 
   The question: now that worlds live in PostgreSQL and loading is staged
   (skeleton -> stubs -> streamed atoms) and rendering uses an LOD chain, what
@@ -258,7 +261,7 @@
   walking (at grid frequency) and meshing become possible on gas giants if we
   want them; radius stays derived.
 
-  The fork (decide in final design):
+  The fork (decide in final design; the trial — §11 — exercised B):
   * Option A (nominal mega-frequency): keeps "scale = 1 strict atom" pure for
     every stored body and pushes all generated bodies out of the grid
     business entirely; walking/meshing a generated body beyond preview LOD
@@ -393,9 +396,11 @@
 --------------------------------------------------------------------------------
  8. PER-WORLD UNIT SYSTEM — SCALE & PRECISION CONSTANTS (PROPOSED)
 --------------------------------------------------------------------------------
-  PROPOSAL ONLY — no schema has been touched. Everything below is arithmetic
-  on the §2 anchor ("Earth ≈ 500k hexes") plus standard astronomy constants
-  (R⊕ 6371.009 km, area 510.07 Mkm², M⊕ 5.9722e24 kg).
+  PROPOSAL ONLY — the unit_km / unit_mass_kg columns below have NOT been
+  applied (the only schema the trial touched is bodies.generation, §11).
+  Everything below is arithmetic on the §2 anchor ("Earth ≈ 500k hexes")
+  plus standard astronomy constants (R⊕ 6371.009 km, area 510.07 Mkm²,
+  M⊕ 5.9722e24 kg).
 
   8.1 THE REFERENCE: A 32 km-HEX EARTH
 
@@ -631,5 +636,62 @@
     thread; the LOD model (sampled levels, one mounted, remapped pick
     indices) stays — generated bodies produce levels instead of sampling.
   * Loading stays lenient (normalizeWorld heals generated-body documents too).
+
+
+--------------------------------------------------------------------------------
+ 11. THE TRIAL — LANDED (world "Sol Trial", 2026-10-18)
+--------------------------------------------------------------------------------
+  What was built is deliberately SMALLER than §5's model — one storage column
+  and server-side synthesis, so the app never learns a generated body exists:
+
+  * Schema: bodies.generation jsonb (migration db/migrations/
+    001-body-generation.sql, applied to <db-host>; db/schema.sql mirrors it for
+    fresh installs). NULL = stored atoms — every pre-existing row behaves
+    exactly as before. An object means a GENERATED body with ZERO atom rows:
+
+        { fn: 'preset', preset, seed, relief, avgHeight }
+
+    CHECK pins the jsonb to object shape; v_body_stats.atoms_complete relaxes
+    to `OR generation IS NOT NULL` so the import health check passes.
+
+  * Server (server/db.mjs): loadBody() synthesizes the surface with the app's
+    own generateElements(preset, frequency, seed) and multiplies h by relief
+    — pure and seeded, so previews, the /elements wire payload and the LRU
+    cache all agree (verified byte-identical across fetches). worldSkeleton()
+    forces generated bodies down the stub path, using the descriptor's
+    avgHeight as the analytic mass input; the browser hydrates through the
+    ordinary stub → atoms flow with ZERO app changes. `generated` rides the
+    skeleton for observability only — normalizeWorld() strips it.
+
+  * The trial took FORK B (§5.3): coarse grid × scale (gas/ice giants on f64,
+    the Sun on f96, scales 8.7–34.8), never a nominal mega-frequency — so no
+    §5.2 gate was needed, and previews/LOD/walking work untouched. relief is
+    PRE-MULTIPLIED into h at generation time (geometry treats h as absolute,
+    scale does not resize relief) and recorded in the descriptor.
+
+  * Import: scripts/import-db.mjs passes planets[].generation through to the
+    jsonb column (bodies without elements now stream zero atom lines instead
+    of one junk line). World builder: scripts/gen-solar-world.mjs — the §8.3
+    anchor taken seriously (Earth FILLS the ladder: f203, ~35.2 km/hex;
+    AU ≈ 3092 u with starter-identical proportions; 60 s Earth year solved
+    through the softened force law; real mass ratios via per-body density).
+    Stored: Mercury f78, Venus f193, Earth f203, Mars f108, Pluto f38 —
+    976,510 real atom rows; generated: Sun, Jupiter, Saturn, Uranus,
+    Neptune — 0 rows. public/solar-trial.json is a 38 MB generated artifact,
+    gitignored; the script regenerates it deterministically.
+
+  Measurements (dev server, check-db-live.mjs + direct API probes):
+
+      skeleton, all 10 bodies                          341 ms
+      Earth   (stored, 412,092 atoms) hydrate        1,009 ms  ΔR 0, M ×1.0000
+      Jupiter (generated, f64) synthesize + wire        56 ms  mean h = avgHeight
+      Sun     (generated, f96) hydrate                  170 ms  ΔR 0, M ×1.0000
+      old world "Sol System" (stored Jupiter f203): skeleton and atoms
+      endpoints unchanged, no generated field present
+      npm test + npm run build: green
+
+  What the trial does NOT settle (still §9): nominal mega-frequency vs scale
+  for true-size stars (the trial sidestepped it — a true Sun is f ≈ 24,500),
+  painting/overrides on generated bodies, and the §8 per-world unit columns.
 
   ================================================================================

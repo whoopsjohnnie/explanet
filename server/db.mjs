@@ -13,6 +13,14 @@
  *     landing), in a compact columnar JSON form: material dictionary + t/h
  *     columns + sparse color overrides.
  *
+ * GENERATED bodies (bodies.generation, docs/scaling.txt §5): no atom rows
+ * exist for them. loadBody synthesizes the surface from the descriptor
+ * ({fn:'preset', preset, seed?, relief}) with the app's own
+ * core/generators.js — deterministic, so preview, hydration and repeated
+ * fetches agree. Everything downstream (preview sampling, wire payload,
+ * LRU cache, skeleton stub) treats generated bodies exactly like stored
+ * ones; the browser never learns the difference.
+ *
  * Bodies are LRU-cached in compact form, so a skeleton build (which samples
  * every preview) warms the cache and later per-body requests are memory-only.
  *
@@ -25,6 +33,7 @@ import { homedir } from 'node:os'
 import { gzip } from 'node:zlib'
 import pg from 'pg'
 import { sampleLodElements } from '../src/core/lod.js'
+import { generateElements } from '../src/core/generators.js'
 
 const { Pool } = pg
 
@@ -42,7 +51,7 @@ export const PREVIEW_FREQUENCY = 16
 // Pool (lazy — never connect at import time, e.g. during `vite build`)
 // ---------------------------------------------------------------------------
 
-function lookupPgpass(host, port, database, user) {
+export function lookupPgpass(host, port, database, user) {
   const file = process.env.PGPASSFILE || `${process.env.HOME || homedir()}/.pgpass`
   let text
   try {
@@ -100,11 +109,50 @@ async function gzipText(text) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Compact form for a GENERATED body (bodies.generation ≠ NULL, zero atom
+ * rows): the surface is a pure function of (preset, seed, relief) evaluated
+ * with the app's own core/generators.js — deterministic, so every fetch and
+ * every preview of a generated body is the same world. Result matches
+ * loadBody's compact shape exactly; downstream code cannot tell the origin.
+ */
+function synthesizeBody(dbId, frequency, bodySeed, generation) {
+  const preset = typeof generation.preset === 'string' ? generation.preset : 'rocky'
+  const relief = Number.isFinite(Number(generation.relief)) ? Number(generation.relief) : 1
+  const seed = Number.isFinite(Number(generation.seed)) ? Number(generation.seed) : Number(bodySeed)
+  const raw = generateElements(preset, frequency, seed || 1)
+  const mats = []
+  const matIndex = new Map()
+  const t = new Array(raw.length)
+  const h = new Array(raw.length)
+  const colors = new Map()
+  for (let i = 0; i < raw.length; i++) {
+    const el = raw[i]
+    let ti = matIndex.get(el.t)
+    if (ti === undefined) {
+      ti = mats.length
+      matIndex.set(el.t, ti)
+      mats.push(el.t)
+    }
+    t[i] = ti
+    h[i] = Number.isFinite(el.h) ? el.h * relief : 0
+    if (typeof el.c === 'string') colors.set(i, el.c)
+  }
+  return { dbId, frequency, count: raw.length, mats, t, h, colors, json: null }
+}
+
+/**
  * Compact in-memory atoms for one body: material dictionary + columns.
  *   { dbId, frequency, count, mats: string[], t: number[], h: number[],
  *     colors: Map<cell_index, string>, json?: string }
  */
 async function loadBody(dbId) {
+  const meta = await getPool().query(
+    `SELECT frequency, seed, generation FROM bodies WHERE id = $1`,
+    [dbId]
+  )
+  if (!meta.rows.length) throw new Error(`no body ${dbId} in ${DATABASE}@${HOST}`)
+  if (meta.rows[0].generation)
+    return synthesizeBody(dbId, meta.rows[0].frequency, meta.rows[0].seed, meta.rows[0].generation)
   const { rows } = await getPool().query(
     `SELECT a.cell_index, a.height, coalesce(m.key, 'grass') AS t, a.color
        FROM atoms a
@@ -113,8 +161,6 @@ async function loadBody(dbId) {
       ORDER BY a.cell_index`,
     [dbId]
   )
-  const meta = await getPool().query(`SELECT frequency FROM bodies WHERE id = $1`, [dbId])
-  if (!meta.rows.length) throw new Error(`no body ${dbId} in ${DATABASE}@${HOST}`)
   const mats = []
   const matIndex = new Map()
   const t = new Array(rows.length)
@@ -287,7 +333,17 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
       density: b.density,
       isStatic: !!b.gravity_immune,
     }
-    if (cellCount(frequency) <= FULL_INLINE_CELLS) {
+    if (b.generation) {
+      // generated body (docs/scaling.txt §5): always a stub — there are no
+      // atom rows to inline; hydration synthesizes them. Frequency must be
+      // > PREVIEW_FREQUENCY so the stub always has a preview to render.
+      planet.elements = null
+      planet.stubAvgHeight = Number.isFinite(Number(b.generation.avgHeight))
+        ? Number(b.generation.avgHeight)
+        : num(b.avg_height, 0)
+      planet.preview = await bodyPreview(b.id, PREVIEW_FREQUENCY)
+      planet.generated = b.generation // observability; normalizeWorld() strips it
+    } else if (cellCount(frequency) <= FULL_INLINE_CELLS) {
       planet.elements = await bodyElements(b.id)
       planet.preview = null
     } else {

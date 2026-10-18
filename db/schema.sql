@@ -30,6 +30,10 @@
 --     cache columns are optional query convenience (neighbourhood / distance
 --     SQL without pulling the grid); they are NEVER authoritative. Leave them
 --     NULL and derive, or populate once on import.
+--   * A body either STORES its surface (generation IS NULL — exactly
+--     cell_count_for_frequency(frequency) atom rows) or GENERATES it
+--     (generation = {fn,preset,seed?,relief,avgHeight?} — ZERO atom rows;
+--     server/db.mjs synthesizes atoms on demand, see docs/scaling.txt §5).
 --
 -- Scale notes (why this shape, see NOTES at the end for the alternative):
 --   MAX_FREQUENCY = 203 → 412 092 atoms per body, ~90 B/row → ~36 MB per
@@ -139,6 +143,19 @@ CREATE TABLE bodies (
 
   parent_body_id bigint REFERENCES bodies (id) ON DELETE SET NULL
                  CHECK (parent_body_id IS NULL OR parent_body_id <> id),
+
+  -- Generated ("functional") bodies — docs/scaling.txt §5. NULL = the atoms
+  -- table stores the surface (every ordinary body). A jsonb object
+  --   { fn: 'preset', preset, seed?, relief, avgHeight? }
+  -- means ZERO atom rows: server/db.mjs synthesizes the surface on demand
+  -- with the app's own core/generators.js (generateElements(preset,
+  -- frequency, seed), h × relief), and the browser hydrates the body through
+  -- the ordinary stub path — generated is a storage property, invisible to
+  -- the app. Frequency (+scale) must describe the TRUE size; avgHeight is
+  -- the generator's mean relief, the stub's mass input (radius/mass stay
+  -- DERIVED — generation stores no size or mass).
+  generation     jsonb
+                 CHECK (generation IS NULL OR jsonb_typeof(generation) = 'object'),
 
   sort_order     integer NOT NULL DEFAULT 0,   -- preserves the JSON array order
   created_at     timestamptz NOT NULL DEFAULT now(),
@@ -280,6 +297,7 @@ SELECT
   b.preset,
   b.frequency,
   b.scale,
+  b.generation,
   b.gravity_immune,
   b.parent_body_id,
   cell_count_for_frequency(b.frequency)                              AS cell_count,
@@ -294,7 +312,8 @@ SELECT
     (sqrt(cell_count_for_frequency(b.frequency) / (4 * pi())) * b.scale
      + coalesce(s.avg_height, 0))                                    AS approx_mass,
   s.atom_rows,
-  s.atoms_complete
+  -- a generated body is COMPLETE with zero rows: its atoms are synthesized
+  s.atoms_complete OR b.generation IS NOT NULL                       AS atoms_complete
 FROM bodies b
 LEFT JOIN LATERAL (
   SELECT

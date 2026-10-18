@@ -5,3 +5,6 @@ dist/
 
 # stray OpenCode session files
 ses_*.json
+
+# generated trial artifact (scripts/gen-solar-world.mjs regenerates it)
+public/solar-trial.json

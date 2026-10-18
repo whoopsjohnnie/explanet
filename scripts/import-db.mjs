@@ -5,7 +5,10 @@
  * Import a world.json document into the PostgreSQL schema (db/schema.sql).
  *
  *   world.json →  worlds   (name, gravity, doc version)
- *                 bodies   (planets[] rows; isStatic → gravity_immune)
+ *                 bodies   (planets[] rows; isStatic → gravity_immune;
+ *                          planets[].generation → bodies.generation jsonb —
+ *                          a GENERATED body carries no elements and gets no
+ *                          atom rows; the server synthesizes its surface)
  *                 atoms    (elements[i] → cell_index i, positional identity)
  *                 materials(terrain key `t` resolved through the palette;
  *                          unknown keys become private materials of the world)
@@ -24,6 +27,18 @@
 import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { lookupPgpass } from '../server/db.mjs'
+
+// psql connection: same defaults and ~/.pgpass fallback as server/db.mjs —
+// psql matches hostnames EXACTLY, so it would prompt even though .pgpass has
+// a '<db-host>.localdomain' entry for the '<db-host>' we connect to.
+process.env.PGHOST ||= '<db-host>'
+process.env.PGPORT ||= '5432'
+process.env.PGDATABASE ||= '<db-name>'
+process.env.PGUSER ||= '<db-user>'
+if (!process.env.PGPASSWORD)
+  process.env.PGPASSWORD =
+    lookupPgpass(process.env.PGHOST, Number(process.env.PGPORT), process.env.PGDATABASE, process.env.PGUSER) || ''
 
 const src = process.argv[2] || 'public/world.json'
 const world = JSON.parse(readFileSync(src, 'utf8'))
@@ -43,8 +58,9 @@ const copNum = (v, d = 0) => (Number.isFinite(Number(v)) ? String(Number(v)) : S
 const vec = (v, px) => [num(v?.x), num(v?.y), num(v?.z)].map((n, i) => `${px}_${'xyz'[i]}`)
 
 const totalAtoms = world.planets.reduce((s, p) => s + (p.elements?.length || 0), 0)
+const genCount = world.planets.filter((p) => p.generation).length
 console.error(`importing ${src}: "${world.name ?? 'Untitled World'}", ` +
-  `${world.planets.length} bodies, ${totalAtoms.toLocaleString('en-US')} atoms → $PGDATABASE`)
+  `${world.planets.length} bodies (${genCount} generated), ${totalAtoms.toLocaleString('en-US')} atoms → $PGDATABASE`)
 
 // ---------------------------------------------------------------------------
 // SQL + COPY payload (one stream; psql reads COPY data after each
@@ -64,6 +80,7 @@ const bodyRows = world.planets.map((p, i) => {
     Math.round(Number(p.seed) || 1), Math.round(Number(p.frequency) || 6), num(p.scale, 1),
     num(c.x), num(c.y), num(c.z), num(v.x), num(v.y), num(v.z), num(s.x), num(s.y), num(s.z),
     num(p.density, 0.05), p.isStatic ? 't' : 'f', i,
+    p.generation ? cop(JSON.stringify(p.generation)) : '\\N',
   ].join('\t')
 }).join('\n')
 
@@ -78,7 +95,8 @@ CREATE TEMP TABLE st_bodies (
   center_x double precision, center_y double precision, center_z double precision,
   velocity_x double precision, velocity_y double precision, velocity_z double precision,
   spin_x double precision, spin_y double precision, spin_z double precision,
-  density double precision, gravity_immune boolean, sort_order integer
+  density double precision, gravity_immune boolean, sort_order integer,
+  generation text
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE st_atoms (
@@ -86,7 +104,7 @@ CREATE TEMP TABLE st_atoms (
   material_key text, color text
 ) ON COMMIT DROP;
 
-COPY st_bodies (${bodyCols}) FROM stdin;
+COPY st_bodies (${bodyCols}, generation) FROM stdin;
 ${bodyRows}
 \\.
 
@@ -95,8 +113,8 @@ WITH w AS (
   VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)})
   RETURNING id
 )
-INSERT INTO bodies (world_id, ${bodyCols})
-SELECT w.id, ${bodyCols.split(',').map((c) => `s.${c.trim()}`).join(', ')}
+INSERT INTO bodies (world_id, ${bodyCols}, generation)
+SELECT w.id, ${bodyCols.split(',').map((c) => `s.${c.trim()}`).join(', ')}, NULLIF(s.generation, '')::jsonb
 FROM st_bodies s, w;
 
 -- terrain keys the built-in palette doesn't know become this world's materials
@@ -113,7 +131,9 @@ const atomsInsert = `
 INSERT INTO atoms (body_id, cell_index, height, material_id, color)
 SELECT b.id, a.cell_index, a.height, m.id, a.color
 FROM st_atoms a
-JOIN bodies b ON b.doc_id = a.body_doc_id
+-- doc_id is only unique WITHIN a world — scope to the world just inserted,
+-- or a repeat doc_id from an older world would double-insert atoms
+JOIN bodies b ON b.doc_id = a.body_doc_id AND b.world_id = currval('worlds_id_seq')
 LEFT JOIN LATERAL (
   SELECT id FROM materials
   WHERE key = a.material_key AND (world_id = b.world_id OR world_id IS NULL)
@@ -168,7 +188,7 @@ try {
       const e = p.elements[i] || {}
       lines[i] = `${docId}\t${i}\t${copNum(e.h)}\t${cop(e.t)}\t${e.c ? cop(e.c) : '\\N'}`
     }
-    await send(lines.join('\n') + '\n')
+    if (lines.length) await send(lines.join('\n') + '\n') // generated bodies stream nothing
   }
   await send('\\.\n' + atomsInsert)
   psql.stdin.end()
@@ -192,7 +212,8 @@ const report = spawn('psql', ['-X', '-q', '-A', '-F', ' | ', '-c', `
   SELECT 'world "' || name || '" (id ' || id || ', G ' || gravity || ', anchor '
          || coalesce((SELECT name FROM bodies WHERE id = worlds.reference_body_id), '—') || ')'
   FROM worlds WHERE id = (SELECT max(id) FROM worlds WHERE name = ${q(world.name ?? 'Untitled World')});
-  SELECT '  ' || body_name || ': freq ' || frequency || ', ' || atom_rows || '/' || cell_count
+  SELECT '  ' || body_name || CASE WHEN generation IS NOT NULL THEN ' (generated)' ELSE '' END
+         || ': freq ' || frequency || ', ' || coalesce(atom_rows, 0) || '/' || cell_count
          || ' atoms, radius ' || round(radius::numeric, 2) || ', mass ~'
          || to_char(approx_mass::numeric, '9.999EEEE')
   FROM v_body_stats
