@@ -246,12 +246,12 @@ export const EXTRA_MOONS = [
   { parent: 'Pluto', name: 'Kerberos', diam: 19, mass15: 1.6, sma: 57783, period: 32.17, inc: 0.39, ecc: 0.0033, group: 'Small', label: 'II' },
   { parent: 'Pluto', name: 'Hydra', diam: 50, mass15: 45, sma: 64738, period: 38.2, inc: 0.22, ecc: 0.0008, group: 'Small', label: 'III' },
   // Haumea system (Haumea itself is a dwarf entry)
-  { parent: 'Haumea', name: 'Hiʻiaka', diam: 310, mass15: 10000, sma: 498800, period: 49.12, inc: 126.8, ecc: 0.22, group: 'Large', label: 'I' },
-  { parent: 'Haumea', name: 'Namaka', diam: 170, mass15: 2700, sma: 256780, period: 18.28, inc: 13.7, ecc: 0.2, group: 'Small', label: 'II' },
+  { parent: 'Haumea', name: 'Hiʻiaka', diam: 310, mass15: 10000, sma: 49880, period: 49.12, inc: 126.8, ecc: 0.22, group: 'Large', label: 'I' },
+  { parent: 'Haumea', name: 'Namaka', diam: 170, mass15: 2700, sma: 25657, period: 18.28, inc: 13.7, ecc: 0.2, group: 'Small', label: 'II' },
   // Orcus / Quaoar / Salacia single moons
   { parent: 'Orcus', name: 'Vanth', diam: 440, mass15: 11000, sma: 9000, period: 9.54, inc: 107.9, ecc: 0.26, group: 'Large', label: 'I' },
-  { parent: 'Quaoar', name: 'Weywot', diam: 81, mass15: 270, sma: 14500, period: 11.4, inc: 14.0, ecc: 0.1, group: 'Small', label: 'I' },
-  { parent: 'Salacia', name: 'Actaea', diam: 144, mass15: 1000, sma: 4420, period: 5.31, inc: 90.0, ecc: 0.13, group: 'Large', label: 'I' },
+  { parent: 'Quaoar', name: 'Weywot', diam: 81, mass15: 270, sma: 13300, period: 12.435, inc: 14.0, ecc: 0.011, group: 'Small', label: 'I' },
+  { parent: 'Salacia', name: 'Actaea', diam: 144, mass15: 1000, sma: 5600, period: 5.31, inc: 90.0, ecc: 0.13, group: 'Large', label: 'I' },
   { parent: 'Eris', name: 'Dysnomia', diam: 685, mass15: 26000, sma: 37375, period: 15.77, inc: 79.0, ecc: 0.013, group: 'Large', label: 'I' },
 ]
 
@@ -268,16 +268,22 @@ export const PLANETS = [
   { name: 'Saturn', rKm: 58232, mu: 2.8588e-4, day: 0.44401, tilt: 26.73, seed: 505 },
   { name: 'Uranus', rKm: 25362, mu: 4.3662e-5, day: -0.71833, tilt: 97.77, seed: 606 },
   { name: 'Neptune', rKm: 24622, mu: 5.1514e-5, day: 0.67125, tilt: 28.32, seed: 707 },
-  { name: 'Pluto', rKm: 1188.3, mu: 6.585e-10, day: -6.3872, tilt: 122.53, seed: 808 },
+  { name: 'Pluto', rKm: 1188.3, mu: 6.6e-9, day: -6.3872, tilt: 122.53, seed: 808 },
 ]
 
 // Dwarf planets / large TNOs stored with procedural terrain (a,e,i in deg;
 // om/w/M0 at J2000 from JPL fact sheets).
 export const DWARFS = [
-  { name: 'Ceres', rKm: 469.7, mu: 4.365e-10, a: 2.7675, e: 0.076, i: 10.59, om: 80.3, w: 73.6, M0: 95.99, day: 0.3775, tilt: 4.0, seed: 901, taxon: 'C' },
-  { name: 'Eris', rKm: 1163, mu: 1.671e-9, a: 67.864, e: 0.4416, i: 44.04, om: 35.87, w: 151.09, M0: 204.16, day: 0.6884, tilt: 78, seed: 902, taxon: 'ice' },
-  { name: 'Haumea', rKm: 620, mu: 3.898e-10, a: 43.218, e: 0.1956, i: 28.19, om: 122.23, w: 239.03, M0: 217.61, day: 0.10746, tilt: 90, seed: 903, taxon: 'ice', elongate: 0.72 },
-  { name: 'Makemake', rKm: 715, mu: 3.25e-10, a: 45.792, e: 0.1559, i: 29.0, om: 79.6, w: 297.1, M0: 165.5, day: 0.4446, tilt: 60, seed: 904, taxon: 'red' },
+  { name: 'Ceres', rKm: 469.7, mu: 4.72e-10, a: 2.7675, e: 0.076, i: 10.59, om: 80.3, w: 73.6, M0: 95.99, day: 0.3775, tilt: 4.0, seed: 901, taxon: 'C' },
+  { name: 'Eris', rKm: 1163, mu: 8.28e-9, a: 67.864, e: 0.4416, i: 44.04, om: 35.87, w: 151.09, M0: 204.16, day: 0.6884, tilt: 78, seed: 902, taxon: 'ice' },
+  { name: 'Haumea', rKm: 620, mu: 2.02e-9, a: 43.218, e: 0.1956, i: 28.19, om: 122.23, w: 239.03, M0: 217.61, day: 0.10746, tilt: 90, seed: 903, taxon: 'ice', elongate: 0.72 },
+  { name: 'Makemake', rKm: 715, mu: 1.6e-9, a: 45.792, e: 0.1559, i: 29.0, om: 79.6, w: 297.1, M0: 165.5, day: 0.4446, tilt: 60, seed: 904, taxon: 'red' },
+  // Dwarf-planet candidates hosting known moons (Vanth/Weywot/Actaea).
+  // mu derives from the moon's own sma+period (4π²a³/P² ÷ GM☉) so the
+  // two-body pair is exactly self-consistent. Orbits: SBDB (recent epoch).
+  { name: 'Orcus', rKm: 458.5, mu: 3.19e-10, a: 39.42, e: 0.221, i: 20.6, om: 268.3, w: 73.6, M0: 189, day: 0.3977, tilt: 33, seed: 905, taxon: 'ice' },
+  { name: 'Quaoar', rKm: 555, mu: 6.06e-10, a: 43.694, e: 0.041, i: 7.99, om: 189, w: 163, M0: 301.1, day: 0.368, tilt: 53, seed: 906, taxon: 'ice' },
+  { name: 'Salacia', rKm: 445, mu: 2.48e-10, a: 42.16, e: 0.105, i: 23.9, om: 280, w: 309, M0: 135, day: 0.5, tilt: 30, seed: 907 },
   { name: 'HaumeaDummy', skip: true },
 ]
 
