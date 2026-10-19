@@ -8,3 +8,6 @@ ses_*.json
 
 # generated trial artifact (scripts/gen-solar-world.mjs regenerates it)
 public/solar-trial.json
+public/sol-real.json
+scripts/sol-real/data/orbits-cache.json
+scripts/sol-real/data/Moons_of_*.json
