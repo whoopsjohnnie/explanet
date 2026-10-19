@@ -63,6 +63,10 @@ export const PRESETS = [
   { id: 'ice', label: 'Ice' },
   { id: 'lava', label: 'Volcanic' },
   { id: 'gas', label: 'Gas Giant' },
+  { id: 'gas_jupiter', label: 'Jovian (banded, red spot)' },
+  { id: 'gas_saturn', label: 'Saturnian (pale gold bands)' },
+  { id: 'ice_uranus', label: 'Uranian (hazy cyan)' },
+  { id: 'ice_neptune', label: 'Neptunian (azure, dark spot)' },
   { id: 'moon', label: 'Moon' },
   { id: 'star', label: 'Star (static, massive)' },
 ]
@@ -74,6 +78,16 @@ function mixHex(c1, c2, t) {
   const a = p(c1), b = p(c2)
   const h = (x) => Math.round(x).toString(16).padStart(2, '0')
   return `#${h(lerp(a[0], b[0], t))}${h(lerp(a[1], b[1], t))}${h(lerp(a[2], b[2], t))}`
+}
+
+/** Elliptical spot mask on (lat,lon): 1 at the centre, 0 at/after the rim. */
+function spotMask(lat, lon, lat0, lon0, wLat, wLon) {
+  let dlon = lon - lon0
+  dlon = Math.atan2(Math.sin(dlon), Math.cos(dlon))
+  const dlat = (lat - lat0) / wLat
+  const dx = dlon / wLon
+  const d2 = dlat * dlat + dx * dx
+  return d2 >= 1 ? 0 : 1 - Math.sqrt(d2)
 }
 
 /**
@@ -97,7 +111,8 @@ export function generateElements(preset, frequency, seed = Math.floor(Math.rando
     switch (preset) {
       case 'star': {
         const n = fbm(x * 3, y * 3, z * 3, seed, 4)
-        el = { t: 'star', h: 0.05 + n * 0.25, c: mixHex('#ffd977', '#ff8a2e', n) }
+        const gran = fbm(x * 9, y * 9, z * 9, seed + 3, 3)
+        el = { t: 'star', h: 0.05 + n * 0.25, c: mixHex(mixHex('#fff3c6', '#ffb347', n), '#ff7a1f', gran * 0.4) }
         break
       }
       case 'gas': {
@@ -110,6 +125,57 @@ export function generateElements(preset, frequency, seed = Math.floor(Math.rando
           h: 0.02 + n * 0.08,
           c: mixHex(mixHex('#d9a066', '#f7e6c9', t01), '#b56d45', n * 0.5),
         }
+        break
+      }
+      case 'gas_jupiter': {
+        // banded zones/belts + the Great Red Spot, in Jovian cream/rust
+        const lat = Math.asin(clamp(y, -1, 1))
+        const lon = Math.atan2(z, x)
+        const turb = fbm(x * 2.4, y * 7, z * 2.4, seed, 3)
+        const bands = Math.sin(lat * 15 + turb * 3.4) + 0.4 * Math.sin(lat * 31 + turb * 2)
+        const t01 = clamp((bands + 1.4) / 2.8, 0, 1)
+        const grain = fbm(x * 6, y * 6, z * 6, seed + 7, 4)
+        let c = mixHex(mixHex('#96603c', '#f3e9d2', t01), '#caa06a', grain * 0.45)
+        const grs = spotMask(lat, lon, -0.36, 2.1, 0.15, 0.42)
+        if (grs > 0) c = mixHex(c, '#c65f3f', Math.min(1, grs * 1.6))
+        el = { t: 'sand', h: 0.02 + grain * 0.07, c }
+        break
+      }
+      case 'gas_saturn': {
+        // pale gold, softer bands than Jupiter
+        const lat = Math.asin(clamp(y, -1, 1))
+        const turb = fbm(x * 2.2, y * 6, z * 2.2, seed, 3)
+        const bands = Math.sin(lat * 11 + turb * 2.2)
+        const t01 = clamp((bands + 1.2) / 2.4, 0, 1)
+        const grain = fbm(x * 5, y * 5, z * 5, seed + 9, 3)
+        const c = mixHex(mixHex('#c8ae78', '#f2e3ba', t01), '#e4d2a0', grain * 0.5)
+        el = { t: 'sand', h: 0.02 + grain * 0.06, c }
+        break
+      }
+      case 'ice_uranus': {
+        // methane haze: near-featureless pale cyan
+        const lat = Math.asin(clamp(y, -1, 1))
+        const bands = Math.sin(lat * 8 + fbm(x * 2, y * 4, z * 2, seed, 2) * 1.5)
+        const t01 = clamp((bands + 1) / 2, 0, 1)
+        const grain = fbm(x * 4, y * 4, z * 4, seed + 5, 3)
+        const c = mixHex(mixHex('#a8dfe6', '#d8f2f4', t01), '#c2eaee', grain * 0.4)
+        el = { t: 'sand', h: 0.02 + grain * 0.05, c }
+        break
+      }
+      case 'ice_neptune': {
+        // vivid azure, faint bands, Great Dark Spot, white cirrus streaks
+        const lat = Math.asin(clamp(y, -1, 1))
+        const lon = Math.atan2(z, x)
+        const turb = fbm(x * 2.4, y * 6, z * 2.4, seed, 3)
+        const bands = Math.sin(lat * 9 + turb * 2.4)
+        const t01 = clamp((bands + 1.2) / 2.4, 0, 1)
+        const grain = fbm(x * 5, y * 5, z * 5, seed + 11, 3)
+        let c = mixHex(mixHex('#2c4bb4', '#6f97e8', t01), '#5578d8', grain * 0.5)
+        const dark = spotMask(lat, lon, -0.33, 1.2, 0.14, 0.34)
+        if (dark > 0) c = mixHex(c, '#1b2a63', Math.min(1, dark * 1.5))
+        const streak = Math.abs(fbm(x * 7, y * 3, z * 7, seed + 21, 2) - 0.5)
+        if (streak < 0.045) c = mixHex(c, '#f2f6ff', 0.75)
+        el = { t: 'sand', h: 0.02 + grain * 0.05, c }
         break
       }
       case 'lava': {
@@ -176,4 +242,5 @@ export function defaultElement() {
   return { t: 'grass', h: 0.12 }
 }
 
-export { cellCountForFrequency }
+// noise + color helpers (framework-free) shared with the Sol Real builders
+export { valueNoise, fbm, mixHex, cellCountForFrequency }

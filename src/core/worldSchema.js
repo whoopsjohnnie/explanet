@@ -20,6 +20,14 @@
  *       "spin":     { "x": 0,  "y": 0.4, "z": 0 },
  *       "density": 0.05,
  *       "isStatic": false,               // true → unaffected by gravity
+ *       "parent": "p-jupiter",           // optional hierarchy hint (moon→planet);
+ *                                        // simulation ignores it, UI groups by it
+ *       "rings": {                       // optional ring system (visual only),
+ *         "inner": 1.24,                 //   radii as MULTIPLES of the body radius,
+ *         "outer": 2.32,                 //   tiltDeg = axial tilt of the ring plane,
+ *         "tiltDeg": 26.7,               //   bands: [{from,to,color,alpha}] 0..1 radial
+ *         "bands": [ { "from": 0.0, "to": 0.62, "color": "#c9b98f", "alpha": 0.55 } ]
+ *       },
  *       "elements": [ { "t": "grass", "h": 0.3, "c": "#57a05a" }, ... ]
  *     }
  *   ]
@@ -65,8 +73,66 @@ export function createPlanet(opts = {}) {
     spin: vec3(opts.spin ?? { x: 0, y: 0.3, z: 0 }),
     density: typeof opts.density === 'number' ? opts.density : preset === 'star' ? 0.14 : DEFAULT_DENSITY,
     isStatic: !!opts.isStatic || preset === 'star',
+    ...(opts.parent ? { parent: String(opts.parent) } : {}),
+    ...(opts.rings ? { rings: normalizeRings(opts.rings) } : {}),
     elements: opts.elements || generateElements(preset, frequency, seed),
   }
+}
+
+/**
+ * Validate/repair a ring-system descriptor (visual only, docs in the header).
+ * Radii are multiples of the body radius; tiltDeg tilts the ring plane.
+ * bands (optional): [{from,to,color,alpha}] with from/to fractions 0..1 of
+ * the ring span (inner..outer), alpha 0..1. Returns null when unusable.
+ */
+/**
+ * Validate a scripted-orbit descriptor: an osculating Kepler ellipse the
+ * body rides analytically (core/kepler.js) instead of integrating N-body
+ * gravity. Lengths are engine units, angles radians, n is rad per document
+ * second. `parent` (the body it orbits) lives on the planet itself.
+ */
+/** Coarse body taxonomy (migration 004); NULL/absent for hand-built worlds. */
+export const KINDS = ['star', 'planet', 'dwarf', 'moon', 'asteroid', 'comet']
+
+export function normalizeScriptsOrbit(s) {
+  if (!s || typeof s !== 'object') return null
+  const out = {}
+  for (const k of ['a', 'e', 'inc', 'node', 'peri', 'n', 'm0']) {
+    const v = Number(s[k])
+    if (!Number.isFinite(v)) return null
+    out[k] = v
+  }
+  if (!(out.a > 0) || !(out.n > 0) || out.e < 0 || out.e >= 0.999) return null
+  return out
+}
+
+export function normalizeRings(r) {
+  if (!r || typeof r !== 'object') return null
+  const inner = Number(r.inner)
+  const outer = Number(r.outer)
+  if (!(inner > 0) || !(outer > inner)) return null
+  const bands = Array.isArray(r.bands)
+    ? r.bands
+        .map((b) => {
+          if (!b || typeof b !== 'object') return null
+          const from = clamp01(Number(b.from))
+          const to = clamp01(Number(b.to))
+          if (!(to > from)) return null
+          return {
+            from,
+            to,
+            color: typeof b.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(b.color) ? b.color : '#c8bda2',
+            alpha: clamp01(Number(b.alpha ?? 1)),
+          }
+        })
+        .filter(Boolean)
+    : null
+  const tiltDeg = Number.isFinite(Number(r.tiltDeg)) ? Number(r.tiltDeg) : 0
+  return { inner, outer, tiltDeg, ...(bands && bands.length ? { bands } : {}) }
+}
+
+function clamp01(v) {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0
 }
 
 export function createEmptyWorld(name = 'Untitled World') {
@@ -154,6 +220,12 @@ export function normalizeWorld(raw) {
       elements: stub ? null : repairElements(p.elements, frequency),
     }
     if (p.dbId != null) planet.dbId = Math.trunc(Number(p.dbId))
+    if (KINDS.includes(p.kind)) planet.kind = p.kind
+    if (typeof p.parent === 'string' && p.parent && p.parent !== planet.id) planet.parent = p.parent.slice(0, 64)
+    const rings = normalizeRings(p.rings)
+    if (rings) planet.rings = rings
+    const so = normalizeScriptsOrbit(p.scriptsOrbit)
+    if (so) planet.scriptsOrbit = so
     if (stub) {
       if (Number.isFinite(Number(p.stubAvgHeight))) planet.stubAvgHeight = Number(p.stubAvgHeight)
       const pf = clampInt(p.preview?.frequency ?? 0, 1, MAX_FREQUENCY)

@@ -39,6 +39,10 @@ export function stepGravity(G) {
     if (!a.api) continue
     for (let j = i + 1; j < n; j++) {
       const b = bodies[j]
+      // scripted test particles (kepler.js) have no cannon api and exchange
+      // no forces — they only ever consume gravity by definition, and here
+      // not even that: their orbits are analytic
+      if (!b.api) continue
       const dx = b.pos.x - a.pos.x
       const dy = b.pos.y - a.pos.y
       const dz = b.pos.z - a.pos.z
