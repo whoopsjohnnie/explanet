@@ -84,6 +84,10 @@ export default function Scene() {
   return (
     <Canvas
       className="scene"
+      // logarithmic depth: true-scale worlds put a 5 km asteroid and a 4e8 u
+      // TNO orbit in one frustum — the classic hyperbolic buffer z-fights or
+      // clips one of them; log windowing keeps both crisp.
+      gl={{ logarithmicDepthBuffer: true, antialias: true }}
       camera={{ position: [222 * camK, 165 * camK, 355 * camK], fov: 45, near: 0.1, far: Math.max(5000, starR * 2.2) }}
       dpr={[1, 2]}
       onPointerMissed={() => {
