@@ -108,11 +108,13 @@ function stateFrom(el) {
   const eIn = el.e
   let aKm = aKmIn
   let e = clamp(eIn, 0, 0.998)
+  let clamped = false
   if (!(aKm > 0) || eIn >= 0.9985) {
     e = 0.995
     aKm = (el.qKm != null ? el.qKm : aKmIn * (1 - eIn)) / (1 - e)
+    clamped = true // the ellipse is synthetic — its period must follow from a
   }
-  const periodS = el.periodDays
+  const periodS = el.periodDays && !clamped
     ? el.periodDays * 86400
     : Math.sqrt((aKm / AU_KM) ** 3) * EARTH_YEAR
   const n = (2 * Math.PI) / periodS
