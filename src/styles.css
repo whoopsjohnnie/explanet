@@ -172,6 +172,46 @@ body,
 }
 
 /* ----------------------------------------------------------- body list */
+.planet-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 140, 190, 0.25);
+  background: rgba(12, 18, 34, 0.6);
+  color: var(--text, #e8ecf6);
+  font-size: 12px;
+  outline: none;
+}
+.planet-search:focus {
+  border-color: var(--accent);
+}
+.planet-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 2px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.planet-group-header:first-child {
+  margin-top: 0;
+}
+.planet-group-caret {
+  width: 10px;
+  color: var(--accent, #6ea8ff);
+}
+.planet-group-count {
+  margin-left: auto;
+  font-weight: 400;
+  opacity: 0.7;
+}
 .planet-list {
   display: flex;
   flex-direction: column;
