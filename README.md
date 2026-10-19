@@ -121,6 +121,14 @@ radius, up to the frequency-203 cap: Jupiter 412,092 hexes, Earth 3,242,
 Pluto a chunky 92). Regenerate it with `npm run gen:world` — and import it
 into the world database with `npm run db:import`.
 
+The **Sol Real** world (`node scripts/gen-sol-real.mjs && node
+scripts/import-db.mjs public/sol-real.json`) is the full-scale version: all
+8 planets, 5 dwarf planets, 467 moons, 453 asteroids and 70 comets on true
+scale and true orbits — Earth with real continents and Everest at 8.849 km,
+Saturn's rings, a glowing Sun. Small bodies ride scripted Keplerian orbits
+as test particles (no N-body cost); the body list gets a search box and
+collapsible groups. See `AGENTS.md` for the schema details.
+
 ## The world database
 
 Worlds are stored relationally in PostgreSQL (`<db-name>` on `<db-host>`,
