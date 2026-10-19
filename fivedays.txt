@@ -3,7 +3,7 @@ And Qwen created the world in 5 days over 120M tokens.
 
 OpenCode.
 
-Like everyone and their [insert relative here] I have been exploring various coding agents since last year. I have tried Qwen Coder, Claude, Codex, OpenCode, Pi etc. But as you known there can only be one, and that one is OpenCode. When I first discovered OpenCode in May of this year I was mildly impressed at best. At the time I could hardly get anything working. I struggled with even the most basic operation, like getting files to load and be read. Often models were simply disconnecting or hallucinating contents for files it was unable to open. Often inventing plausible enough content on file name alone. I chalked this up to mainly a failure to load and use tools, or actions. You know, the entire premise behind agentic coding.
+Like everyone and their [insert relative here] I have been exploring various coding agents since last year. I have tried Qwen Coder, Claude, Codex, OpenCode, Pi etc. But as you know there can only be one, and that one is OpenCode. When I first discovered OpenCode in May of this year I was mildly impressed at best. At the time I could hardly get anything working. I struggled with even the most basic operation, like getting files to load and be read. Often models were simply disconnecting or hallucinating contents for files it was unable to open. Often inventing plausible enough content on file name alone. I chalked this up to mainly a failure to load and use tools, or actions. You know, the entire premise behind agentic coding.
 
 Frame.work.
 
@@ -13,7 +13,7 @@ Anyway, I did get Ollama up and running via Docker/Podman pretty easy and was ch
 
 Models for all.
 
-I kept on downloading model after model on ollama.com. They are all great and some are more memorable than others. Qwen before 3.5 didn't really seem to offer me anything more than say gpt-oss, so gpt-oss it was. In fact, gpt-oss 120b was my go to chatter for what seemed like a whole year. I thought it offered everything as a chat, in fact, I kind of still do. However the one thing that always seemed broken was getting these models to interact with other tools in my flow, like bash, git, linux etc. Now enter Qwen 3.8. When qwen 3.8 appeared I thought little of it. I had already tried Qwen 3.6 27B and 35B and like before I could not get tools to do anything. I tried setting up custom AGENTS.md with explore tools, but got little results. I didn't think that Qwen 3.8 would be any different seeing how its just a retrained 3.6. But here is the quote I will be known for: "There was a time before Qwen3.8, and there is a time after." I guess they must have taken 3.6 back to vocational school for some tools training, because when it came out as 3.8 it knew a hammer from a wrench.
+I kept on downloading model after model on ollama.com. They are all great and some are more memorable than others. Qwen before 3.5 didn't really seem to offer me anything more than say gpt-oss, so gpt-oss it was. In fact, gpt-oss 120b was my go to chatter for what seemed like a whole year. I thought it offered everything as a chat, in fact, I kind of still do. However the one thing that always seemed broken was getting these models to interact with other tools in my flow, like bash, git, linux etc. Now enter Qwen 3.8. When qwen 3.8 appeared I thought little of it. I had already tried Qwen 3.6 27B and 35B and like before I could not get tools to do anything. I tried setting up custom AGENTS.md with explore tools, but got little results. I didn't think that Qwen 3.8 would be any different seeing how it's just a retrained 3.6. But here is the quote I will be known for: "There was a time before Qwen3.8, and there is a time after." I guess they must have taken 3.6 back to vocational school for some tools training, because when it came out as 3.8 it knew a hammer from a wrench.
 
 Apparently we do Databases now.
 
@@ -28,7 +28,7 @@ Solid foundation — passwords are hashed, sessions are server-side with expiry,
 audit logs. A few real issues worth fixing, ranked by importance:
 
 **Security**
-1. **Session tokens are stored in plaintext** (`session_token` + `idx_sessions_token`). Since it's used to authenticate every request, a DB breach = instant takeover of all live sessions. Store a salted **hash** (e.g. SHA-256) of the app-generated random token instead, and index the hash. (DB-backed plaintext sessions are common, so this is a tradeoff — but for the \"securely storing\" goal, hashing is the stronger choice.)
+1. **Session tokens are stored in plaintext** (`session_token` + `idx_sessions_token`). Since it's used to authenticate every request, a DB breach = instant takeover of all live sessions. Store a salted **hash** (e.g. SHA-256) of the app-generated random token instead, and index the hash. (DB-backed plaintext sessions are common, so this is a tradeoff — but for the "securely storing" goal, hashing is the stronger choice.)
 2. **Hash algorithm is left ambiguous** (`-- Bcrypt/Argon2id`). Commit to **Argon2id** (current OWASP pick) with sane params; Bcrypt is acceptable but older.
 3. **Enumeration**: `email UNIQUE` lets an attacker confirm which emails are registered. Optional hardening: keep a salted hash of the lowercased email for reset lookups so existence is never exposed.
 
@@ -46,7 +46,7 @@ audit logs. A few real issues worth fixing, ranked by importance:
 
 Net verdict: good starting point; fix #1 and #4 first, and pin Argon2id. Want me to draft the revised SQL? (Read-only right now — I'll only modify once you say go.)
 
-- Wait, what?? We do Databases now?? Two months ago I could barely get OpenCode to read a local file, and now its validating a PostgreSQL user store schema, proposing changes, and offering to run the schema against a live DB?? If this was the end of the chat, perhaps this whole writeup would never have happened, as I would have given up. Alas I pressed on, why not, it offered! I went with it, and OpenCode proceeded to discover the local psql tool, my pgpass file, found the server via ping and connected to it. Of course it created the schema and dutifully wrote a test in SQL. Again, wait what?? We are creating databases now?? With unit tests??
+- Wait, what?? We do Databases now?? Two months ago I could barely get OpenCode to read a local file, and now it's validating a PostgreSQL user store schema, proposing changes, and offering to run the schema against a live DB?? If this was the end of the chat, perhaps this whole writeup would never have happened, as I would have given up. Alas I pressed on, why not, it offered! I went with it, and OpenCode proceeded to discover the local psql tool, my pgpass file, found the server via ping and connected to it. Of course it created the schema and dutifully wrote a test in SQL. Again, wait what?? We are creating databases now?? With unit tests??
 
 Apparently we do DevOps now.
 
@@ -62,9 +62,9 @@ Based on this, I consistently dismissed LLMs for anything math for a long time. 
 
 120M tokens for a Solar System.
 
-Now back to this project. I made this as a joke, a proof of concept, to see how far I could get. We are now rendering a somewhat realistic solar system with 700 plus celestial bodies. The project started last Wednesday, as in this week. I am pretty sure OpenCode and Qwen have been running 12 hours straight now today, promising me a solar systen with 750 celestial bodies fron a 10 line prompt I wrote at 8am this morning.
+Now back to this project. I made this as a joke, a proof of concept, to see how far I could get. We are now rendering a somewhat realistic solar system with 700 plus celestial bodies. The project started last Wednesday, as in this week. I am pretty sure OpenCode and Qwen have been running 12 hours straight now today, promising me a solar system with 750 celestial bodies from a 10 line prompt I wrote at 8am this morning.
 
-According to OpenCodes stats, Qwen has been pondering on 28M tokens just today. And this is all pretty much autonomous. Today OpenCode has largely run in the background. I asked it to create a realistic build of our solar system, and it is happily churning over WikiPedia, JPL and Nasa data, building a database of some 750 celestial bodies. According to OpenCode it as produced some 28M tokens so far fetching all this celestial body data:
+According to OpenCode's stats, Qwen has been pondering on 28M tokens just today. And this is all pretty much autonomous. Today OpenCode has largely run in the background. I asked it to create a realistic build of our solar system, and it is happily churning over Wikipedia, JPL and NASA data, building a database of some 750 celestial bodies. According to OpenCode it has produced some 28M tokens so far fetching all this celestial body data:
 
 -rw-rw-r--   1 john john      185 18 okt 17.04 fetch-small4.log
 -rw-rw-r--   1 john john      253 18 okt 16.49 halley.json

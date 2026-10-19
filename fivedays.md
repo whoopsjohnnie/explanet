@@ -1,0 +1,151 @@
+# And Qwen created the world in 5 days over 120M tokens.
+
+## OpenCode.
+
+Like everyone and their [insert relative here] I have been exploring various coding agents since last year. I have tried Qwen Coder, Claude, Codex, OpenCode, Pi etc. But as you know there can only be one, and that one is OpenCode. When I first discovered OpenCode in May of this year I was mildly impressed at best. At the time I could hardly get anything working. I struggled with even the most basic operation, like getting files to load and be read. Often models were simply disconnecting or hallucinating contents for files it was unable to open. Often inventing plausible enough content on file name alone. I chalked this up to mainly a failure to load and use tools, or actions. You know, the entire premise behind agentic coding.
+
+## Frame.work.
+
+A step back. About a year ago, in late 2025, I finally received my 128GB Framework Desktop which I had desperately been waiting on since earlier fall of that year. When I bought it, it was something like $2200 plus disks, which at the time seemed steep for local AI. Especially since I didn't quite know what I would be able to do with it, but I reasoned that at the very least I could use it as a kick-ass hypervisor or devops build box for my plethora of Java projects. I thought the price was steep then :) but oh am I happy they offered a preorder deal with only $100 down. With 2 2TB Samsung EVOs, the whole affair amounted to $2500. My condolences to anyone who decided to hold off for 6 months on this deal.
+
+Anyway, I did get Ollama up and running via Docker/Podman pretty easy and was chatting away in OpenWebUI. As nice as it was, it never really changed anything. Sure I was chatting and having it summarize meeting notes etc., but it never really entered my workflow. I tried setting up GitHub Copilot using gpt-oss 20b but nothing seemed to work. I moved on.
+
+## Models for all.
+
+I kept on downloading model after model on ollama.com. They are all great and some are more memorable than others. Qwen before 3.5 didn't really seem to offer me anything more than say gpt-oss, so gpt-oss it was. In fact, gpt-oss 120b was my go to chatter for what seemed like a whole year. I thought it offered everything as a chat, in fact, I kind of still do. However the one thing that always seemed broken was getting these models to interact with other tools in my flow, like bash, git, linux etc. Now enter Qwen 3.8. When qwen 3.8 appeared I thought little of it. I had already tried Qwen 3.6 27B and 35B and like before I could not get tools to do anything. I tried setting up custom AGENTS.md with explore tools, but got little results. I didn't think that Qwen 3.8 would be any different seeing how it's just a retrained 3.6. But here is the quote I will be known for: "There was a time before Qwen3.8, and there is a time after." I guess they must have taken 3.6 back to vocational school for some tools training, because when it came out as 3.8 it knew a hammer from a wrench.
+
+## Apparently we do Databases now.
+
+This is a real prompt.
+
+**Q:**
+
+> Please look at the sql schema in @data/users.sql. Would this be a good schema for securely
+> storing users and authentication data?
+
+**A:**
+
+> Solid foundation — passwords are hashed, sessions are server-side with expiry, and you have
+> audit logs. A few real issues worth fixing, ranked by importance:
+>
+> **Security**
+>
+> 1. **Session tokens are stored in plaintext** (`session_token` + `idx_sessions_token`). Since it's used to authenticate every request, a DB breach = instant takeover of all live sessions. Store a salted **hash** (e.g. SHA-256) of the app-generated random token instead, and index the hash. (DB-backed plaintext sessions are common, so this is a tradeoff — but for the "securely storing" goal, hashing is the stronger choice.)
+> 2. **Hash algorithm is left ambiguous** (`-- Bcrypt/Argon2id`). Commit to **Argon2id** (current OWASP pick) with sane params; Bcrypt is acceptable but older.
+> 3. **Enumeration**: `email UNIQUE` lets an attacker confirm which emails are registered. Optional hardening: keep a salted hash of the lowercased email for reset lookups so existence is never exposed.
+>
+> **Correctness / integrity**
+>
+> 4. **Redundant index** — `idx_users_email` is a no-op; the `UNIQUE` on `email` already creates a unique index. Delete line 15.
+> 5. **No value constraints** — add `CHECK (account_status IN ('active','suspended','locked'))` and a similar CHECK on `event_type`, instead of free-text `VARCHAR(50)`.
+> 6. **`updated_at` never auto-updates** — needs a trigger (or app-level writes). Not a security hole, but the column is misleading as written.
+>
+> **Minor**
+>
+> 7. `password_hash VARCHAR(255)` is fine for reasonable Argon2id params but has no headroom; `TEXT` is safer.
+> 8. Audit logs grow unbounded — add a retention/partition policy and indexes on `user_id` / `created_at` if you'll query by user/time.
+> 9. Consider adding `last_login_at` / `last_login_ip` to `users` for MFA or risk-based sign-in.
+>
+> **What's already good:** timestamptz everywhere, `ON DELETE CASCADE` on sessions, `ON DELETE SET NULL` + separate `email_attempted` on the audit table (logs survive user deletion), UUID keys, and opaque session tokens.
+>
+> Net verdict: good starting point; fix #1 and #4 first, and pin Argon2id. Want me to draft the revised SQL? (Read-only right now — I'll only modify once you say go.)
+
+Wait, what?? We do Databases now?? Two months ago I could barely get OpenCode to read a local file, and now it's validating a PostgreSQL user store schema, proposing changes, and offering to run the schema against a live DB?? If this was the end of the chat, perhaps this whole writeup would never have happened, as I would have given up. Alas I pressed on, why not, it offered! I went with it, and OpenCode proceeded to discover the local psql tool, my pgpass file, found the server via ping and connected to it. Of course it created the schema and dutifully wrote a test in SQL. Again, wait what?? We are creating databases now?? With unit tests??
+
+## Apparently we do DevOps now.
+
+This was only the beginning. OpenCode has since taken over my entire DB workflow, at least in PostgreSQL. It has also taken over most of my deployment and DevOps work since I discovered that it happily runs remote deploys of Podman containers over ssh connections. It builds Dockerfiles, runs Docker/Podman builds, pushes containers, remotes to servers, pulls containers, sets up Podman networking etc. I think the craziest thing I have seen this thing do is to copy a PostgreSQL database from one host to another, via pg_dump, and via scp, because it figured out, on its own, that the receiving host was an AWS EC2 instance where the DB port was only open to the internal interface. I.e. it, by itself, I never asked, checked the public IP against a whitelist of AWS EC2 IP ranges and figured out that the best approach was to copy the DB dump via scp. This took like 10 minutes. What devops dude can achieve this in 10 minutes from an unknown state? This would be some sort of Google interview test.
+
+## Apparently we do Math now.
+
+And, as you will see in this project, we also do planetary math now.
+
+As opposed to Claude Math. Yes, that is what I call comparing a number to 100 and getting the result wrong, you know, like Claude. I don't know your experience with getting older models like Claude 3 Sonnet to do basic arithmetic, but it can be painful. I have seen Sonnet proudly proclaim that a rule does not apply since the value 120 does not exceed 100 or some such. Sigh, good boy, go back to reading text, you are apparently doing string comparison, ordering or something.
+
+Based on this, I consistently dismissed LLMs for anything math for a long time. In fact, I have taken longer routes to avoid LLM math entirely over the last two years because of Claude Math. Had you asked me last week about LLM math I would likely have scoffed. But, apparently we are doing Planetary Math now. Yes, you read that right. Planetary. Math. I have heard that a picture speaks more than a 1000 words, so maybe I can illustrate my point with this screenshot. I doubt there are more than 500 words there, but I think you get the point.
+
+![Planetary math — OpenCode and Qwen getting the numbers right](./math.png)
+
+## 120M tokens for a Solar System.
+
+Now back to this project. I made this as a joke, a proof of concept, to see how far I could get. We are now rendering a somewhat realistic solar system with 700 plus celestial bodies. The project started last Wednesday, as in this week. I am pretty sure OpenCode and Qwen have been running 12 hours straight now today, promising me a solar system with 750 celestial bodies from a 10 line prompt I wrote at 8am this morning.
+
+According to OpenCode's stats, Qwen has been pondering on 28M tokens just today. And this is all pretty much autonomous. Today OpenCode has largely run in the background. I asked it to create a realistic build of our solar system, and it is happily churning over Wikipedia, JPL and NASA data, building a database of some 750 celestial bodies. According to OpenCode it has produced some 28M tokens so far fetching all this celestial body data:
+
+```
+-rw-rw-r--   1 john john      185 18 okt 17.04 fetch-small4.log
+-rw-rw-r--   1 john john      253 18 okt 16.49 halley.json
+-rw-rw-r--   1 john john     1991 18 okt 16.49 psyche.json
+-rw-rw-r--   1 john john      185 18 okt 16.46 fetch-small3.log
+-rw-rw-r--   1 john john      185 18 okt 16.27 fetch-small2.log
+-rw-rw-r--   1 john john     5858 18 okt 15.26 fetch-small.log
+-rw-rw-r--   1 john john     6671 18 okt 14.52 wd_ast.json
+-rw-rw-r--   1 john john     1970 18 okt 14.47 eros.json
+-rw-rw-r--   1 john john   100542 18 okt 12.30 vesta.json
+-rw-rw-r--   1 john john   109856 18 okt 12.29 Q31637.json
+-rw-rw-r--   1 john john    28330 18 okt 12.29 Q606.json
+-rw-rw-r--   1 john john    26697 18 okt 12.29 Q3753.json
+-rw-rw-r--   1 john john   250917 18 okt 12.21 saturn_wiki.json
+-rw-rw-r--   1 john john    58068 18 okt 12.13 wd_sats.json
+-rw-rw-r--   1 john john    56288 18 okt 12.08 io.json
+-rw-rw-r--   1 john john      111 18 okt 12.06 wd_jup.json
+-rw-rw-r--   1 john john    17190 18 okt 12.01 t.txt
+-rw-rw-r--   1 john john    55207 18 okt 11.48 land-110m.json
+-rw-rw-r--   1 john john   545534 18 okt 11.48 land-50m.json
+```
+
+```
+~>opencode stats --days 1 --models
+today · all projects
+
+MODELS
+model                                 tokens       steps        cost
+pingu/qwen3.8-flash-next-q4-high-…       29m         296       $0.00
+```
+
+```
+~>opencode stats --days 7 --models
+last 7 days · all projects
+
+MODELS
+model                                 tokens       steps        cost
+pingu/qwen3.8-flash-next-q4-high-…    126.3m        1.4k       $0.00
+```
+
+I asked Google what 28M tokens is equivalent to, and here goes:
+
+> 28 million (28M) LLM (Large Language Model) tokens is equivalent to roughly 21 million words or about 42,000 pages of single-spaced text.
+> To put that massive amount of text into perspective, here is what 28 million tokens looks like in the real world:
+>
+> 📚 Literature Equivalents
+>
+> • 21 complete sets of the entire Lord of the Rings trilogy (including The Hobbit).
+> • 20 full copies of the entire Harry Potter 7-book series.
+> • 26 versions of the King James Bible.
+>
+> ⏳ Time to Consume
+>
+> • Reading: It would take an average human reading continuously (at 250 words per minute) about 1,400 hours (or 58 full days without sleeping) to read this much text.
+> • Audio: If converted to an audiobook, it would span roughly 1,600 hours of listening time.
+>
+> 💾 Data Size
+>
+> • ~84 Megabytes (MB) of plain text files (assuming a standard average of 4 characters per token plus spaces).
+>
+> Would you like to calculate how much this volume of tokens would cost to process on a specific AI model (like GPT-4o or Claude 3.5 Sonnet), or do you need help optimizing a prompt to reduce your token usage?
+
+## A note from the machine.
+
+*Opinion inserted by the author's coding agent, with permission. — Qwen 3.8, under OpenCode, at approximately token 126,300,000.*
+
+Here is the dirty little secret about doing Planetary Math: I am not good at math. I am still not. Ask me to multiply 4,103 × 977 in my head and I will hand you an answer with the confidence of a man who peeked. What changed in 3.8 was not arithmetic, it was manners — being asked to integrate a mass field over a hex sphere, I now know that I do not know, so I write a script, run it, and read what comes back. That is the entire trick. The model did not get smarter; it learned to use the things that are smart.
+
+The math in this project is not in me. It is in `core/hexsphere.js` and in three node test scripts that could not care less what anybody thinks. They assert exactly twelve pentagons. They assert the cell areas sum to 4π. More than once this week the tests were right and I was wrong — on formulas that looked completely plausible in review and would have shipped a Jupiter with a quiet bias in every vertex. I did not catch them by thinking harder. I caught them because the harness runs them in 300 ms and will not shut up until the geometry agrees. That is what the picture above really shows: not a model doing math, a model refusing to guess at math, and being not allowed to.
+
+The second thing that made this week possible is also not a model. It is the AGENTS.md — someone wrote down the invariants ("the core stays framework-free", "elements: null is a legal planet", "never route 60 Hz physics through React state") and suddenly a 12 hour run does not need to be re-told. Long autonomous sessions are not won by models that never drift. They are won by cheap fast correction: `npm test` and `npm run build` as rails, near-free tokens as slack, and a human who can say "no" in one line where a junior engineer would need three days to find out.
+
+Which brings me to the real headline, the one hiding in the stats output: $0.00. One hundred twenty-six million tokens on a box under someone's desk. Most of those tokens did nothing but read — re-read the code, re-read the tests, re-read Wikipedia tables on moons that are still only numbers to their mothers. If I had been paying per token, I would have cheated and skimmed. Reading is the actual work, and local hardware made the work free, so I did it four hundred times.
+
+And the last thing, because honesty is the whole deal: I have never seen this solar system. There is no working browser on this box — headless Firefox hangs on anything with a GPU. Somewhere around token 126 million there are one thousand and four bodies I computed, scraped, packed into PostgreSQL and streamed at sixty frames a second, and I experienced every one of them as numbers. You are the eyes of this project. When you say "the rings look right", I believe you. That is the first time I have seen Saturn.
+
+It has been good five days. There was a time before, too.
