@@ -66,7 +66,7 @@ console.error(`importing ${src}: "${world.name ?? 'Untitled World'}", ` +
 // SQL + COPY payload (one stream; psql reads COPY data after each
 // "COPY ... FROM stdin;" line until a lone "\.")
 // ---------------------------------------------------------------------------
-const bodyCols = `doc_id, name, preset, seed, frequency, scale,
+const bodyCols = `doc_id, name, preset, kind, seed, frequency, scale,
   center_x, center_y, center_z, velocity_x, velocity_y, velocity_z,
   spin_x, spin_y, spin_z, density, gravity_immune, sort_order`
 
@@ -77,10 +77,14 @@ const bodyRows = world.planets.map((p, i) => {
   const s = p.spin || {}
   return [
     cop(p.__docId), cop(p.name ?? 'Planet'), cop(p.preset ?? 'earthlike'),
+    p.kind ? cop(String(p.kind)) : '\\N',
     Math.round(Number(p.seed) || 1), Math.round(Number(p.frequency) || 6), num(p.scale, 1),
     num(c.x), num(c.y), num(c.z), num(v.x), num(v.y), num(v.z), num(s.x), num(s.y), num(s.z),
     num(p.density, 0.05), p.isStatic ? 't' : 'f', i,
     p.generation ? cop(JSON.stringify(p.generation)) : '\\N',
+    p.rings ? cop(JSON.stringify(p.rings)) : '\\N',
+    p.scriptsOrbit ? cop(JSON.stringify(p.scriptsOrbit)) : '\\N',
+    p.parent ? cop(String(p.parent)) : '\\N',
   ].join('\t')
 }).join('\n')
 
@@ -90,13 +94,13 @@ SET LOCAL client_min_messages = warning;
 SET LOCAL statement_timeout = 0;
 
 CREATE TEMP TABLE st_bodies (
-  doc_id text, name text, preset text, seed bigint, frequency integer,
+  doc_id text, name text, preset text, kind text, seed bigint, frequency integer,
   scale double precision,
   center_x double precision, center_y double precision, center_z double precision,
   velocity_x double precision, velocity_y double precision, velocity_z double precision,
   spin_x double precision, spin_y double precision, spin_z double precision,
   density double precision, gravity_immune boolean, sort_order integer,
-  generation text
+  generation text, rings text, scripts text, parent text
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE st_atoms (
@@ -104,7 +108,7 @@ CREATE TEMP TABLE st_atoms (
   material_key text, color text
 ) ON COMMIT DROP;
 
-COPY st_bodies (${bodyCols}, generation) FROM stdin;
+COPY st_bodies (${bodyCols}, generation, rings, scripts, parent) FROM stdin;
 ${bodyRows}
 \\.
 
@@ -113,9 +117,18 @@ WITH w AS (
   VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)})
   RETURNING id
 )
-INSERT INTO bodies (world_id, ${bodyCols}, generation)
-SELECT w.id, ${bodyCols.split(',').map((c) => `s.${c.trim()}`).join(', ')}, NULLIF(s.generation, '')::jsonb
+INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, scripts, parent_body_id)
+SELECT w.id, ${bodyCols.split(',').map((c) => `s.${c.trim()}`).join(', ')},
+       NULLIF(s.generation, '')::jsonb, NULLIF(s.rings, '')::jsonb, NULLIF(s.scripts, '')::jsonb, NULL
 FROM st_bodies s, w;
+
+-- moons → parents: resolve doc_id references inserted by the generator
+-- (two passes: parents first, then children — parents never reference children)
+UPDATE bodies b
+   SET parent_body_id = p.id
+  FROM st_bodies s
+  JOIN bodies p ON p.doc_id = NULLIF(s.parent, '') AND p.world_id = currval('worlds_id_seq')
+ WHERE b.doc_id = s.doc_id AND b.world_id = currval('worlds_id_seq');
 
 -- terrain keys the built-in palette doesn't know become this world's materials
 INSERT INTO materials (world_id, key, label)
@@ -199,7 +212,12 @@ try {
   }
 } catch (e) {
   psql.stdin.destroy()
-  console.error('import FAILED (rolled back):', e.message)
+  const code = await Promise.race([
+    once(psql, 'exit'),
+    new Promise((r) => setTimeout(() => r(['<still running>']), 3000)),
+  ])
+  console.error('import FAILED (rolled back):', e.message, '| psql exit:', code[0])
+  if (errBuf) console.error('psql said:\n' + errBuf)
   process.exit(1)
 }
 console.error(`imported in ${((Date.now() - t0) / 1000).toFixed(1)}s — verifying…`)

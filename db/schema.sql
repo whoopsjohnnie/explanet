@@ -157,6 +157,25 @@ CREATE TABLE bodies (
   generation     jsonb
                  CHECK (generation IS NULL OR jsonb_typeof(generation) = 'object'),
 
+  -- Presentational ring system (migration 002). NULL = no rings.
+  -- { inner, outer, tiltDeg, bands: [{from,to,color,alpha}] } — radii are
+  -- multiples of the body radius; emitted verbatim by the skeleton.
+  rings          jsonb
+                 CHECK (rings IS NULL OR jsonb_typeof(rings) = 'object'),
+
+  -- Scripted test particle (migration 003). NULL = ordinary N-body body.
+  -- { a, e, inc, node, peri, n, m0 } osculating elements in engine units:
+  -- the app integrates it analytically (core/kepler.js), no cannon body.
+  scripts        jsonb
+                 CHECK (scripts IS NULL OR jsonb_typeof(scripts) = 'object'),
+
+  -- Coarse taxonomy for list grouping (migration 004). Independent of the
+  -- preset (look) and of parent_body_id (hierarchy). NULL for hand-built
+  -- worlds; the UI then groups by parent only.
+  kind           text
+                 CHECK (kind IS NULL OR kind IN
+                   ('star', 'planet', 'dwarf', 'moon', 'asteroid', 'comet')),
+
   sort_order     integer NOT NULL DEFAULT 0,   -- preserves the JSON array order
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now(),

@@ -305,12 +305,13 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
   if (!w.length) throw new Error(`no world ${id} in ${DATABASE}@${HOST}`)
 
   const { rows: bodies } = await getPool().query(
-    `SELECT b.*, s.atom_rows, s.avg_height
+    `SELECT b.*, s.atom_rows, s.avg_height, p.doc_id AS parent_doc_id
        FROM bodies b
        LEFT JOIN LATERAL (
          SELECT count(*)::int AS atom_rows, avg(a.height)::float8 AS avg_height
            FROM atoms a WHERE a.body_id = b.id
        ) s ON true
+       LEFT JOIN bodies p ON p.id = b.parent_body_id
       WHERE b.world_id = $1
       ORDER BY b.sort_order, b.id`,
     [id]
@@ -333,6 +334,10 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
       density: b.density,
       isStatic: !!b.gravity_immune,
     }
+    if (b.kind) planet.kind = b.kind
+    if (b.parent_doc_id) planet.parent = b.parent_doc_id
+    if (b.rings) planet.rings = b.rings
+    if (b.scripts) planet.scriptsOrbit = b.scripts
     if (b.generation) {
       // generated body (docs/scaling.txt §5): always a stub — there are no
       // atom rows to inline; hydration synthesizes them. Frequency must be
