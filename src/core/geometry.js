@@ -6,10 +6,10 @@
  * imported here; the React components wrap the output in BufferGeometry.
  *
  * Each cell renders as:
- *   • a top polygon (triangle fan) at radius R + h, with corners inset
- *     slightly so hexagon borders read as grooves,
- *   • wall quads down to the lower of the two neighbouring heights (minus a
- *     small delta) so cliffs and mortar lines always close.
+ *   • a top polygon (triangle fan) at radius R + h; with INSET = 0 adjacent
+ *     tops share their edge exactly, so the surface is seamless,
+ *   • wall quads down to the lower of the two neighbouring heights so cliffs
+ *     between different-height hexes close (steps, not gaps).
  *
  * Every emitted triangle records the index of the cell that produced it, so
  * raycast hits can be mapped straight back to `planet.elements[i]`.
@@ -21,8 +21,11 @@ import { sampleLodElements } from './lod.js'
 import { TERRAIN_TYPES, terrainDefaults } from './terrain.js'
 import { hexToInt } from './atoms.js'
 
-const INSET = 0.08 // fraction corners are pulled toward the cell center
-const GROOVE = 0.05 // extra wall depth for equal-height neighbours
+// Hex spacing knobs — both 0 so adjacent hexes meet flush and the surface
+// reads as one continuous terrain (height steps between neighbours remain).
+// Raise again to restore the grooved "mortar line" look.
+const INSET = 0 // fraction corners are pulled toward the cell center
+const GROOVE = 0 // extra wall depth for equal-height neighbours
 
 // ---------------------------------------------------------------------------
 // tiny vec helpers
