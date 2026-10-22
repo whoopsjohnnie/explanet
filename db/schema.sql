@@ -163,6 +163,13 @@ CREATE TABLE bodies (
   rings          jsonb
                  CHECK (rings IS NULL OR jsonb_typeof(rings) = 'object'),
 
+  -- Atmosphere (migration 005). NULL = airless (vacuum sky).
+  -- { top, scaleHeight, pressure, opacity, zenith, horizon, glow } — heights
+  -- are multiples of the body radius, pressure in atm ("how thick the air
+  -- is"); drives the walk-mode sky. Emitted verbatim by the skeleton.
+  atmosphere     jsonb
+                 CHECK (atmosphere IS NULL OR jsonb_typeof(atmosphere) = 'object'),
+
   -- Scripted test particle (migration 003). NULL = ordinary N-body body.
   -- { a, e, inc, node, peri, n, m0 } osculating elements in engine units:
   -- the app integrates it analytically (core/kepler.js), no cannon body.

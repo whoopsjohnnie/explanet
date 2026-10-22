@@ -337,6 +337,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     if (b.kind) planet.kind = b.kind
     if (b.parent_doc_id) planet.parent = b.parent_doc_id
     if (b.rings) planet.rings = b.rings
+    if (b.atmosphere) planet.atmosphere = b.atmosphere
     if (b.scripts) planet.scriptsOrbit = b.scripts
     if (b.generation) {
       // generated body (docs/scaling.txt §5): always a stub — there are no

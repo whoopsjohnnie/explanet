@@ -28,6 +28,18 @@
  *         "tiltDeg": 26.7,               //   bands: [{from,to,color,alpha}] 0..1 radial
  *         "bands": [ { "from": 0.0, "to": 0.62, "color": "#c9b98f", "alpha": 0.55 } ]
  *       },
+ *       "atmosphere": {                  // optional air — drives the walk-mode sky
+ *                                        //   (src/components/WalkSky.jsx) and the HUD.
+ *         "top": 0.094,                  //   the atmosphere tops out at this multiple
+ *                                        //   of the body radius (Earth ≈ 600 km / R);
+ *         "scaleHeight": 0.0013,         //   density e-folds over this height (8.5 km/R);
+ *         "pressure": 1.013,             //   surface pressure in atm — how THICK the
+ *                                        //   air is (Venus 92, Mars 0.006);
+ *         "opacity": 0.62,               //   0..1 visual density (1 = opaque, Venus)
+ *         "zenith": "#2f63b4",           //   sky colors overhead / at the horizon /
+ *         "horizon": "#b3cde8",          //   forward-scattered around the sun — all
+ *         "glow": "#ffd9a0"              //   optional, the renderer picks defaults
+ *       },
  *       "elements": [ { "t": "grass", "h": 0.3, "c": "#57a05a" }, ... ]
  *     }
  *   ]
@@ -61,6 +73,7 @@ export function createPlanet(opts = {}) {
   const frequency = clampInt(opts.frequency ?? 6, 1, MAX_FREQUENCY)
   const seed = opts.seed ?? Math.floor(Math.random() * 1e9)
   const preset = opts.preset ?? 'earthlike'
+  const atmosphere = normalizeAtmosphere(opts.atmosphere)
   return {
     id: opts.id || `p-${nanoid(8)}`,
     name: opts.name || 'New Planet',
@@ -75,6 +88,7 @@ export function createPlanet(opts = {}) {
     isStatic: !!opts.isStatic || preset === 'star',
     ...(opts.parent ? { parent: String(opts.parent) } : {}),
     ...(opts.rings ? { rings: normalizeRings(opts.rings) } : {}),
+    ...(atmosphere ? { atmosphere } : {}),
     elements: opts.elements || generateElements(preset, frequency, seed),
   }
 }
@@ -129,6 +143,36 @@ export function normalizeRings(r) {
     : null
   const tiltDeg = Number.isFinite(Number(r.tiltDeg)) ? Number(r.tiltDeg) : 0
   return { inner, outer, tiltDeg, ...(bands && bands.length ? { bands } : {}) }
+}
+
+/**
+ * Validate/repair an atmosphere descriptor (docs in the header). `top` and
+ * `scaleHeight` are multiples of the body radius, `pressure` is surface
+ * pressure in atm ("how thick the air is"), `opacity` 0..1 the visual density
+ * of the sky. Colors are optional; the walk-mode renderer falls back to a
+ * generic blue sky. Returns null when unusable (no atmosphere).
+ */
+export function normalizeAtmosphere(a) {
+  if (!a || typeof a !== 'object') return null
+  const top = Number(a.top)
+  if (!(top > 0)) return null
+  let scaleHeight = Number(a.scaleHeight)
+  if (!(scaleHeight > 0) || scaleHeight >= top) scaleHeight = top / 6 // ≈5 e-folds to the top
+  const pressure = Number(a.pressure)
+  const opacity = clamp01(Number(a.opacity ?? 0.6))
+  const color = (v) => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : null)
+  const zenith = color(a.zenith)
+  const horizon = color(a.horizon)
+  const glow = color(a.glow)
+  return {
+    top,
+    scaleHeight,
+    pressure: Number.isFinite(pressure) && pressure >= 0 ? pressure : 1,
+    opacity,
+    ...(zenith ? { zenith } : {}),
+    ...(horizon ? { horizon } : {}),
+    ...(glow ? { glow } : {}),
+  }
 }
 
 function clamp01(v) {
@@ -224,6 +268,8 @@ export function normalizeWorld(raw) {
     if (typeof p.parent === 'string' && p.parent && p.parent !== planet.id) planet.parent = p.parent.slice(0, 64)
     const rings = normalizeRings(p.rings)
     if (rings) planet.rings = rings
+    const atmosphere = normalizeAtmosphere(p.atmosphere)
+    if (atmosphere) planet.atmosphere = atmosphere
     const so = normalizeScriptsOrbit(p.scriptsOrbit)
     if (so) planet.scriptsOrbit = so
     if (stub) {
