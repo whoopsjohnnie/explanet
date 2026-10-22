@@ -158,13 +158,23 @@ export function buildPlanetGeometryData(planet) {
       const equal = Math.abs(h - nH) < 1e-4
       const hb = Math.min(h, nH) - (equal ? GROOVE : 0)
       if (h - hb < 1e-4) continue
+      // The wall quad lies in the radial plane through the shared edge, so
+      // its true face normal is TANGENTIAL — exactly perpendicular to the
+      // radial corner bisector, which made winding against that bisector a
+      // degenerate (dot ≡ 0) coin flip. Flip toward the neighbour's center
+      // direction instead: the face overlooking the drop points downhill.
+      const nc3 = nIdx * 3
+      const wallOut = norm3([
+        hex.centers[nc3] - centerDir[0],
+        hex.centers[nc3 + 1] - centerDir[1],
+        hex.centers[nc3 + 2] - centerDir[2],
+      ])
       const a0 = top[k]
       const a1 = top[(k + 1) % n]
-      const wallDir = norm3(addv(corners[k], corners[(k + 1) % n]))
       const b0 = mul(corners[k], R + hb)
       const b1 = mul(corners[(k + 1) % n], R + hb)
-      pushTri(b, a0, a1, b1, wallDir, centerDir, rgb, i)
-      pushTri(b, a0, b1, b0, wallDir, centerDir, rgb, i)
+      pushTri(b, a0, a1, b1, wallOut, centerDir, rgb, i)
+      pushTri(b, a0, b1, b0, wallOut, centerDir, rgb, i)
     }
   }
 
