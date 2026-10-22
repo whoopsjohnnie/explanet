@@ -46,6 +46,9 @@ const _inv = new THREE.Matrix4()
 // opts out of raycasting entirely
 const NO_RAYCAST = () => null
 const EMPTY_LEVELS = []
+// Wireframe orb around the selected body — turned off; flip back to true to
+// restore it (selection still reads via the label highlight).
+const SHOW_SELECTION_ORB = false
 
 /** Synchronous LOD chain build — small planets, and the worker-failed path. */
 function buildLevelsSync(renderPlanet) {
@@ -378,7 +381,7 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
         </>
       )}
 
-      {selected && (
+      {SHOW_SELECTION_ORB && selected && (
         <mesh raycast={() => null}>
           <sphereGeometry args={[radius * 1.08, 28, 18]} />
           <meshBasicMaterial color="#7fd4ff" wireframe transparent opacity={0.12} depthWrite={false} />
