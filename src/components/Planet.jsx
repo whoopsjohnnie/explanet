@@ -17,8 +17,9 @@
  *              heightfield (core/surface.js); the hit carries the DOCUMENT
  *              cell index, exact at every LOD.
  *  • Paint   : pointer down/move with an active brush maps picks to cells.
- *  • Decor   : rings (document descriptor), star glow sprites, name label —
- *              mounted in a spin-canceled group so they don't tumble.
+ *  • Decor   : rings (document descriptor), atmosphere shell, star glow
+ *              sprites, name label — rings/labels mounted in a spin-canceled
+ *              group so they don't tumble.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -27,6 +28,7 @@ import { useSphere } from '@react-three/cannon'
 import { useFrame, useThree } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import { makeGlowTexture, makeRingTexture, makeRingGeometry } from '../three/effects.js'
+import AtmosphereGlow from './AtmosphereGlow.jsx'
 import { useStore } from '../state/store.js'
 import { registerBody, registry } from '../core/physics.js'
 import { buildLodGeometryData, computeFaceNormals } from '../core/geometry.js'
@@ -299,6 +301,13 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
     },
     [ringGeo, ringMat]
   )
+  // ---- atmosphere shell (orbit view: pure display, never raycast; gates
+  // itself off when the camera is inside it — WalkSky takes over there) ----
+  const atmosphere =
+    planet.atmosphere && Number.isFinite(planet.atmosphere.top) && planet.atmosphere.top > 0
+      ? planet.atmosphere
+      : null
+
   const glowTex = useMemo(() => (isStar ? makeGlowTexture({ size: 256, power: 2.4 }) : null), [isStar])
 
   // ---- spin-canceled overlay + label distance gate --------------------------
@@ -338,6 +347,8 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
   return (
     <group onPointerDown={onPointerDown} onPointerMove={onPointerMove}>
       {children}
+
+      {atmosphere && <AtmosphereGlow planet={planet} atmo={atmosphere} radius={radius} />}
 
       {isStar && (
         <>
