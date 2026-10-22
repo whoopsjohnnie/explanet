@@ -13,6 +13,7 @@ import { planetRadius } from '../core/planetMath.js'
 import { animateTerrainMaterials } from '../three/materials.js'
 import Planet from './Planet.jsx'
 import Walker from './Walker.jsx'
+import WalkSky from './WalkSky.jsx'
 
 function GravityRunner() {
   useFrame(() => {
@@ -81,6 +82,11 @@ export default function Scene() {
     return Math.max(1, (sunR * 3.2) / 450)
   }, [planets])
 
+  // Walking under an atmosphere: WalkSky paints the dome (and its own night
+  // stars), so the real starfield steps aside — additive points floating over
+  // a blue daytime sky would give the game away. Airless bodies keep it.
+  const walkAtmo = walkMode ? planets.find((p) => p.id === walkMode.planetId)?.atmosphere : null
+
   return (
     <Canvas
       className="scene"
@@ -97,7 +103,9 @@ export default function Scene() {
     >
       <color attach="background" args={['#04060d']} />
       <fog attach="fog" args={['#04060d', Math.max(900, sysR * 1.2), Math.max(2400, sysR * 9)]} />
-      <Stars radius={starR} depth={160} count={starCount} factor={5} saturation={0} fade speed={0.3} />
+      <group visible={!walkAtmo}>
+        <Stars radius={starR} depth={160} count={starCount} factor={5} saturation={0} fade speed={0.3} />
+      </group>
       <ambientLight intensity={0.5} />
       <hemisphereLight args={['#9db8ff', '#201607', 0.3]} />
 
@@ -119,6 +127,9 @@ export default function Scene() {
       <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={Math.max(1600, sysR * 2.4)} enabled={!walkMode} />
       <CameraFollow />
       {walkMode && <Walker key={walkMode.planetId} planetId={walkMode.planetId} />}
+      {/* the sky rides along: mounted after Walker so its useFrame reads the
+          camera pose the walker just wrote; renders only with an atmosphere */}
+      {walkMode && <WalkSky key={walkMode.planetId} planetId={walkMode.planetId} />}
       <MaterialAnimator />
     </Canvas>
   )

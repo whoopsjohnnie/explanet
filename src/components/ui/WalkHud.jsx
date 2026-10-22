@@ -23,9 +23,14 @@ export default function WalkHud() {
   if (!planetId) return null
   const r = walkReadout
   const airborne = !r.grounded
+  const atmo = planet?.atmosphere
   // numbers scale with the astronaut (tile-sized), so keep 3 significant
   // digits instead of fixed decimals: a true-scale Earth shows 0.0043, not 0.00
   const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(2))
+  // surface pressure in atm: 92 / 1.01 / 0.0064 / 1e-5 — thin air goes
+  // scientific, like everywhere else on a true-scale world
+  const fmtAtm = (p) =>
+    p === 0 ? '0' : p >= 100 ? String(Math.round(p)) : p >= 1 ? p.toFixed(2) : p >= 0.001 ? String(+p.toPrecision(2)) : p.toExponential(0)
 
   return (
     <div className="walk-hud">
@@ -46,6 +51,9 @@ export default function WalkHud() {
         <span className={airborne ? 'walk-hud-air' : ''}>
           {airborne ? 'falling' : 'grounded'} · alt {fmt(r.alt)} · ↕ {fmt(r.vel)}
           {r.sprint ? ' · sprint' : ''}
+        </span>
+        <span className={atmo ? 'walk-hud-atmo' : 'walk-hud-atmo vacuum'} title={atmo ? 'Surface pressure' : 'No atmosphere — bare vacuum'}>
+          {atmo ? `atm ${fmtAtm(atmo.pressure)}` : 'no air'}
         </span>
       </div>
       <div className="walk-hud-keys">W A S D move · Shift sprint · Space jump · Hold &amp; drag look</div>

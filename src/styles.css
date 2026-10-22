@@ -648,6 +648,13 @@ input[type='range'] {
 .walk-hud-air {
   color: var(--accent-2);
 }
+.walk-hud-atmo {
+  margin-left: 10px;
+  color: var(--text-dim);
+}
+.walk-hud-atmo.vacuum {
+  color: var(--accent-2);
+}
 .walk-hud-keys {
   font-size: 10.5px;
   color: var(--text-dim);
