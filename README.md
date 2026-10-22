@@ -85,6 +85,15 @@ onto a planet. While landed:
 | `Esc` | Lift off — back to the editor camera |
 | `Ctrl/Cmd + S` | Save (still works while walking) |
 
+Bodies that carry an `atmosphere` descriptor get a real sky: a horizon →
+zenith gradient in the body's own colors, glare around the sun, and a starry
+night once it sets — the thicker the air, the more it swallows the stars.
+Airless worlds keep the bare starfield, and the HUD reports surface pressure
+(`atm 1.01` on Earth, `atm 92` on Venus, `no air` on the Moon). In flight the
+same descriptor paints a sunlit limb shell around the planet, so worlds with
+air read as "has air" from orbit. The real-world catalog lives in
+`core/atmospheres.js`; the document shape is below.
+
 ## world.json format
 
 ```jsonc
@@ -106,6 +115,13 @@ onto a planet. While landed:
       "spin":     { "x": 0,  "y": 0.5, "z": 0 },
       "density": 0.05,
       "isStatic": false,               // true → unaffected by gravity (stars)
+      "atmosphere": {                  // optional air → walk-mode sky + HUD
+        "top": 0.094,                  //   heights are MULTIPLES of body radius
+        "scaleHeight": 0.0013,         //   density e-fold height (~8.5 km / R⊕)
+        "pressure": 1.013,             //   surface pressure in atm — thickness
+        "opacity": 0.62,               //   0..1 visual density (1 = opaque)
+        "zenith": "#2f63b4", "horizon": "#b3cde8", "glow": "#ffd9a0"
+      },
       "elements": [                    // one entry per hex cell, in fixed
         { "t": "grass", "h": 0.31 },   // grid order: {t, h, c?}
         { "t": "water", "h": 0, "c": "#1f6fc0" }
@@ -125,7 +141,9 @@ The **Sol Real** world (`node scripts/gen-sol-real.mjs && node
 scripts/import-db.mjs public/sol-real.json`) is the full-scale version: all
 8 planets, 5 dwarf planets, 467 moons, 453 asteroids and 70 comets on true
 scale and true orbits — Earth with real continents and Everest at 8.849 km,
-Saturn's rings, a glowing Sun. Small bodies ride scripted Keplerian orbits
+Saturn's rings, a glowing Sun, and real atmospheres (Earth's blue, Venus's
+opaque ochre, Titan's orange, Pluto's thin haze) that render as skies in
+walk mode. Small bodies ride scripted Keplerian orbits
 as test particles (no N-body cost); the body list gets a search box and
 collapsible groups. See `AGENTS.md` for the schema details.
 
@@ -171,16 +189,20 @@ src/
     worldSchema.js      world.json shape, creation, validation & repair (+ stubs)
     starter.js          demo system (also writes public/world.json)
     physics.js          N-body gravity step + live body registry
+    kepler.js           scripted-orbit propagation + Cartesian state → elements fit
     surface.js          surface queries + kinematic walker (land & walk mode)
     lod.js              render LOD chains + sampled preview grids
     terrain.js          terrain registry + procedural canvas textures
     db.js               world-database client (skeleton + streamed atoms)
+    atmospheres.js      real Solar System atmosphere catalog (walk-sky data)
     fileIO.js           File System Access API + IndexedDB handle + fallbacks
   state/store.js        zustand: world document + editor state + hydratePlanet()
   components/
     Scene.jsx           R3F canvas, cannon <Physics>, camera follow
     Planet.jsx          one planet = sphere body + per-terrain meshes + painting
+    AtmosphereGlow.jsx  orbit-view atmosphere: additive limb shell on the dayside
     Walker.jsx          surface mode: walk integration, first-person eye camera
+    WalkSky.jsx         walk-mode sky from the atmosphere descriptor
     ui/                 TopBar, PlanetList, Inspector, Palette, WalkHud, AddPlanetDialog
 server/
   db.mjs                pg pool + skeleton/body queries + LRU + preview sampling
@@ -190,6 +212,9 @@ scripts/
   gen-sample-world.mjs  regenerates public/world.json
   import-db.mjs         streams a world.json into the world database (COPY)
   check-db-live.mjs     end-to-end smoke test against a live /api
+  score-kepler.mjs      scores the Cartesian→Kepler fit: document round-trip,
+                        real JPL Horizons vectors, published planet elements
+  run_s0.sh             stage-0 scoring run (node scripts/score-kepler.mjs; --offline)
   test-hexsphere.mjs    grid correctness (12 pentagons, symmetry, equal areas)
   test-geometry.mjs     generators + geometry + schema/stub round-trips
   test-surface.mjs      walker math (cell lookup, landing, walking, walls, jumps)
@@ -208,6 +233,12 @@ world files heal, and the surface walker's math (Voronoi under-foot lookup
 matches brute force, falls terminate on the surface, walking never dips
 through terrain, tall tiles block and slide, jumps arc to the target height,
 and the integrator is deterministic + fuzz-safe).
+
+`scripts/run_s0.sh` scores `core/kepler.js`'s inverse map — the Cartesian
+state → orbital-elements fit — on every scripted body of the Sol Real
+document, on real JPL Horizons state vectors (Halley, Ceres, Bennu…), and on
+the N-body planets against their published J2000 elements. It exits with the
+score; `--offline` drops only the Horizons suite.
 
 ## Notes & limits
 
