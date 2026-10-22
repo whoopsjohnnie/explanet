@@ -11,7 +11,7 @@
  *     in gen-sol-real's mSun / density trick);
  *  3. N-body planets carry the right orbital energy: the semimajor axis
  *     recomputed from (r, v, μ☉) must match the real one;
- *  4. geometry spot checks: Everest, Saturn's rings, body census.
+ *  4. geometry spot checks: Everest, Saturn's rings, atmospheres, body census.
  *
  *   node scripts/verify-sol-real.mjs [path/to/sol-real.json]
  */
@@ -162,13 +162,29 @@ check(Math.abs(everestKm - 8.849) < 0.1, `Everest: ${everestKm.toFixed(2)} km`)
 const saturn = byName.get('Saturn')
 check(saturn.rings && saturn.rings.bands.length >= 4, 'Saturn rings missing/thin')
 
+// atmospheres: the catalog must ride along — Earth/Venus/Mars/giants + Titan,
+// Triton, Pluto have air; the Moon must NOT. Heights are radius multiples,
+// so Earth's top should land near 600 km and scaleHeight near 8.5 km.
+const ATMOSPHERED = ['Earth', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Titan', 'Triton', 'Pluto']
+for (const name of ATMOSPHERED) {
+  const a = byName.get(name)?.atmosphere
+  check(a && a.top > 0 && a.scaleHeight > 0 && a.scaleHeight < a.top, `${name}: atmosphere missing/malformed`)
+}
+check(!byName.get('Moon').atmosphere, 'Moon must be airless')
+const earthAtmo = earth.atmosphere
+if (earthAtmo) {
+  check(Math.abs(earthAtmo.top * 6371.009 - 600) < 60, `Earth atmosphere top ${(earthAtmo.top * 6371.009).toFixed(0)} km ≠ ~600 km`)
+  check(Math.abs(earthAtmo.scaleHeight * 6371.009 - 8.5) < 1, `Earth scale height ${(earthAtmo.scaleHeight * 6371.009).toFixed(1)} km ≠ ~8.5 km`)
+}
+const withAtmo = bodies.filter((p) => p.atmosphere)
+
 // ---------------------------------------------------------------------------
 console.log(`verify-sol-real: ${PATH}`)
 console.log(`  ${bodies.length} bodies (${scripted} scripted) — kinds:`, JSON.stringify(census))
 console.log(`  m☉ = ${mSun.toExponential(4)}, KM2U = ${KM2U.toFixed(6)}`)
 console.log(`  closure: worst ${worst.close.toExponential(2)}·a (${worst.closeName})`)
 console.log(`  Kepler III: worst |n²a³/GM − 1| = ${Math.abs(worst.law).toExponential(2)} (${worst.lawName})`)
-console.log(`  Everest ${everestKm.toFixed(2)} km, Saturn rings ${saturn.rings?.bands?.length} bands`)
+console.log(`  Everest ${everestKm.toFixed(2)} km, Saturn rings ${saturn.rings?.bands?.length} bands, atmospheres ${withAtmo.length} (${withAtmo.map((p) => p.name).join(', ')})`)
 if (problems.length) {
   console.log(`\nFAIL (${fails}/${checks}):`)
   for (const p of problems) console.log('  ✗ ' + p)

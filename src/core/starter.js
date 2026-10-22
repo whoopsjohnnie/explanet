@@ -39,12 +39,16 @@
  *     retrograde via their obliquity), compressed so Earth's day ≈ 10 s.
  *   • No moons: at true scale the Moon would orbit INSIDE the Earth here
  *     (0.0026 AU ≈ 0.23 units).
+ *   • Air: bodies with real atmospheres carry an `atmosphere` descriptor
+ *     (core/atmospheres.js — heights as radius multiples, pressure in atm),
+ *     which the walk-mode sky renderer turns into daytime gradients.
  *
  * Used as the app's initial world and by scripts/gen-sample-world.mjs to
  * (re)generate public/world.json. Node-importable (no DOM access).
  */
 
 import { createEmptyWorld, createPlanet } from './worldSchema.js'
+import { atmosphereFor } from './atmospheres.js'
 import { generateElements } from './generators.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from './planetMath.js'
 import { orbitalSpeed } from './physics.js'
@@ -172,6 +176,7 @@ export function makeStarterWorld() {
       frequency: res,
       seed: d.seed,
       spin: spin(d.day, d.tilt),
+      ...(atmosphereFor(d.name, d.rKm) ? { atmosphere: atmosphereFor(d.name, d.rKm) } : {}),
       elements,
     })
     // Density that reproduces the planet's real mass at this grid volume.

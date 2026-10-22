@@ -32,7 +32,8 @@ for (const p of world.planets) {
   console.log(
     `  ${p.name.padEnd(8)} ${stub ? `stub   preview f${p.preview?.frequency}` : 'loaded'} ` +
       `f${String(p.frequency).padStart(3)} cells ${String(stats.cellCount).padStart(6)} ` +
-      `R ${stats.radius.toFixed(2).padStart(7)} M ${stats.mass.toExponential(3)}`
+      `R ${stats.radius.toFixed(2).padStart(7)} M ${stats.mass.toExponential(3)}` +
+      `${p.atmosphere ? `  atmo ${p.atmosphere.pressure} atm → top ${(p.atmosphere.top * stats.radius).toFixed(2)} u` : ''}`
   )
   if (stub && !p.preview) {
     console.error('  ✗ stub without a preview sample')

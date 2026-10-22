@@ -15,6 +15,8 @@
  *     colors, zero gravity cost. That is what keeps a ~900-body world at
  *     60 fps: pairwise applyForce only runs for the 14 massive bodies.
  *   • Rings around Saturn/Jupiter/Uranus (document descriptor → renderer).
+ *   • Real atmospheres on Earth/Venus/Mars/giants + Titan, Triton, Pluto
+ *     (core/atmospheres.js catalog → document descriptor → walk-mode sky).
  *
  * Same anchors as the Sol Trial (gen-solar-world.mjs): one hex ≈ 35 km on
  * the f203 Earth, 1 AU ≈ 4.25 million units, one document second = one real
@@ -28,6 +30,7 @@ import { generateElements } from '../src/core/generators.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import { keplerState } from '../src/core/kepler.js'
 import { PLANETS, DWARFS, RINGS, EXTRA_MOONS, MOON_PALETTES, NAMED_COLORS, TAXA } from './sol-real/features.js'
+import { atmosphereFor } from '../src/core/atmospheres.js'
 import {
   buildEarth,
   buildMars,
@@ -260,6 +263,7 @@ for (const d of PLANETS) {
       isStatic: false,
       generation: { fn: 'preset', preset: giant.preset, seed: giant.seed, relief, avgHeight: sum / sample.length },
       ...(RINGS[d.name] ? { rings: RINGS[d.name] } : {}),
+      ...(atmosphereFor(d.name, d.rKm) ? { atmosphere: atmosphereFor(d.name, d.rKm) } : {}),
       center: orb.center,
       velocity: orb.velocity,
       spin: spinVec(d.day, d.tilt),
@@ -267,6 +271,7 @@ for (const d of PLANETS) {
     continue
   }
   const { freq, elements } = buildRockyTerrain(d.name, d.rKm, d.seed)
+  const atmo = atmosphereFor(d.name, d.rKm)
   planets.push({
     id: uniqueId(PLANET_DOC_ID[d.name]),
     name: d.name,
@@ -277,6 +282,7 @@ for (const d of PLANETS) {
     scale: 1,
     density: densityFor(d.mu, freq, 1, elements),
     isStatic: false,
+    ...(atmo ? { atmosphere: atmo } : {}),
     elements,
     center: orb.center,
     velocity: orb.velocity,
@@ -294,6 +300,7 @@ for (const d of DWARFS) {
   else if (d.taxon === 'red') pal = { c: '#c98a5e', c2: '#8f5a36', t: 'ice' }
   else pal = { c: '#a5a096', c2: '#706b62', t: 'rock', craters: 0.6 }
   const elements = buildMoonByPalette(freq, pal, d.seed, { polarCaps: d.taxon === 'ice' })
+  const atmo = atmosphereFor(d.name, d.rKm)
   planets.push({
     id: uniqueId(DWARF_DOC_ID[d.name]),
     name: d.name,
@@ -304,6 +311,7 @@ for (const d of DWARFS) {
     scale: 1,
     density: densityFor(d.mu, freq, 1, elements),
     isStatic: false,
+    ...(atmo ? { atmosphere: atmo } : {}),
     elements,
     center: orb.center,
     velocity: orb.velocity,
@@ -404,6 +412,7 @@ function addMoon(m) {
     ? { x: 0, y: (2 * Math.PI) / (periodDays * 86400), z: 0 }
     : spinVec(1 + hash01(m.name, 9) * 40, hash01(m.name, 10) * 160)
 
+  const atmo = atmosphereFor(m.name, rKm)
   planets.push({
     id: uniqueId(`m-${slug(m.parent)}-${slug(m.name)}`),
     name: m.name,
@@ -414,6 +423,7 @@ function addMoon(m) {
     scale,
     density: densityFor(mu, freq, scale, elements),
     isStatic: false,
+    ...(atmo ? { atmosphere: atmo } : {}),
     parent: parentId,
     elements,
     scriptsOrbit: orb.orbit,
