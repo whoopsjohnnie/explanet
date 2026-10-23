@@ -8,14 +8,15 @@ Design rationale: `docs/design.txt` (explains WHY), usage: `README.md`.
 
 - `npm run dev` — dev server (add `-- --host 0.0.0.0` for LAN testing); mounts the `/api` world-database endpoints via a vite plugin
 - `npm test` — runs the three node test scripts; a single one is just `node scripts/test-hexsphere.mjs` (or `test-geometry.mjs` / `test-surface.mjs`)
-- `npm run build` — production build; this + `npm test` is the **entire** verification loop
+- `npm run test:headless` — rendered-pipeline tests (real tree + workers in memory, no browser — see "Headless render harness"); kept separate from `npm test` (needs devDeps, slower boot)
+- `npm run build` — production build; this + `npm test` + `npm run test:headless` is the **entire** verification loop
 - `npm run serve` — production server: `dist/` + `/api` on one port (build first)
 - `npm run gen:world` — regenerates `public/world.json` (the bundled demo world)
 - `npm run db:import` — streams `public/world.json` into the world database (psql/COPY; re-running imports a NEW world row)
 - `node scripts/check-db-live.mjs` — live end-to-end smoke test of skeleton → hydrate against a running `/api`
 - `scripts/run_s0.sh` — s0 scoring of `core/kepler.js` `cartesianToElements` (state vectors → `scripts` descriptors): document round-trip + real JPL Horizons vectors + published planet elements; `--offline` skips the network suite
 
-No browser automation is available here: headless Firefox **hangs** (no GPU). Do not attempt screenshots/browser smoke tests; verify via `npm test` + `npm run build` (and `scripts/check-db-live.mjs` for the data source).
+No browser automation is available here: headless Firefox **hangs** (no GPU). Do not attempt screenshots/browser smoke tests; verify via `npm test` + `npm run build` + `npm run test:headless` (and `scripts/check-db-live.mjs` for the data source).
 
 ## World data source: PostgreSQL, streaming (`server/` + `core/db.js`)
 
@@ -49,6 +50,15 @@ Worlds live in the world database (PostgreSQL 15+ on **<db-host>**, database **<
 
 - `scripts/test-hexsphere.mjs` asserts hard geometric truths (exactly 12 pentagons, symmetric adjacency, total area = 4π, near-equal cell areas). If a `hexsphere.js` change fails these, the math is wrong — historically two real bugs surfaced exactly here; do not weaken the assertions.
 - Loading must heal corrupt world files (`normalizeWorld`) rather than throw — keep that lenient contract.
+
+## Headless render harness (`scripts/harness/` + `scripts/test-headless.mjs`)
+
+Playwright-flavoured but browserless: `@react-three/test-renderer` (null GL) mounts the real Scene components, a real `@react-three/cannon` physics worker and the real geometry module worker — `env.mjs` shims both onto `worker_threads` (`loader.mjs` maps `.jsx`/three imports). Usage in `index.mjs`'s docblock: `bootWorld()` → `set`/`walk`/`cameraNear` → `track(name)` anchors one rendered hex vertex → `frames(n, {jitter})` → `stats()` (px jitter + sign flips, camera-frame weld slide, `maxMeshEntryU` = the registry≡mesh float32 contract, jumps, LOD swaps). Pinned regressions: clean orbits under RAF jitter, walker weld, and the follow-lock sawtooth at Sol-Real scale (test 3 skips without `public/sol-real.json`).
+
+- **Sample at the render point**: `frames()` runs `advanceFrames(1, dt)`, then updates matrices and samples trackers synchronously before awaiting the worker reply — no worker message interleaves subscriber and sample, like the browser's rAF. Because physics replies land between frames anyway, jump budgets scale with the **previous** sample's dt (a 0.12 s stall legitimately travels ≈ 7 frames — starter Earth orbits at ~31 u/s).
+- `advanceFrames` calls subscribers directly — r3f's `advance()` never runs: no clock, no render. `camera.updateMatrixWorld()` keeps `camera.matrixWorldInverse` fresh (the harness does it every frame); metrics that read camera matrices without that call silently see a stale frame — it fooled one probe into reporting perfect weld on a moving camera.
+- View-space weld metrics must difference in the **camera frame**: the world-frame hex→camera vector rotates at ~ω·dt × chord (≈0.25 u/frame on starter Earth), which is rotation, not weld error.
+- Shim workers inherit `execArgv`: `node -e` / `--input-type=module` breaks them — run probe scripts as files.
 
 ## Repo gotchas
 

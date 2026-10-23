@@ -11,7 +11,8 @@
     "serve": "node server/serve.mjs",
     "test": "node scripts/test-hexsphere.mjs && node scripts/test-geometry.mjs && node scripts/test-surface.mjs",
     "gen:world": "node scripts/gen-sample-world.mjs",
-    "db:import": "node scripts/import-db.mjs"
+    "db:import": "node scripts/import-db.mjs",
+    "test:headless": "node --test scripts/test-headless.mjs"
   },
   "dependencies": {
     "@react-three/cannon": "^6.6.0",
@@ -25,7 +26,9 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@react-three/test-renderer": "^9.1.1",
     "@vitejs/plugin-react": "^5.1.0",
+    "esbuild": "^0.28.2",
     "vite": "^7.1.0"
   }
 }
