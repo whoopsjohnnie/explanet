@@ -44,6 +44,11 @@ export default function Scene() {
     for (const p of planets) r = Math.max(r, Math.hypot(p.center.x, p.center.y, p.center.z))
     return r
   }, [planets])
+  // same star predicate the atmosphere shaders use (WalkSky/AtmosphereGlow)
+  const hasStar = useMemo(
+    () => planets.some((p) => p.kind === 'star' || p.preset === 'star'),
+    [planets]
+  )
   const starR = Math.max(900, sysR * 2.7) // starfield sits beyond the zoom limit
   const starCount = Math.min(16000, Math.round(7000 * Math.sqrt(starR / 900)))
 
@@ -81,8 +86,20 @@ export default function Scene() {
       <group visible={!walkAtmo}>
         <Stars radius={starR} depth={160} count={starCount} factor={5} saturation={0} fade speed={0.3} />
       </group>
-      <ambientLight intensity={0.5} />
-      <hemisphereLight args={['#9db8ff', '#201607', 0.3]} />
+      {/* The star's pointLight (in Planet.jsx) is the system's only key
+          light: with one present the fill drops to a whisper floor, so night
+          sides fall into near-darkness like real photos — Jupiter's backside
+          reads as a silhouette, not a grey ball — and walk-mode ground
+          darkens with the sky. A starless world keeps the classic
+          ambient + hemisphere so it stays visible. */}
+      {hasStar ? (
+        <ambientLight intensity={0.06} />
+      ) : (
+        <>
+          <ambientLight intensity={0.5} />
+          <hemisphereLight args={['#9db8ff', '#201607', 0.3]} />
+        </>
+      )}
 
       <Physics
         gravity={[0, 0, 0]}
