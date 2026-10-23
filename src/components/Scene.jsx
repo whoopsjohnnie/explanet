@@ -1,12 +1,13 @@
 /**
  * Scene.jsx — the R3F canvas: cannon physics world (zero global gravity,
- * pairwise N-body attraction added per frame), starfield, lights, controls.
+ * pairwise N-body attraction added per frame), the real-sky backdrop
+ * (StarField.jsx), lights, controls.
  */
 
 import { useMemo } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Physics } from '@react-three/cannon'
-import { OrbitControls, Stars } from '@react-three/drei'
+import { OrbitControls } from '@react-three/drei'
 import { useStore } from '../state/store.js'
 import { stepGravity } from '../core/physics.js'
 import { planetRadius } from '../core/planetMath.js'
@@ -14,6 +15,7 @@ import { animateTerrainMaterials } from '../three/materials.js'
 import Planet from './Planet.jsx'
 import Walker from './Walker.jsx'
 import WalkSky from './WalkSky.jsx'
+import StarField from './StarField.jsx'
 import CameraFollow from './CameraFollow.jsx'
 
 function GravityRunner() {
@@ -50,7 +52,6 @@ export default function Scene() {
     [planets]
   )
   const starR = Math.max(900, sysR * 2.7) // starfield sits beyond the zoom limit
-  const starCount = Math.min(16000, Math.round(7000 * Math.sqrt(starR / 900)))
 
   // Opening vantage OUTSIDE a true-size star: the classic camera position
   // above sits at ~450 u, which a real Sun (≈20,000 u at a 35 km anchor)
@@ -84,7 +85,7 @@ export default function Scene() {
       <color attach="background" args={['#04060d']} />
       <fog attach="fog" args={['#04060d', Math.max(900, sysR * 1.2), Math.max(2400, sysR * 9)]} />
       <group visible={!walkAtmo}>
-        <Stars radius={starR} depth={160} count={starCount} factor={5} saturation={0} fade speed={0.3} />
+        <StarField radius={starR} />
       </group>
       {/* The star's pointLight (in Planet.jsx) is the system's only key
           light: with one present the fill drops to a whisper floor, so night

@@ -1,0 +1,210 @@
+/**
+ * starsky.js — the real sky in the engine frame.
+ *
+ * The backdrop is not decorative noise: it is the actual sky. Bright stars
+ * come from the Yale Bright Star Catalog (J2000 RA/Dec, core/starCatalog.js,
+ * generated) and the faint Milky Way band is procedural dust sampled in
+ * GALACTIC coordinates — and every direction is projected into the engine
+ * frame the whole world already lives in: the ecliptic is the XZ plane and
+ * +Y is ecliptic north (the exact map kepler.js uses), so the constellations,
+ * the galactic band (~62.9° off the orbital plane) and the planetary orbits
+ * all hold their true mutual angles for free.
+ *
+ * Chain: catalog RA/Dec (equatorial, J2000) ──ε=23.439°──> ecliptic ──> engine
+ *        galactic (l, b) ──J2000 pole/GC basis──> equatorial ──same──> engine
+ *
+ * Framework-free (no three, no DOM): the same math runs in the node tests.
+ */
+
+const DEG = Math.PI / 180
+const TWO_PI = Math.PI * 2
+
+/** Mean obliquity of the ecliptic at J2000 (deg). */
+export const OBLIQUITY_J2000 = 23.4392911
+
+// Galactic pole + center, IAU 1958 system expressed in J2000 equatorial coords.
+const NGP_RA = 192.85948 * DEG // galactic north pole
+const NGP_DEC = 27.12825 * DEG
+const GC_RA = 266.40497 * DEG // galactic center (l = 0, b = 0)
+const GC_DEC = -28.93617 * DEG
+
+const CE = Math.cos(OBLIQUITY_J2000 * DEG)
+const SE = Math.sin(OBLIQUITY_J2000 * DEG)
+
+/** Equatorial unit vector (x, y, z) → engine frame (pure rotation + map). */
+function eqVecToEngine(x, y, z, out) {
+  // rotate about X by the obliquity: equatorial → ecliptic
+  const Y = y * CE + z * SE
+  const Z = -y * SE + z * CE
+  // ecliptic → engine, the kepler.js map: (X, Y, Znorth) → (x, z, −y)
+  out[0] = x
+  out[1] = Z
+  out[2] = -Y
+  return out
+}
+
+/** Unit direction for equatorial (ra, dec in DEGREES, J2000), engine frame. */
+export function radecToEngine(raDeg, decDeg, out = [0, 0, 0]) {
+  const c = Math.cos(decDeg * DEG)
+  return eqVecToEngine(c * Math.cos(raDeg * DEG), c * Math.sin(raDeg * DEG), Math.sin(decDeg * DEG), out)
+}
+
+// Galactic basis in equatorial unit vectors: x̂ toward the center, ẑ the pole,
+// ŷ = ẑ × x̂ (l = 90°). Orthonormal up to the constants' shared precision.
+const gcEq = (() => {
+  const c = Math.cos(GC_DEC)
+  return [c * Math.cos(GC_RA), c * Math.sin(GC_RA), Math.sin(GC_DEC)]
+})()
+const poleEq = (() => {
+  const c = Math.cos(NGP_DEC)
+  return [c * Math.cos(NGP_RA), c * Math.sin(NGP_RA), Math.sin(NGP_DEC)]
+})()
+const l90Eq = [
+  poleEq[1] * gcEq[2] - poleEq[2] * gcEq[1],
+  poleEq[2] * gcEq[0] - poleEq[0] * gcEq[2],
+  poleEq[0] * gcEq[1] - poleEq[1] * gcEq[0],
+]
+
+/** Galactic (l, b in RADIANS) → equatorial unit vector (shared by project + dust). */
+function galVecToEq(lRad, bRad, out) {
+  const cb = Math.cos(bRad)
+  const cl = Math.cos(lRad)
+  const sl = Math.sin(lRad)
+  const sb = Math.sin(bRad)
+  out[0] = cb * (cl * gcEq[0] + sl * l90Eq[0]) + sb * poleEq[0]
+  out[1] = cb * (cl * gcEq[1] + sl * l90Eq[1]) + sb * poleEq[1]
+  out[2] = cb * (cl * gcEq[2] + sl * l90Eq[2]) + sb * poleEq[2]
+  return out
+}
+
+/** Unit direction for galactic (l, b in DEGREES), engine frame. */
+export function galacticToEngine(lDeg, bDeg, out = [0, 0, 0]) {
+  const e = galVecToEq(lDeg * DEG, bDeg * DEG, [0, 0, 0])
+  return eqVecToEngine(e[0], e[1], e[2], out)
+}
+
+/** Engine-frame unit vectors for the shader dome in WalkSky.jsx. */
+export const GALACTIC_CENTER_ENGINE = galacticToEngine(0, 0)
+export const GALACTIC_POLE_ENGINE = galacticToEngine(0, 90)
+
+// ---------------------------------------------------------------------------
+// Bright-star catalog (generated module: Int32 quads, base64)
+// ---------------------------------------------------------------------------
+
+/**
+ * sRGB (0..1) → linear light — three's working space is linear and our star
+ * shaders tone-map/encode by hand (like WalkSky), so colors are stored linear.
+ */
+export function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+}
+
+/** Linear-light tints per spectral class (0=O … 6=M, 7=uncatalogued white). */
+export const SPECTRAL_COLORS = [
+  '#9bb0ff', // O — blue supergiants
+  '#aabfff', // B — Rigel
+  '#cad8ff', // A — Vega
+  '#f8f7ff', // F — Procyon
+  '#fff4ea', // G — the Sun
+  '#ffd2a1', // K — Arcturus
+  '#ffb380', // M — Betelgeuse
+  '#e8e8ee', // ?  — no class in catalog
+].map((hex) => [
+  srgbToLinear(parseInt(hex.slice(1, 3), 16) / 255),
+  srgbToLinear(parseInt(hex.slice(3, 5), 16) / 255),
+  srgbToLinear(parseInt(hex.slice(5, 7), 16) / 255),
+])
+
+/**
+ * Decode the packed catalog. Returns parallel arrays in the catalog's own
+ * J2000 frame — project each star with radecToEngine at render build time.
+ */
+export function decodeBrightStars(b64) {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const words = new Int32Array(bytes.buffer)
+  const n = words.length / 4
+  const ra = new Float32Array(n)
+  const dec = new Float32Array(n)
+  const mag = new Float32Array(n)
+  const spec = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    ra[i] = words[i * 4] / 1000
+    dec[i] = words[i * 4 + 1] / 1000
+    mag[i] = words[i * 4 + 2] / 100
+    spec[i] = words[i * 4 + 3]
+  }
+  return { count: n, ra, dec, mag, spec }
+}
+
+/** Point size (CSS px) for a visual magnitude: Sirius ≈ 5, mag 6.5 ≈ 1.1. */
+export function starSizePx(mag) {
+  const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
+  return 1 + 4 * Math.pow(t, 1.6)
+}
+
+/** Additive intensity (0..1) for a visual magnitude. */
+export function starIntensity(mag) {
+  const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
+  return 0.14 + 0.86 * Math.pow(t, 1.7)
+}
+
+// ---------------------------------------------------------------------------
+// Milky Way dust — procedural unresolved stars, sampled in galactic coords
+// ---------------------------------------------------------------------------
+
+function mulberry32(seed) {
+  let a = seed >>> 0
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+const RAD = 180 / Math.PI
+
+/**
+ * Unnormalized acceptance density for galactic (l, b in radians): a
+ * double-exponential disk (scale ~5°) brightened toward the galactic center
+ * (the bulge), with the Great Rift carved as a dust shadow ringing the
+ * center at mid latitude. Max over the sphere is (0.25+0.75)·(1+3) = 4.
+ */
+function diskDensity(bAbs, dGc) {
+  const disk = Math.exp(-bAbs * RAD / 5)
+  const bulge = 1 + 3 * Math.exp(-Math.pow(dGc * RAD / 16, 2))
+  const rift = 1 - 0.6 * Math.exp(-Math.pow(dGc * RAD / 35, 2)) * Math.exp(-Math.pow((bAbs * RAD - 5) / 6, 2))
+  return (0.25 + 0.75 * disk) * bulge * rift
+}
+
+/**
+ * Procedural Milky Way: `count` unit directions (engine frame) drawn from the
+ * galactic disk density, with weights 0..1 for dim unresolved stars. Seeded →
+ * deterministic. Bright enough to read as the band, faint enough that the
+ * catalog stars still carry the constellations.
+ */
+export function generateDust(count, seed = 7) {
+  const rand = mulberry32(seed)
+  const dir = new Float32Array(count * 3)
+  const w = new Float32Array(count)
+  const v = [0, 0, 0]
+  for (let i = 0; i < count; ) {
+    const l = rand() * TWO_PI
+    // double-sided exponential latitude: |b| = σ·ln(1/u), σ = 7°
+    const b = ((rand() < 0.5 ? 1 : -1) * 7 * -Math.log(Math.max(rand(), 1e-9))) * DEG
+    // angular distance to the galactic center (at l = 0, b = 0)
+    const dGc = Math.acos(Math.max(-1, Math.min(1, Math.cos(b) * Math.cos(l))))
+    if (rand() * 4 > diskDensity(Math.abs(b), dGc)) continue
+    const e = galVecToEq(l, b, [0, 0, 0])
+    eqVecToEngine(e[0], e[1], e[2], v)
+    dir[i * 3] = v[0]
+    dir[i * 3 + 1] = v[1]
+    dir[i * 3 + 2] = v[2]
+    w[i] = Math.pow(rand(), 2)
+    i++
+  }
+  return { dir, w }
+}
