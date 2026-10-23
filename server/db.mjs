@@ -99,7 +99,7 @@ const cellCount = (frequency) => 10 * frequency * frequency + 2
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d)
 
 /** gzip without blocking the event loop on big bodies. */
-async function gzipText(text) {
+export async function gzipText(text) {
   const gz = await new Promise((res, rej) => gzip(text, { level: 5 }, (e, out) => (e ? rej(e) : res(out))))
   return gz
 }
@@ -252,6 +252,144 @@ export async function bodyPreview(dbId, frequency = PREVIEW_FREQUENCY) {
   const elements = await bodyElements(dbId)
   const { elements: sampled } = sampleLodElements({ frequency: b.frequency, elements }, frequency)
   return { frequency, elements: sampled }
+}
+
+// ---------------------------------------------------------------------------
+// Stars — the real-sky catalog (read side of migration 006)
+// ---------------------------------------------------------------------------
+
+/** Catalog summaries for GET /api/stars: rows + magnitude range per catalog. */
+export async function starCatalogs() {
+  const { rows } = await getPool().query(
+    `SELECT catalog, count(*)::int AS stars, min(mag)::float8 AS brightest,
+            max(mag)::float8 AS faintest, max(imported_at) AS imported
+       FROM stars GROUP BY catalog ORDER BY count(*) DESC, catalog`
+  )
+  return rows.map((r) => ({
+    catalog: r.catalog,
+    stars: r.stars,
+    brightest: r.brightest,
+    faintest: r.faintest,
+    imported: r.imported,
+  }))
+}
+
+/** The catalog to serve when the request doesn't name one: the biggest. */
+async function defaultStarCatalog() {
+  const { rows } = await getPool().query(
+    `SELECT catalog FROM stars GROUP BY catalog ORDER BY count(*) DESC, catalog LIMIT 1`
+  )
+  if (!rows.length) throw new Error(`no star catalog imported into ${DATABASE}@${HOST} — run scripts/import-stars.mjs`)
+  return rows[0].catalog
+}
+
+async function resolveStarCatalog(catalog) {
+  if (catalog) return String(catalog)
+  return defaultStarCatalog()
+}
+
+/** One detailed star row → JSON shape (camelCase, degrees/mag). */
+function starJson(r) {
+  return {
+    catalog: r.catalog,
+    hr: r.hr,
+    ra: r.ra_deg,
+    dec: r.dec_deg,
+    epoch: r.epoch,
+    pmRa: r.pm_ra,
+    pmDec: r.pm_dec,
+    mag: r.mag,
+    band: r.mag_band,
+    bv: r.b_v,
+    spectral: r.spectral,
+    spectralClass: r.spectral_class,
+    galL: r.gal_l,
+    galB: r.gal_b,
+    eclLon: r.ecl_lon,
+    eclLat: r.ecl_lat,
+  }
+}
+
+/** Detailed rows for one catalog, brightest first; optional mag cut + limit. */
+export async function starsList({ catalog, magMax, limit } = {}) {
+  const cat = await resolveStarCatalog(catalog)
+  const { rows } = await getPool().query(
+    `SELECT * FROM stars
+      WHERE catalog = $1 AND mag <= $2
+      ORDER BY mag, hr
+      LIMIT $3`,
+    [cat, Number.isFinite(Number(magMax)) ? Number(magMax) : 99, Math.min(Number(limit) || 20000, 100000)]
+  )
+  if (!rows.length) {
+    // empty because the catalog doesn't exist → 404, vs a legit empty cut
+    const any = await getPool().query(`SELECT 1 FROM stars WHERE catalog = $1 LIMIT 1`, [cat])
+    if (!any.rows.length) throw new Error(`no star catalog '${cat}' in ${DATABASE}@${HOST}`)
+  }
+  return { catalog: cat, count: rows.length, stars: rows.map(starJson) }
+}
+
+/** Single star by Harvard Revised number (catalog optional: searched if null). */
+export async function starByHr(hr, { catalog } = {}) {
+  const n = Number(hr)
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`bad star hr ${hr}`)
+  const { rows } = await getPool().query(
+    catalog ? `SELECT * FROM stars WHERE hr = $1 AND catalog = $2` : `SELECT * FROM stars WHERE hr = $1 ORDER BY catalog`,
+    catalog ? [n, String(catalog)] : [n]
+  )
+  if (!rows.length) throw new Error(`no star ${n} in ${catalog || 'any catalog'} — ${DATABASE}@${HOST}`)
+  return rows.map(starJson)
+}
+
+// packed sky payloads are static per (catalog, magMax): cache text+gzip the
+// way worldSkeleton caches documents; ?refresh=1 bypasses
+const skyCache = new Map() // key → { text, gz, at }
+const SKY_TTL_MS = 30 * 60_000
+
+/**
+ * The StarField wire format: 4 Int32 per star — RA·1000, Dec·1000, V·100,
+ * spectral class index (OBAFGKM = 0..6, else 7) — base64. Exactly what
+ * core/starsky.js decodeBrightStars() consumes, and what the bundled
+ * src/core/starCatalog.js carries, so an API-fed client and a bundle-fed
+ * client draw the identical sky.
+ */
+export async function skyPacked({ catalog, magMax, refresh = false } = {}) {
+  const cat = await resolveStarCatalog(catalog)
+  const magCut = Number.isFinite(Number(magMax)) ? Number(magMax) : 99
+  const key = `${cat}|${magCut}`
+  const cached = skyCache.get(key)
+  if (!refresh && cached && Date.now() - cached.at < SKY_TTL_MS) return cached
+
+  const { rows } = await getPool().query(
+    // floor(x + 0.5) reproduces JS Math.round exactly — PG's round(float8) is
+    // half-to-even and would desync this payload from the packed bundle
+    `SELECT floor(ra_deg * 1000 + 0.5)::int AS ra, floor(dec_deg * 1000 + 0.5)::int AS dec,
+            floor(mag * 100 + 0.5)::int AS mag,
+            CASE spectral_class WHEN 'O' THEN 0 WHEN 'B' THEN 1 WHEN 'A' THEN 2
+                                WHEN 'F' THEN 3 WHEN 'G' THEN 4 WHEN 'K' THEN 5
+                                WHEN 'M' THEN 6 ELSE 7 END AS spec
+       FROM stars
+      WHERE catalog = $1 AND mag <= $2
+      ORDER BY hr`,
+    [cat, magCut]
+  )
+  if (!rows.length) throw new Error(`no star catalog '${cat}' in ${DATABASE}@${HOST}`)
+
+  const words = new Int32Array(rows.length * 4)
+  for (let i = 0; i < rows.length; i++) {
+    words[i * 4] = rows[i].ra
+    words[i * 4 + 1] = rows[i].dec
+    words[i * 4 + 2] = rows[i].mag
+    words[i * 4 + 3] = rows[i].spec
+  }
+  const text = JSON.stringify({
+    catalog: cat,
+    count: rows.length,
+    format: 'int32x4-b64: [ra_mdeg, dec_mdeg, mag_centi, spec]',
+    b64: Buffer.from(words.buffer).toString('base64'),
+  })
+  const record = { text, gz: await gzipText(text), at: Date.now() }
+  skyCache.set(key, record)
+  return record
 }
 
 // ---------------------------------------------------------------------------

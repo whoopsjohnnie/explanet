@@ -13,6 +13,7 @@
     "gen:world": "node scripts/gen-sample-world.mjs",
     "gen:stars": "node scripts/gen-starfield.mjs",
     "db:import": "node scripts/import-db.mjs",
+    "db:stars": "node scripts/import-stars.mjs",
     "test:headless": "node --test scripts/test-headless.mjs"
   },
   "dependencies": {

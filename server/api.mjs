@@ -10,13 +10,19 @@
  *   GET /api/worlds/default             → the default world's skeleton document
  *   GET /api/worlds/:id                 → skeleton document (?refresh=1 rebakes)
  *   GET /api/bodies/:dbId/elements      → compact atoms for one body
+ *   GET /api/stars                      → { catalogs: [...], defaultCatalog }
+ *   GET /api/stars/sky                  → packed StarField payload (?catalog=
+ *                                         &magMax=&refresh=1; same int32x4-b64
+ *                                         format as the bundled starCatalog.js)
+ *   GET /api/stars/list                 → detailed rows (?catalog=&magMax=&limit=)
+ *   GET /api/stars/hr/:hr               → one star by Harvard number
  *
  * The skeleton is the boot payload: bodies with real frequency/density (so
  * derived radius/mass and orbits stay exact) but atoms only for the small
  * bodies; giants arrive as stubs + a preview sample and stream their atoms
  * in later via /api/bodies/:id/elements.
  */
-import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool } from './db.mjs'
+import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked } from './db.mjs'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -67,9 +73,37 @@ export async function apiHandler(req, res, next) {
     if (bodyMatch) {
       return sendPayload(req, res, await bodyPayload(bodyMatch[1]))
     }
+    // ---- stars: the real-sky catalog (read-only reference data) -----------
+    const params = new URL(req.url, 'http://localhost').searchParams
+    if (path === '/api/stars') {
+      const catalogs = await starCatalogs()
+      return send(res, 200, JSON.stringify({ catalogs, defaultCatalog: catalogs[0]?.catalog ?? null }))
+    }
+    if (path === '/api/stars/sky') {
+      return sendPayload(req, res, await skyPacked({
+        catalog: params.get('catalog') ?? undefined,
+        magMax: params.get('magMax') ?? undefined,
+        refresh: params.get('refresh') === '1',
+      }))
+    }
+    if (path === '/api/stars/list') {
+      const text = JSON.stringify(await starsList({
+        catalog: params.get('catalog') ?? undefined,
+        magMax: params.get('magMax') ?? undefined,
+        limit: params.get('limit') ?? undefined,
+      }))
+      if (/\bgzip\b/.test(String(req.headers['accept-encoding'] || '')))
+        return send(res, 200, await gzipText(text), { ...JSON_HEADERS, 'content-encoding': 'gzip' })
+      return send(res, 200, text)
+    }
+    const starMatch = /^\/api\/stars\/hr\/(\d+)$/.exec(path)
+    if (starMatch) {
+      const stars = await starByHr(starMatch[1], { catalog: params.get('catalog') ?? undefined })
+      return send(res, 200, JSON.stringify(stars.length === 1 ? stars[0] : { stars }))
+    }
     return send(res, 404, JSON.stringify({ error: `no api route ${path}` }))
   } catch (err) {
-    const status = /no world|no bodies/.test(err.message) ? 404 : 500
+    const status = /no world|no bodies|no star/.test(err.message) ? 404 : 500
     return send(res, status, JSON.stringify({ error: err.message }))
   }
 }

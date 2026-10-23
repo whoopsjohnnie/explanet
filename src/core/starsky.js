@@ -83,6 +83,43 @@ export function galacticToEngine(lDeg, bDeg, out = [0, 0, 0]) {
   return eqVecToEngine(e[0], e[1], e[2], out)
 }
 
+/**
+ * Equatorial (deg, J2000) → ecliptic { lonDeg ∈ [0,360), latDeg }. The engine
+ * frame's own spherical coordinates (λ measured from the vernal equinox,
+ * β = engine latitude) — stored per star in the DB, verified by
+ * scripts/test-starfield.mjs against galacticToEngine/radecToEngine.
+ */
+export function radecToEcliptic(raDeg, decDeg) {
+  const c = Math.cos(decDeg * DEG)
+  const x = c * Math.cos(raDeg * DEG)
+  const y = c * Math.sin(raDeg * DEG)
+  const z = Math.sin(decDeg * DEG)
+  const Y = y * CE + z * SE
+  const Z = -y * SE + z * CE
+  const X = x
+  let lonDeg = Math.atan2(Y, X) / DEG
+  if (lonDeg < 0) lonDeg += 360
+  return { lonDeg, latDeg: Math.asin(Math.max(-1, Math.min(1, Z))) / DEG }
+}
+
+/**
+ * Equatorial (deg, J2000) → galactic { lDeg ∈ [0,360), bDeg } in the IAU 1958
+ * system (same pole/center constants as galacticToEngine — exact inverse).
+ */
+export function radecToGalactic(raDeg, decDeg) {
+  const c = Math.cos(decDeg * DEG)
+  const x = c * Math.cos(raDeg * DEG)
+  const y = c * Math.sin(raDeg * DEG)
+  const z = Math.sin(decDeg * DEG)
+  // project onto the galactic basis: x̂ = center, ŷ = l=90°, ẑ = pole
+  const xg = x * gcEq[0] + y * gcEq[1] + z * gcEq[2]
+  const yg = x * l90Eq[0] + y * l90Eq[1] + z * l90Eq[2]
+  const zg = x * poleEq[0] + y * poleEq[1] + z * poleEq[2]
+  let lDeg = Math.atan2(yg, xg) / DEG
+  if (lDeg < 0) lDeg += 360
+  return { lDeg, bDeg: Math.asin(Math.max(-1, Math.min(1, zg))) / DEG }
+}
+
 /** Engine-frame unit vectors for the shader dome in WalkSky.jsx. */
 export const GALACTIC_CENTER_ENGINE = galacticToEngine(0, 0)
 export const GALACTIC_POLE_ENGINE = galacticToEngine(0, 90)

@@ -12,6 +12,9 @@ import {
   decodeBrightStars,
   radecToEngine,
   galacticToEngine,
+  radecToGalactic,
+  radecToEcliptic,
+  OBLIQUITY_J2000,
   generateDust,
   starSizePx,
   starIntensity,
@@ -83,6 +86,38 @@ for (let i = 0; i < cat.count; i++) {
 }
 const bandFrac = inBand / cat.count
 check(`bright stars band-concentrated (${(bandFrac * 100).toFixed(1)}%, uniform ${(Math.sin(15 * DEG) * 100).toFixed(1)}%)`, bandFrac > 0.33)
+
+// ---- derived columns (what import-stars.mjs stores in gal_/ecl_) ----------
+// reverse projection of the galactic center lands at (l, b) = (0, 0)
+const gcLB = radecToGalactic(266.40497, -28.93617)
+check(`radecToGalactic(GC) → (0, 0) [got ${gcLB.lDeg.toFixed(3)}, ${gcLB.bDeg.toFixed(3)}]`,
+  Math.abs(((gcLB.lDeg + 180) % 360) - 180) < 0.01 && Math.abs(gcLB.bDeg) < 0.01)
+// reverse projection of the galactic pole → b = +90
+const ngpLB = radecToGalactic(192.85948, 27.12825)
+check('radecToGalactic(pole) → b = 90', Math.abs(ngpLB.bDeg - 90) < 0.01)
+// ecliptic frame: the north ecliptic pole is at ecliptic latitude +90
+const enpEcl = radecToEcliptic(270, 66.5607)
+check('radecToEcliptic(ecliptic pole) → lat 90', Math.abs(enpEcl.latDeg - 90) < 1e-3)
+// the solstice point (RA 6h, Dec +ε) lies ON the ecliptic
+const solstice = radecToEcliptic(90, OBLIQUITY_J2000)
+check('solstice point on the ecliptic', Math.abs(solstice.latDeg) < 1e-6 && Math.abs(solstice.lonDeg - 90) < 1e-6)
+// round-trip: radecToGalactic then galacticToEngine ≡ radecToEngine, all stars
+let maxRoundTrip = 0
+for (let i = 0; i < cat.count; i++) {
+  const lb = radecToGalactic(cat.ra[i], cat.dec[i])
+  const a = radecToEngine(cat.ra[i], cat.dec[i], [0, 0, 0])
+  const b = galacticToEngine(lb.lDeg, lb.bDeg, [0, 0, 0])
+  maxRoundTrip = Math.max(maxRoundTrip, angBetween(a, b))
+}
+check(`galactic round-trip exact over all ${cat.count} stars (max ${maxRoundTrip.toExponential(1)}°)`, maxRoundTrip < 1e-4)
+// the stored ecliptic latitude must equal the engine y-component's implied one
+let maxEclLat = 0
+for (let i = 0; i < cat.count; i++) {
+  const e = radecToEcliptic(cat.ra[i], cat.dec[i])
+  const y = radecToEngine(cat.ra[i], cat.dec[i], [0, 0, 0])[1] // engine y = sin(ecliptic lat)
+  maxEclLat = Math.max(maxEclLat, Math.abs(Math.asin(Math.max(-1, Math.min(1, y))) / DEG - e.latDeg))
+}
+check(`ecliptic latitude consistent with engine +Y (max ${maxEclLat.toExponential(1)}°)`, maxEclLat < 1e-4)
 
 // ---- procedural dust ------------------------------------------------------
 const d1 = generateDust(4000, 7)

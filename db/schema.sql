@@ -308,6 +308,60 @@ COMMENT ON TABLE atoms IS
   'cell_count_for_frequency(frequency) rows.';
 
 -- ---------------------------------------------------------------------------
+-- stars — the real-sky catalog (astronomy, NOT world content)
+-- ---------------------------------------------------------------------------
+-- Reference table for the sky backdrop (StarField.jsx / core/starsky.js),
+-- deliberately kept OUTSIDE the world tables: a star here is a fact about our
+-- galaxy, not a body inside a world document. `catalog` groups rows by source
+-- catalog (the lightweight stand-in for a future star-map/galaxy model), so
+-- richer surveys (Hipparcos, Gaia) can coexist with BSC5. Natural key
+-- (catalog, hr); import replaces one catalog's rows atomically.
+--
+-- Positions are J2000 EQUATORIAL (the catalog's own frame). The engine's frame
+-- is the ECLIPTIC (XZ plane, +Y north — see kepler.js), and StarField projects
+-- ra/dec into it at load time; nothing bakes the sky. gal_/ecl_ columns are
+-- derived at import with the app's own starsky.js so SQL can band-cut (stars
+-- near the galactic plane) without redoing the astronomy — derivable, never
+-- authoritative. Served read-only by GET /api/stars*.
+-- ---------------------------------------------------------------------------
+CREATE TABLE stars (
+  catalog         text    NOT NULL,                -- 'BSC5' = Yale Bright Star Catalog v5
+  hr              integer NOT NULL,                -- Harvard Revised number (the BSC id)
+
+  ra_deg          double precision NOT NULL CHECK (ra_deg >= 0 AND ra_deg < 360),
+  dec_deg         double precision NOT NULL CHECK (dec_deg BETWEEN -90 AND 90),
+  epoch           double precision NOT NULL DEFAULT 2000,
+  pm_ra           double precision,
+  pm_dec          double precision,
+
+  mag             double precision NOT NULL CHECK (mag BETWEEN -30 AND 30),
+  mag_band        text NOT NULL DEFAULT 'V',
+  b_v             double precision,
+
+  spectral        text,
+  spectral_class  text CHECK (spectral_class IS NULL OR spectral_class IN
+                              ('O', 'B', 'A', 'F', 'G', 'K', 'M')),
+
+  -- derived at import (starsky.js) — query convenience, never authoritative
+  gal_l           double precision,
+  gal_b           double precision,
+  ecl_lon         double precision,
+  ecl_lat         double precision,
+
+  imported_at     timestamptz NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (catalog, hr)
+);
+
+CREATE INDEX stars_by_mag_idx ON stars (catalog, mag);
+
+COMMENT ON TABLE stars IS
+  'Real-sky star catalog (astronomy, not world content): one row per star of '
+  'a catalog. Positions J2000 equatorial; gal_/ecl_ derived at import via '
+  'src/core/starsky.js. Served by GET /api/stars* — StarField projects ra/dec '
+  'into the engine ecliptic frame at load time.';
+
+-- ---------------------------------------------------------------------------
 -- Views
 -- ---------------------------------------------------------------------------
 
