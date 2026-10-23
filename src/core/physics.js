@@ -54,8 +54,13 @@ export function stepGravity(G) {
       const nx = dx / dist
       const ny = dy / dist
       const nz = dz / dist
-      if (!a.isStatic) a.api.applyForce([F * nx, F * ny, F * nz], [a.pos.x, a.pos.y, a.pos.z])
-      if (!b.isStatic) b.api.applyForce([-F * nx, -F * ny, -F * nz], [b.pos.x, b.pos.y, b.pos.z])
+      // cannon-es treats the 2nd arg as a point RELATIVE to the center of mass
+      // (it does relativePoint × force → torque): pass zero for a pure force.
+      // Passing world positions here used to inject a pos×F torque — exactly
+      // zero for the Sun (force radial, star at origin) but wrong for
+      // planet–planet pairs, where it slowly torqued every spin.
+      if (!a.isStatic) a.api.applyForce([F * nx, F * ny, F * nz], [0, 0, 0])
+      if (!b.isStatic) b.api.applyForce([-F * nx, -F * ny, -F * nz], [0, 0, 0])
     }
   }
 }
