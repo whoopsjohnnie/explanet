@@ -17,13 +17,15 @@
  *    exactly like the walker's position — so it composes through the planet's
  *    quaternion every frame: the view is WELDED to the surface, and a landmark
  *    stays dead ahead no matter how the planet spins or flies; the horizon
- *    turns with the planet, never under it. Look-around is a held pointer
- *    drag: yaw rotates the heading around the walker's local up, pitch around
- *    the local right, elevation clamped short of the poles so the horizon
- *    stays level with the surface normal — on a spherical world this is what
- *    OrbitControls cannot give (its azimuth is locked to world Y), which is
- *    why the walker owns the camera outright and Scene.jsx disables
- *    OrbitControls while walking,
+ *    turns with the planet, never under it. And as the walker crosses the
+ *    sphere the heading is parallel-transported with the surface normal, so
+ *    walking far never tilts the view up off the horizon. Look-around is a
+ *    held pointer drag: yaw rotates the heading around the walker's local up,
+ *    pitch around the local right, elevation clamped short of the poles so
+ *    the horizon stays level with the surface normal — on a spherical world
+ *    this is what OrbitControls cannot give (its azimuth is locked to world
+ *    Y), which is why the walker owns the camera outright and Scene.jsx
+ *    disables OrbitControls while walking,
  *  • translate the camera-relative WASD input into a local tangent wish —
  *    the heading already lives in the local frame, and the wish is its
  *    projection onto the tangent plane, so you always move where you look.
@@ -94,6 +96,9 @@ export default function Walker({ planetId }) {
       gaze: new THREE.Vector3(),
       fwd: new THREE.Vector3(),
       rgt: new THREE.Vector3(),
+      prevDir: new THREE.Vector3(),
+      newDir: new THREE.Vector3(),
+      transport: new THREE.Quaternion(),
       wish: new THREE.Vector3(),
       wishArr: [0, 0, 0],
       d: new THREE.Vector3(),
@@ -262,19 +267,50 @@ export default function Walker({ planetId }) {
     if (!s.placed) {
       camera.getWorldDirection(s.fwdL)
       s.fwdL.applyQuaternion(tmp.qInv)
-      clampElevation(s.fwdL, tmp.upL, tmp.rgt)
+      // An orbiting camera looks at the planet's EXACT center and the walker
+      // spawns on the radial opposite that line, so the landed gaze is exactly
+      // the nadir pole: there yaw (rotation about up) is a no-op and the pitch
+      // axis fwd×up vanishes — the gaze would lock staring at your own feet
+      // for the rest of the walk. Un-stick it: take the heading from the
+      // camera's screen-up projected onto the tangent plane, at the horizon.
+      tmp.rgt.crossVectors(s.fwdL, tmp.upL)
+      if (tmp.rgt.lengthSq() < 1e-12) {
+        tmp.newDir.setFromMatrixColumn(camera.matrixWorld, 1) // screen up…
+        tmp.newDir.applyQuaternion(tmp.qInv) // …planet-local…
+        tmp.newDir.addScaledVector(tmp.upL, -tmp.newDir.dot(tmp.upL)) // …projected flat
+        if (tmp.newDir.lengthSq() < 1e-8) {
+          tmp.newDir.setFromMatrixColumn(camera.matrixWorld, 0) // …or screen right
+          tmp.newDir.applyQuaternion(tmp.qInv)
+          tmp.newDir.addScaledVector(tmp.upL, -tmp.newDir.dot(tmp.upL))
+        }
+        s.fwdL.copy(tmp.newDir.normalize())
+      } else {
+        clampElevation(s.fwdL, tmp.upL, tmp.rgt)
+      }
+      s.lastFwd.copy(s.fwdL).addScaledVector(tmp.upL, -s.fwdL.dot(tmp.upL))
+      if (s.lastFwd.lengthSq() > 1e-8) s.lastFwd.normalize()
       s.placed = true
     }
 
     // ---- consume look drag: yaw around local up, pitch around local right -
     const l = look.current
     if (l.dx !== 0 || l.dy !== 0) {
-      s.fwdL.applyAxisAngle(tmp.upL, -l.dx * LOOK_SENS)
+      // The pitch axis fwd×up vanishes at the zenith/nadir pole; recover it
+      // from the last ground heading so a drag can always tip the gaze off
+      // (the placement case above makes that state unreachable, but the
+      // walker must never be able to lock a drag out — the user has no way
+      // out then).
       tmp.rgt.crossVectors(s.fwdL, tmp.upL)
-      if (tmp.rgt.lengthSq() > 1e-8) {
-        s.fwdL.applyAxisAngle(tmp.rgt.normalize(), -l.dy * LOOK_SENS)
-        clampElevation(s.fwdL, tmp.upL, tmp.rgt)
+      if (tmp.rgt.lengthSq() < 1e-12) {
+        tmp.rgt.crossVectors(s.lastFwd, tmp.upL)
+        if (tmp.rgt.lengthSq() < 1e-12) {
+          tmp.newDir.set(Math.abs(tmp.upL.y) < 0.9 ? 0 : 1, Math.abs(tmp.upL.y) < 0.9 ? 1 : 0, 0)
+          tmp.rgt.crossVectors(tmp.newDir, tmp.upL) // any horizontal axis
+        }
       }
+      s.fwdL.applyAxisAngle(tmp.upL, -l.dx * LOOK_SENS)
+      s.fwdL.applyAxisAngle(tmp.rgt.normalize(), -l.dy * LOOK_SENS)
+      clampElevation(s.fwdL, tmp.upL, tmp.rgt)
       s.fwdL.normalize()
       l.dx = 0
       l.dy = 0
@@ -303,9 +339,22 @@ export default function Walker({ planetId }) {
     tmp.wishArr[2] = tmp.wish.z
 
     // ---- integrate (pure core math, planet-local frame) --------------------
+    tmp.prevDir.set(w.dir[0], w.dir[1], w.dir[2])
     const g = surfaceGravity(st.world.gravity, mass, w.r)
     stepWalker(surface, w, g, tmp.wishArr, { jump: k.jump, sprint: k.sprint }, dt)
     k.jump = false
+
+    // ---- carry the heading across the curvature ----------------------------
+    // The heading is a planet-local vector, but the step turned the local up
+    // (w.dir) by the arc walked. Left frozen, a horizon-level gaze would tilt
+    // up by exactly that arc — walking far would feel like raising your head.
+    // Rotate the heading by the minimal arc from old up to new up (parallel
+    // transport): the horizon stays level under your eyes as you walk, and
+    // only look-drag changes your elevation.
+    if (w.dir[0] !== tmp.prevDir.x || w.dir[1] !== tmp.prevDir.y || w.dir[2] !== tmp.prevDir.z) {
+      tmp.transport.setFromUnitVectors(tmp.prevDir, tmp.newDir.set(w.dir[0], w.dir[1], w.dir[2]))
+      s.fwdL.applyQuaternion(tmp.transport).normalize()
+    }
 
     // ---- world pose: the camera rides the astronaut's eyes -----------------
     tmp.dirW.set(w.dir[0], w.dir[1], w.dir[2]).applyQuaternion(tmp.q) // up at feet
