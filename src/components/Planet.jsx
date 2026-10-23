@@ -474,21 +474,30 @@ function PlanetSim({ planet }) {
       radius,
     }
     entryRef.current = entry
+    // The rendered mesh transform is composed from the worker's Float32Array
+    // buffers (frameHandler's apply()), but subscriptions deliver the same step
+    // as float64. At Sol-Real distances (|pos| ~ 4e6) the float32 quantum is
+    // 0.125u — 1/8 of a hex — so a camera that tracks the float64 stream
+    // drifts off the terrain and snaps back every quantum (coastline jitter,
+    // "tic tic tic" while walking). Quantizing with the same round-to-nearest
+    // cast the Float32Array store performs makes the registry bit-identical to
+    // what renders: follow/weld move WITH the terrain.
     const un1 = api.position.subscribe((v) => {
-      entry.pos.x = v[0]
-      entry.pos.y = v[1]
-      entry.pos.z = v[2]
+      entry.pos.x = Math.fround(v[0])
+      entry.pos.y = Math.fround(v[1])
+      entry.pos.z = Math.fround(v[2])
     })
     const un2 = api.velocity.subscribe((v) => {
+      // velocity is never rendered — full precision is strictly better here
       entry.vel.x = v[0]
       entry.vel.y = v[1]
       entry.vel.z = v[2]
     })
     const un3 = api.quaternion.subscribe((v) => {
-      entry.quat.x = v[0]
-      entry.quat.y = v[1]
-      entry.quat.z = v[2]
-      entry.quat.w = v[3]
+      entry.quat.x = Math.fround(v[0])
+      entry.quat.y = Math.fround(v[1])
+      entry.quat.z = Math.fround(v[2])
+      entry.quat.w = Math.fround(v[3])
     })
     const unregister = registerBody(planet.id, entry)
     return () => {
