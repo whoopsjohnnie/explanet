@@ -68,8 +68,10 @@ void main() {
   // day sky: horizon → zenith with the dense band hugging the horizon,
   // plus a wide forward-scatter brightening toward the star
   vec3 day = mix(uHorizon, uZenith, pow(up, 0.55));
-  day += uGlow * pow(sd, 7.0) * 0.4;
-  float light = mix(smoothstep(-0.12, 0.30, dot(sun, uUpDir)), 1.0, uHasSun);
+  day += uGlow * pow(sd, 7.0) * 0.4 * uHasSun; // no star → pure tint, no fake scatter
+  // sun elevation drives day→night (t=1 must select the smoothstep: mix picks
+  // the SECOND arg when the factor is 1, and uHasSun IS 1 in every star world)
+  float light = mix(1.0, smoothstep(-0.12, 0.30, dot(sun, uUpDir)), uHasSun);
   vec3 col = mix(uNight, day, light);
   col += uGlow * pow(sd, 250.0) * 2.0 * uHasSun; // corona, visible even at dusk
 
