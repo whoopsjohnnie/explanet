@@ -38,7 +38,7 @@ import {
 import { STAR_B64 } from '../core/starCatalog.js'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
-import { C } from '../core/constants.js'
+import { C, bandize } from '../core/constants.js'
 
 const VERT = /* glsl */ `
 attribute float aSize;
@@ -200,8 +200,12 @@ export default function StarField({ radius }) {
           )
           if (tmp.sun.lengthSq() > 1e-9) {
             // the same sun-elevation curve the dome darkens with (shared via
-            // constants.json)
-            light = smoothstep(C.skyFade.sunDown, C.skyFade.sunUp, tmp.sun.normalize().dot(tmp.up))
+            // constants.json) — bandize quantizes both together on the
+            // gradientSteps dial, so stars pop on schedule with the sky
+            light = bandize(
+              smoothstep(C.skyFade.sunDown, C.skyFade.sunUp, tmp.sun.normalize().dot(tmp.up)),
+              C.gradient.steps.skyDayNight
+            )
           }
         }
         // pow() keeps thin air (Pluto 0.1, Mars 0.3) bright and opaque decks

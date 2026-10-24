@@ -30,6 +30,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
 import { C, gnum } from '../core/constants.js'
+import { BAND_FN } from '../core/glsl.js'
 
 const DEFAULTS = { zenith: '#3a6ab8', horizon: '#b8cfe4', glow: '#ffd9a0' }
 
@@ -41,9 +42,11 @@ void main() {
 }
 `
 
-// The day-curve bounds are injected from constants.json (StarField's JS fade
-// reads the same numbers — one definition, two languages).
+// The day-curve bounds and gradient-step counts are injected from constants.json
+// (StarField's JS fade reads the same numbers — one definition, two languages).
+// Step counts of 0 make bandize a pass-through, so the default sky stays smooth.
 const FRAG = /* glsl */ `
+${BAND_FN}
 varying vec3 vDir;
 uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunDir, uUpDir;
 uniform float uOpacity, uHasSun;
@@ -65,13 +68,18 @@ void main() {
 
   // day sky: horizon → zenith with the dense band hugging the horizon,
   // plus a wide forward-scatter brightening toward the star
-  vec3 day = mix(uHorizon, uZenith, pow(up, 0.55));
-  day += uGlow * pow(sd, 7.0) * 0.4 * uHasSun; // no star → pure tint, no fake scatter
+  vec3 day = mix(uHorizon, uZenith, bandize(pow(up, 0.55), ${gnum(C.gradient.steps.skyZenith)}));
+  // forward scatter bands too → contour rings around the star (the glare
+  // "lines" of the VGA look)
+  day += uGlow * bandize(pow(sd, 7.0), ${gnum(C.gradient.steps.sunGlare)}) * 0.4 * uHasSun;
   // sun elevation drives day→night (t=1 must select the smoothstep: mix picks
   // the SECOND arg when the factor is 1, and uHasSun IS 1 in every star world)
   float light = mix(1.0, smoothstep(${gnum(C.skyFade.sunDown)}, ${gnum(C.skyFade.sunUp)}, dot(sun, uUpDir)), uHasSun);
+  light = bandize(light, ${gnum(C.gradient.steps.skyDayNight)});
   vec3 col = mix(uNight, day, light);
-  col += uGlow * pow(sd, 250.0) * 2.0 * uHasSun; // corona, visible even at dusk
+  // corona, visible even at dusk — banded with the same sunGlare count, so
+  // the halo around the star steps through the same contour rings
+  col += uGlow * bandize(pow(sd, 250.0), ${gnum(C.gradient.steps.sunGlare)}) * 2.0 * uHasSun;
   // no stars here: the real sky (StarField.jsx) rides on top of the dome,
   // self-faded by the same sun-elevation curve — the dome only paints air.
   gl_FragColor = vec4(toSRGB(aces(col)), uOpacity);
