@@ -132,16 +132,20 @@ export function srgbToLinear(c) {
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
 }
 
-/** Linear-light tints per spectral class (0=O … 6=M, 7=uncatalogued white). */
+/**
+ * Linear-light tints per spectral class (0=O … 6=M, 7=uncatalogued white).
+ * Pushed a step past blackbody so the classes read as COLOR at point sizes —
+ * long-exposure astrophoto saturation, not textbook swatches.
+ */
 export const SPECTRAL_COLORS = [
-  '#9bb0ff', // O — blue supergiants
-  '#aabfff', // B — Rigel
-  '#cad8ff', // A — Vega
-  '#f8f7ff', // F — Procyon
-  '#fff4ea', // G — the Sun
-  '#ffd2a1', // K — Arcturus
-  '#ffb380', // M — Betelgeuse
-  '#e8e8ee', // ?  — no class in catalog
+  '#7d9dff', // O — deep blue
+  '#93b4ff', // B — Rigel
+  '#bcd2ff', // A — Vega
+  '#f4f3ff', // F — Procyon
+  '#ffe6b8', // G — the Sun, golden
+  '#ffbe73', // K — Arcturus, orange
+  '#ff8f4d', // M — Betelgeuse, red-orange
+  '#dfe3f0', // ?  — no class in catalog
 ].map((hex) => [
   srgbToLinear(parseInt(hex.slice(1, 3), 16) / 255),
   srgbToLinear(parseInt(hex.slice(3, 5), 16) / 255),
@@ -171,16 +175,16 @@ export function decodeBrightStars(b64) {
   return { count: n, ra, dec, mag, spec }
 }
 
-/** Point size (CSS px) for a visual magnitude: Sirius ≈ 5, mag 6.5 ≈ 1.1. */
+/** Point size (CSS px) for a visual magnitude: Sirius ≈ 5.8, mag 6.5 ≈ 1.1. */
 export function starSizePx(mag) {
   const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
-  return 1 + 4 * Math.pow(t, 1.6)
+  return 1 + 4.8 * Math.pow(t, 1.5)
 }
 
 /** Additive intensity (0..1) for a visual magnitude. */
 export function starIntensity(mag) {
   const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
-  return 0.14 + 0.86 * Math.pow(t, 1.7)
+  return 0.16 + 0.9 * Math.pow(t, 1.6)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +205,17 @@ function mulberry32(seed) {
 const RAD = 180 / Math.PI
 
 /**
+ * Linear-light palettes for unresolved starlight — the astrophoto look:
+ * blue-white arc-arm field stars, warm cream disk population, a golden
+ * bulge glow at the center, ember accents for H-II regions. Mixed per
+ * particle (additive blending sums light, so mixing happens in linear).
+ */
+const DUST_COOL = [0.42, 0.62, 1.0] // arc-arm blue-white
+const DUST_CREAM = [1.0, 0.8, 0.55] // disk warm cream
+const DUST_GOLD = [1.0, 0.56, 0.2] // bulge gold
+const DUST_EMBER = [1.0, 0.34, 0.12] // emission-region orange
+
+/**
  * Unnormalized acceptance density for galactic (l, b in radians): a
  * double-exponential disk (scale ~5°) brightened toward the galactic center
  * (the bulge), with the Great Rift carved as a dust shadow ringing the
@@ -215,14 +230,19 @@ function diskDensity(bAbs, dGc) {
 
 /**
  * Procedural Milky Way: `count` unit directions (engine frame) drawn from the
- * galactic disk density, with weights 0..1 for dim unresolved stars. Seeded →
- * deterministic. Bright enough to read as the band, faint enough that the
- * catalog stars still carry the constellations.
+ * galactic disk density, with weights 0..1 for dim unresolved stars and a
+ * per-star LINEAR-LIGHT `tint` — warm cream/gold crowding toward the galactic
+ * center (the bulge), blue-white in the outer band, ~5-13% ember-orange
+ * emission patches, all mottled so the band reads as colored haze rather than
+ * one flat glow. Seeded → deterministic (tints draw on their own stream, so
+ * positions never shift when the palette changes).
  */
 export function generateDust(count, seed = 7) {
   const rand = mulberry32(seed)
+  const trand = mulberry32((seed ^ 0x9e3779b9) >>> 0) // tints only
   const dir = new Float32Array(count * 3)
   const w = new Float32Array(count)
+  const tint = new Float32Array(count * 3)
   const v = [0, 0, 0]
   for (let i = 0; i < count; ) {
     const l = rand() * TWO_PI
@@ -237,7 +257,28 @@ export function generateDust(count, seed = 7) {
     dir[i * 3 + 1] = v[1]
     dir[i * 3 + 2] = v[2]
     w[i] = Math.pow(rand(), 2)
+
+    // --- color: warm toward the center, cool in the outer band, mottled ---
+    const warm = Math.exp(-dGc * RAD / 48) * Math.exp(-Math.abs(b) * RAD / 20) // 0..1
+    let m = 0.18 + 0.85 * warm + 0.34 * (trand() - 0.5)
+    m = m < 0 ? 0 : m > 1 ? 1 : m
+    let r = DUST_COOL[0] + (DUST_CREAM[0] - DUST_COOL[0]) * m
+    let g = DUST_COOL[1] + (DUST_CREAM[1] - DUST_COOL[1]) * m
+    let bl = DUST_COOL[2] + (DUST_CREAM[2] - DUST_COOL[2]) * m
+    // the bulge's heart goes full gold
+    const gold = Math.max(0, warm - 0.45) * 1.6 * trand()
+    r += (DUST_GOLD[0] - r) * gold
+    g += (DUST_GOLD[1] - g) * gold
+    bl += (DUST_GOLD[2] - bl) * gold
+    // emission-region embers, likelier where the disk is dense
+    const ember = trand() < 0.05 + 0.08 * warm ? 0.8 : 0
+    r += (DUST_EMBER[0] - r) * ember
+    g += (DUST_EMBER[1] - g) * ember
+    bl += (DUST_EMBER[2] - bl) * ember
+    tint[i * 3] = r
+    tint[i * 3 + 1] = g
+    tint[i * 3 + 2] = bl
     i++
   }
-  return { dir, w }
+  return { dir, w, tint }
 }

@@ -122,20 +122,37 @@ check(`ecliptic latitude consistent with engine +Y (max ${maxEclLat.toExponentia
 // ---- procedural dust ------------------------------------------------------
 const d1 = generateDust(4000, 7)
 const d2 = generateDust(4000, 7)
-check('dust is seeded-deterministic', d1.dir.every((x, i) => x === d2.dir[i]) && d1.w.every((x, i) => x === d2.w[i]))
+check('dust is seeded-deterministic', d1.dir.every((x, i) => x === d2.dir[i]) && d1.w.every((x, i) => x === d2.w[i]) && d1.tint.every((x, i) => x === d2.tint[i]))
+check('dust tints in range', d1.tint.length === 4000 * 3 && d1.tint.every((x) => x >= 0 && x <= 1))
 let dustBad = 0
 let dustBand = 0
 let dustGc = 0
+let warmNear = 0
+let nNear = 0
+let warmFar = 0
+let nFar = 0
 const gcN = [gcGal[0] / norm(gcGal), gcGal[1] / norm(gcGal), gcGal[2] / norm(gcGal)]
 for (let i = 0; i < d1.dir.length / 3; i++) {
   const p = [d1.dir[i * 3], d1.dir[i * 3 + 1], d1.dir[i * 3 + 2]]
   if (Math.abs(norm(p) - 1) > 1e-5) dustBad++
   if (angFromPlane(p) < 10) dustBand++
-  if (angBetween(p, gcN) < 25) dustGc++
+  const dToGc = angBetween(p, gcN)
+  if (dToGc < 25) dustGc++
+  // mean red−blue of the tint: the bulge must run warm, the outer band cool
+  if (dToGc < 20) {
+    warmNear += d1.tint[i * 3] - d1.tint[i * 3 + 2]
+    nNear++
+  } else if (dToGc > 60) {
+    warmFar += d1.tint[i * 3] - d1.tint[i * 3 + 2]
+    nFar++
+  }
 }
 check('dust on unit sphere', dustBad === 0)
 check(`dust hugs the plane (${((dustBand / 4000) * 100).toFixed(1)}% within 10°)`, dustBand / 4000 > 0.55)
 check(`dust brightens at the center (${((dustGc / 4000) * 100).toFixed(1)}% within 25°, uniform 3.8%)`, dustGc / 4000 > 0.08)
+const wmNear = warmNear / nNear
+const wmFar = warmFar / nFar
+check(`dust warms toward the galactic center (r−b: ${wmNear.toFixed(2)} near vs ${wmFar.toFixed(2)} far)`, wmNear > wmFar + 0.1)
 
 // ---- display mapping ------------------------------------------------------
 check(

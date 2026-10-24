@@ -8,11 +8,13 @@
  * angle to the planets' orbital plane — no extra alignment knob: the sky and
  * the solar system share one frame.
  *
- * One additive Points draw over two layers: catalog stars colored by spectral
- * class and sized/brightened by magnitude, and a dense faint dust band. Raw
- * shader material, so (like WalkSky) it applies the ACES + sRGB curve itself
- * to match the tone-mapped scene. raycast is disabled — picking is the
- * heightfield march and a sky shell must never swallow clicks.
+ * Drawn twice over one geometry: a crisp pass (spectral-colored stars, warm
+ * cream/gold/blue dust from starsky's tint model) and a wide low-gain bloom
+ * pass — additive, so the band fuses into colored haze and bright stars get
+ * halos, the way long exposures render them. Raw shader material, so (like
+ * WalkSky) both passes apply the ACES + sRGB curve themselves to match the
+ * tone-mapped scene. raycast is disabled — picking is the heightfield march
+ * and a sky shell must never swallow clicks.
  *
  * The sky stays mounted under atmospheres (the WalkSky dome draws beneath it,
  * additive stars on top): a per-frame gain reproduces WalkSky's day/night
@@ -37,27 +39,30 @@ import { STAR_B64 } from '../core/starCatalog.js'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
 
-const DUST_COUNT = 28000
+const DUST_COUNT = 38000
 
 const VERT = /* glsl */ `
 attribute float aSize;
 attribute vec3 aColor;
 attribute float aI;
 uniform float uPR;
+uniform float uSizeMul;
 varying vec3 vColor;
 varying float vI;
 void main() {
   vColor = aColor;
   vI = aI;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = aSize * uPR;
+  gl_PointSize = aSize * uPR * uSizeMul;
 }
 `
 
 const FRAG = /* glsl */ `
 varying vec3 vColor;
 varying float vI;
+uniform float uGain;
 uniform float uVis; // sky-wide fade: daylight under an atmosphere → 0
+uniform float uSoft; // gaussian falloff rate — low = wide glow
 
 vec3 aces(vec3 x) { // Narkowicz ACES fit — mirrors the renderer's pipeline
   const vec3 a = vec3(2.51); const vec3 c = vec3(2.43); const vec3 e = vec3(0.14);
@@ -70,10 +75,29 @@ vec3 toSRGB(vec3 c) {
 
 void main() {
   float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
-  float a = exp(-d * d * 4.0) * (1.0 - smoothstep(0.6, 1.0, d)); // soft round dot
-  gl_FragColor = vec4(toSRGB(aces(vColor * vI * a * uVis)), 1.0);
+  float a = exp(-d * d * uSoft) * (1.0 - smoothstep(0.7, 1.0, d));
+  gl_FragColor = vec4(toSRGB(aces(vColor * vI * a * uGain * uVis)), 1.0);
 }
 `
+
+/** Shared material config; core = crisp dots, bloom = wide faint halos. */
+function makePointsMaterial(dpr, { sizeMul, gain, soft }) {
+  return new THREE.ShaderMaterial({
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    uniforms: {
+      uPR: { value: dpr },
+      uSizeMul: { value: sizeMul },
+      uGain: { value: gain },
+      uVis: { value: 1 },
+      uSoft: { value: soft },
+    },
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false, // a backdrop: never occludes, never fights log depth
+    fog: false,
+  })
+}
 
 /** WalkSky's day→night curve (GLSL smoothstep mirror). */
 const smoothstep = (a, b, x) => {
@@ -84,7 +108,7 @@ const smoothstep = (a, b, x) => {
 export default function StarField({ radius }) {
   const dpr = useThree((s) => s.gl.getPixelRatio())
 
-  const { geometry, material } = useMemo(() => {
+  const { geometry, material, bloomMaterial } = useMemo(() => {
     const bright = decodeBrightStars(STAR_B64)
     const dust = generateDust(DUST_COUNT, 7)
     const n = bright.count + dust.w.length
@@ -106,18 +130,19 @@ export default function StarField({ radius }) {
       size[i] = starSizePx(bright.mag[i])
       inten[i] = starIntensity(bright.mag[i])
     }
-    // unresolved disk stars: tiny, dim, a hair blue-white; the band's glow
+    // unresolved disk stars: tinted by starsky's galactic color model —
+    // warm gold at the center, blue-white outside, mottled; the band's glow
     const base = bright.count
     for (let j = 0; j < dust.w.length; j++) {
       const i = base + j
       pos[i * 3] = dust.dir[j * 3] * radius
       pos[i * 3 + 1] = dust.dir[j * 3 + 1] * radius
       pos[i * 3 + 2] = dust.dir[j * 3 + 2] * radius
-      col[i * 3] = 0.72
-      col[i * 3 + 1] = 0.78
-      col[i * 3 + 2] = 1.0
-      size[i] = 1.0 + 1.5 * dust.w[j]
-      inten[i] = 0.03 + 0.14 * dust.w[j]
+      col[i * 3] = dust.tint[j * 3]
+      col[i * 3 + 1] = dust.tint[j * 3 + 1]
+      col[i * 3 + 2] = dust.tint[j * 3 + 2]
+      size[i] = 1.1 + 1.8 * dust.w[j]
+      inten[i] = 0.045 + 0.16 * dust.w[j]
     }
 
     const geometry = new THREE.BufferGeometry()
@@ -126,24 +151,18 @@ export default function StarField({ radius }) {
     geometry.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
     geometry.setAttribute('aI', new THREE.BufferAttribute(inten, 1))
     geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius)
-    const material = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      uniforms: { uPR: { value: dpr }, uVis: { value: 1 } },
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false, // a backdrop: never occludes, never fights log depth
-      fog: false,
-    })
-    return { geometry, material }
+    const material = makePointsMaterial(dpr, { sizeMul: 1, gain: 1, soft: 4 })
+    const bloomMaterial = makePointsMaterial(dpr, { sizeMul: 5, gain: 0.12, soft: 1.6 })
+    return { geometry, material, bloomMaterial }
   }, [radius, dpr])
 
   useEffect(
     () => () => {
       geometry.dispose()
       material.dispose()
+      bloomMaterial.dispose()
     },
-    [geometry, material]
+    [geometry, material, bloomMaterial]
   )
 
   // sky visibility, eased so landing/lift-off doesn't pop: 1 in orbit and on
@@ -188,7 +207,13 @@ export default function StarField({ radius }) {
     }
     vis.current += (target - vis.current) * (1 - Math.exp(-dt * 6))
     material.uniforms.uVis.value = vis.current
+    bloomMaterial.uniforms.uVis.value = vis.current
   })
 
-  return <points geometry={geometry} material={material} frustumCulled={false} raycast={() => null} />
+  return (
+    <>
+      <points geometry={geometry} material={material} frustumCulled={false} raycast={() => null} />
+      <points geometry={geometry} material={bloomMaterial} frustumCulled={false} raycast={() => null} />
+    </>
+  )
 }
