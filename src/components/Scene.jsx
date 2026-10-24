@@ -11,6 +11,7 @@ import { OrbitControls } from '@react-three/drei'
 import { useStore } from '../state/store.js'
 import { stepGravity } from '../core/physics.js'
 import { planetRadius } from '../core/planetMath.js'
+import { C } from '../core/constants.js'
 import { animateTerrainMaterials } from '../three/materials.js'
 import Planet from './Planet.jsx'
 import Walker from './Walker.jsx'
@@ -93,7 +94,7 @@ export default function Scene() {
           darkens with the sky. A starless world keeps the classic
           ambient + hemisphere so it stays visible. */}
       {hasStar ? (
-        <ambientLight intensity={0.06} />
+        <ambientLight intensity={C.sky.ambientFloor} />
       ) : (
         <>
           <ambientLight intensity={0.5} />

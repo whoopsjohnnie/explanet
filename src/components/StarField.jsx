@@ -38,8 +38,7 @@ import {
 import { STAR_B64 } from '../core/starCatalog.js'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
-
-const DUST_COUNT = 38000
+import { C } from '../core/constants.js'
 
 const VERT = /* glsl */ `
 attribute float aSize;
@@ -110,7 +109,7 @@ export default function StarField({ radius }) {
 
   const { geometry, material, bloomMaterial } = useMemo(() => {
     const bright = decodeBrightStars(STAR_B64)
-    const dust = generateDust(DUST_COUNT, 7)
+    const dust = generateDust(C.sky.dustCount, C.sky.dustSeed)
     const n = bright.count + dust.w.length
     const pos = new Float32Array(n * 3)
     const col = new Float32Array(n * 3)
@@ -141,8 +140,8 @@ export default function StarField({ radius }) {
       col[i * 3] = dust.tint[j * 3]
       col[i * 3 + 1] = dust.tint[j * 3 + 1]
       col[i * 3 + 2] = dust.tint[j * 3 + 2]
-      size[i] = 1.1 + 1.8 * dust.w[j]
-      inten[i] = 0.045 + 0.16 * dust.w[j]
+      size[i] = C.sky.dustSizeBase + C.sky.dustSizeSpan * dust.w[j]
+      inten[i] = C.sky.dustIntenBase + C.sky.dustIntenSpan * dust.w[j]
     }
 
     const geometry = new THREE.BufferGeometry()
@@ -151,8 +150,12 @@ export default function StarField({ radius }) {
     geometry.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
     geometry.setAttribute('aI', new THREE.BufferAttribute(inten, 1))
     geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius)
-    const material = makePointsMaterial(dpr, { sizeMul: 1, gain: 1, soft: 4 })
-    const bloomMaterial = makePointsMaterial(dpr, { sizeMul: 5, gain: 0.12, soft: 1.6 })
+    const material = makePointsMaterial(dpr, { sizeMul: C.sky.coreSizeMul, gain: C.sky.coreGain, soft: C.sky.coreSoft })
+    const bloomMaterial = makePointsMaterial(dpr, {
+      sizeMul: C.sky.bloomSizeMul,
+      gain: C.sky.bloomGain,
+      soft: C.sky.bloomSoft,
+    })
     return { geometry, material, bloomMaterial }
   }, [radius, dpr])
 

@@ -27,7 +27,23 @@
 
   "tunables": {
     "sky": {
-      "_note": "Real-sky backdrop magnitude→size/intensity curves (core/starsky.js).",
+      "_note": "Real-sky backdrop + the whisper ambient. Every skyGlow-bound range brackets today's look at dial = 0.5, so the shipped variants.json reproduces the pre-constants render exactly.",
+      "dustCount": { "value": 38000 },
+      "coreSizeMul": { "range": [0.6, 1.4], "dial": "skyGlow" },
+      "coreGain": { "range": [0.6, 1.4], "dial": "skyGlow" },
+      "coreSoft": { "range": [2.5, 5.5], "dial": "skyGlow" },
+      "bloomSizeMul": { "range": [3, 7], "dial": "skyGlow" },
+      "bloomGain": { "range": [0.02, 0.22], "dial": "skyGlow" },
+      "bloomSoft": { "range": [2.2, 1.0], "dial": "skyGlow" },
+      "dustIntenBase": { "range": [0.01, 0.08], "dial": "skyGlow" },
+      "dustIntenSpan": { "range": [0.06, 0.26], "dial": "skyGlow" },
+      "dustSizeBase": { "value": 1.1 },
+      "dustSizeSpan": { "value": 1.8 },
+      "ambientFloor": {
+        "range": [0.02, 0.1],
+        "dial": "skyGlow",
+        "_note": "Whisper ambient when a star is present — rises with the sky so planets never lose their fill light."
+      },
       "starSizeRefMag": { "value": 7 },
       "starSizeMagSpan": { "value": 8.5 },
       "starSizeMin": { "value": 1 },

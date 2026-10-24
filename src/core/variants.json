@@ -1,3 +1,4 @@
 {
-  "_note": "Variant dials (0..1) — the fiddling file. Dials bind to ranges in constants.json; an unused or out-of-range dial fails on load."
+  "_note": "Variant dials (0..1) — the fiddling file. 0.5 = the reference look the constants.json ranges were built around.",
+  "skyGlow": 0.5
 }
