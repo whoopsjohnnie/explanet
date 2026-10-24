@@ -38,7 +38,8 @@ import {
 import { STAR_B64 } from '../core/starCatalog.js'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
-import { C, bandize } from '../core/constants.js'
+import { C, bandize, gnum } from '../core/constants.js'
+import { BAND_FN } from '../core/glsl.js'
 
 const VERT = /* glsl */ `
 attribute float aSize;
@@ -57,6 +58,7 @@ void main() {
 `
 
 const FRAG = /* glsl */ `
+${BAND_FN}
 varying vec3 vColor;
 varying float vI;
 uniform float uGain;
@@ -74,7 +76,9 @@ vec3 toSRGB(vec3 c) {
 
 void main() {
   float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
-  float a = exp(-d * d * uSoft) * (1.0 - smoothstep(0.7, 1.0, d));
+  // gaussian falloff stepped to the starDots count (2 = center spot + one
+  // hard-edged ring, transparent beyond — the VGA starfield look)
+  float a = bandize(exp(-d * d * uSoft) * (1.0 - smoothstep(0.7, 1.0, d)), ${gnum(C.gradient.steps.starDots)});
   gl_FragColor = vec4(toSRGB(aces(vColor * vI * a * uGain * uVis)), 1.0);
 }
 `
