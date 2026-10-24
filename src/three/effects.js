@@ -9,6 +9,7 @@
  *   makeRingTexture()  1D radial band strip for planetary rings
  */
 import * as THREE from 'three'
+import { C, bandize } from '../core/constants.js'
 
 // ---------------------------------------------------------------------------
 // Glow sprite — white core → warm → faint blue haze, quadratic falloff.
@@ -29,8 +30,10 @@ export function makeGlowTexture({ size = 256, power = 2.2, inner = [1, 0.93, 0.7
       const dx = (x - c) / c
       const dy = (y - c) / c
       const t = Math.min(1, Math.hypot(dx, dy))
-      // smooth core, long tail: f = (1-t)^power with a small constant floor
-      const f = Math.pow(1 - t, power)
+      // smooth core, long tail: f = (1-t)^power — stepped to the sunGlow count
+      // when the gradientSteps dial is on, so the corona reads as concentric
+      // brightness rings instead of a smooth wash (0 = off, smooth)
+      const f = bandize(Math.pow(1 - t, power), C.gradient.steps.sunGlow)
       const mixT = Math.min(1, t * 1.4)
       const i = (y * size + x) * 4
       data[i] = Math.round(255 * f * (inner[0] * (1 - mixT) + outer[0] * mixT))
