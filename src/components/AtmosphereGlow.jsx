@@ -25,6 +25,8 @@ import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
+import { C, gnum } from '../core/constants.js'
+import { BAND_FN } from '../core/glsl.js'
 
 const NO_RAYCAST = () => null
 
@@ -48,7 +50,10 @@ void main() {
 }
 `
 
+// The limb glow and air-side terminator are bandize()-quantized from the shared
+// gradientSteps dial (counts injected via gnum; 0 = smooth, the default).
 const FRAG = /* glsl */ `
+${BAND_FN}
 varying vec3 vN;
 varying vec3 vW;
 uniform vec3 uColor;
@@ -59,8 +64,8 @@ void main() {
   vec3 V = normalize(cameraPosition - vW);
   float outside = smoothstep(0.0, 0.05, dot(N, V)); // inside the shell → off
   float fres = 1.0 - max(dot(N, V), 0.0);
-  float glow = pow(fres, uFresnel);
-  float lit = mix(smoothstep(-0.2, 0.25, dot(N, uSunDir)), 1.0, 1.0 - uHasSun);
+  float glow = pow(bandize(fres, ${gnum(C.gradient.steps.limbGlow)}), uFresnel);
+  float lit = mix(bandize(smoothstep(-0.2, 0.25, dot(N, uSunDir)), ${gnum(C.gradient.steps.airTerminator)}), 1.0, 1.0 - uHasSun);
   float cres = 0.75 + 0.65 * pow(max(dot(V, uSunDir), 0.0) * uHasSun, 5.0);
   float a = glow * lit * cres * uIntensity * outside;
   gl_FragColor = vec4(uColor, min(a, 1.0));
