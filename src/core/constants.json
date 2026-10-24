@@ -26,6 +26,11 @@
   },
 
   "tunables": {
+    "skyFade": {
+      "_note": "Sun-elevation day->night curve — WalkSky's GLSL and StarField's JS fade read the same pair, so stars and sky always agree.",
+      "sunDown": { "value": -0.12 },
+      "sunUp": { "value": 0.3 }
+    },
     "sky": {
       "_note": "Real-sky backdrop + the whisper ambient. Every skyGlow-bound range brackets today's look at dial = 0.5, so the shipped variants.json reproduces the pre-constants render exactly.",
       "dustCount": { "value": 38000 },

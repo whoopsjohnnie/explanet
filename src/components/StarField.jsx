@@ -199,8 +199,9 @@ export default function StarField({ radius }) {
             (se ? se.pos.z : star.center.z) - camera.position.z
           )
           if (tmp.sun.lengthSq() > 1e-9) {
-            // the same sun-elevation curve the dome darkens with
-            light = smoothstep(-0.12, 0.3, tmp.sun.normalize().dot(tmp.up))
+            // the same sun-elevation curve the dome darkens with (shared via
+            // constants.json)
+            light = smoothstep(C.skyFade.sunDown, C.skyFade.sunUp, tmp.sun.normalize().dot(tmp.up))
           }
         }
         // pow() keeps thin air (Pluto 0.1, Mars 0.3) bright and opaque decks

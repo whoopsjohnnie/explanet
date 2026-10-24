@@ -29,6 +29,7 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
+import { C, gnum } from '../core/constants.js'
 
 const DEFAULTS = { zenith: '#3a6ab8', horizon: '#b8cfe4', glow: '#ffd9a0' }
 
@@ -40,6 +41,8 @@ void main() {
 }
 `
 
+// The day-curve bounds are injected from constants.json (StarField's JS fade
+// reads the same numbers — one definition, two languages).
 const FRAG = /* glsl */ `
 varying vec3 vDir;
 uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunDir, uUpDir;
@@ -66,7 +69,7 @@ void main() {
   day += uGlow * pow(sd, 7.0) * 0.4 * uHasSun; // no star → pure tint, no fake scatter
   // sun elevation drives day→night (t=1 must select the smoothstep: mix picks
   // the SECOND arg when the factor is 1, and uHasSun IS 1 in every star world)
-  float light = mix(1.0, smoothstep(-0.12, 0.30, dot(sun, uUpDir)), uHasSun);
+  float light = mix(1.0, smoothstep(${gnum(C.skyFade.sunDown)}, ${gnum(C.skyFade.sunUp)}, dot(sun, uUpDir)), uHasSun);
   vec3 col = mix(uNight, day, light);
   col += uGlow * pow(sd, 250.0) * 2.0 * uHasSun; // corona, visible even at dusk
   // no stars here: the real sky (StarField.jsx) rides on top of the dome,
