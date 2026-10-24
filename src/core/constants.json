@@ -25,5 +25,17 @@
     }
   },
 
-  "tunables": {}
+  "tunables": {
+    "sky": {
+      "_note": "Real-sky backdrop magnitude→size/intensity curves (core/starsky.js).",
+      "starSizeRefMag": { "value": 7 },
+      "starSizeMagSpan": { "value": 8.5 },
+      "starSizeMin": { "value": 1 },
+      "starSizeMax": { "value": 4.8 },
+      "starSizeCurve": { "value": 1.5 },
+      "starIntenMin": { "value": 0.16 },
+      "starIntenMax": { "value": 0.9 },
+      "starIntenCurve": { "value": 1.6 }
+    }
+  }
 }

@@ -16,6 +16,8 @@
  * Framework-free (no three, no DOM): the same math runs in the node tests.
  */
 
+import { C } from './constants.js'
+
 const DEG = Math.PI / 180
 const TWO_PI = Math.PI * 2
 
@@ -177,14 +179,14 @@ export function decodeBrightStars(b64) {
 
 /** Point size (CSS px) for a visual magnitude: Sirius ≈ 5.8, mag 6.5 ≈ 1.1. */
 export function starSizePx(mag) {
-  const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
-  return 1 + 4.8 * Math.pow(t, 1.5)
+  const t = Math.max(0, Math.min(1, (C.sky.starSizeRefMag - mag) / C.sky.starSizeMagSpan))
+  return C.sky.starSizeMin + C.sky.starSizeMax * Math.pow(t, C.sky.starSizeCurve)
 }
 
 /** Additive intensity (0..1) for a visual magnitude. */
 export function starIntensity(mag) {
-  const t = Math.max(0, Math.min(1, (7 - mag) / 8.5))
-  return 0.16 + 0.9 * Math.pow(t, 1.6)
+  const t = Math.max(0, Math.min(1, (C.sky.starSizeRefMag - mag) / C.sky.starSizeMagSpan))
+  return C.sky.starIntenMin + C.sky.starIntenMax * Math.pow(t, C.sky.starIntenCurve)
 }
 
 // ---------------------------------------------------------------------------
