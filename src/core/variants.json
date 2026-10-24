@@ -1,4 +1,5 @@
 {
-  "_note": "Variant dials (0..1) — the fiddling file. 0.5 = the reference look the constants.json ranges were built around.",
-  "skyGlow": 0.5
+  "_note": "Variant dials (0..1) — the fiddling file. 0.5 = the reference look the constants.json ranges were built around. gradientSteps: 1.0 = smooth (quantization off), ~0.1 ≈ 9-band DOS gradients, 0 = no gradients at all (hard lines).",
+  "skyGlow": 0.5,
+  "gradientSteps": 1.0
 }

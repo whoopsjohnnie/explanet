@@ -10,7 +10,8 @@
  *                         covariant: resolved as lerp(range[0], range[1], dial^gamma)
  *                         from a 0..1 dial in variants.json — direction is just the
  *                         range order, and several entries bound to ONE dial form a
- *                         covariant group that interplays together
+ *                         covariant group that interplays together (e.g. skyGlow:
+ *                         brighter band + wider bloom + lifted ambient floor)
  *
  * variants.json holds nothing but the dials — it is the fiddling file, the only
  * thing that should change while tuning a look.
@@ -18,6 +19,11 @@
  * Validation runs at import time, EVERYWHERE the core loads (app, worker, node
  * tests, server): unknown/unused dials, out-of-range dial values, malformed
  * entries, non-finite numbers — all throw with a complete list.
+ *
+ * The gradientSteps dial is special: the loader consumes it itself, mapping
+ * dial → band count (0 → 1 band, ~0.1 → ~9, 1 → quantization off entirely),
+ * then scales per surface into C.gradient.steps.* so one float re-tunes every
+ * gradient in the engine at once (bandize in JS mirrors core/glsl.js).
  *
  * Framework-free (JSON import attributes work in vite incl. workers, node ≥22,
  * and the headless harness loader).
@@ -90,8 +96,28 @@ function deepMerge(a, b) {
 /** All constants, resolved to plain numbers, merged by group name. */
 export const C = deepMerge(resolve(raw.structural || {}, 'structural'), resolve(raw.tunables || {}, 'tunables'))
 
-// every dial in variants.json must be consumed — a typo in the fiddling file
-// must fail loudly, not silently no-op
+// --- gradientSteps dial → per-surface band counts ---------------------------------------
+// dial 0 → 1 band (no gradient, hard lines) … dial 1 → quantization fully OFF.
+// The curve front-loads bands into the retro range (dial 0.1 → ≈9 bands at scale 1).
+{
+  const g = C.gradient || {}
+  const d = dialValue('gradientSteps', 'gradient')
+  const global = d >= 1 ? 0 : Math.max(1, Math.round(1 + (g.maxBands - 1) * Math.pow(d, g.curve)))
+  const at = (scale) => (global === 0 ? 0 : Math.max(1, Math.round(global * scale)))
+  g.steps = {
+    global,
+    skyZenith: at(g.scaleSkyZenith),
+    skyDayNight: at(g.scaleSkyDayNight),
+    sunGlare: at(g.scaleSunGlare),
+    starDots: at(g.scaleStarDots),
+    sunGlow: at(g.scaleSunGlow),
+    limbGlow: at(g.scaleLimbGlow),
+    airTerminator: at(g.scaleAirTerminator),
+  }
+}
+
+// every dial in variants.json must be consumed — by a tunable binding above or
+// by the gradient loader (typos in the fiddling file must not silently no-op)
 for (const name of Object.keys(dials))
   if (!name.startsWith('_') && !usedDials.has(name))
     errors.push(`variants.json: dial "${name}" is not referenced by any tunable in constants.json`)
@@ -100,7 +126,8 @@ if (errors.length) throw new Error(`constants: ${errors.length} problem(s):\n  -
 
 /**
  * JS mirror of core/glsl.js bandize() — quantize a 0..1 ramp to `steps` contour
- * bands (steps ≤ 0 = pass-through).
+ * bands (steps ≤ 0 = pass-through). Shared so a JS fade (StarField) and the GLSL
+ * gradients step in lockstep with the same dial.
  */
 export function bandize(x, steps) {
   if (!(steps > 0)) return x

@@ -57,6 +57,19 @@
       "starIntenMin": { "value": 0.16 },
       "starIntenMax": { "value": 0.9 },
       "starIntenCurve": { "value": 1.6 }
+    },
+
+    "gradient": {
+      "_note": "Retro gradient quantizer driven by the gradientSteps dial: dial 0 -> 1 band (hard edges, no gradients), ~0.1 -> ~9 bands, 1.0 -> quantization OFF (smooth). The loader computes band counts per surface: steps = round(global x scale), a wide sky ramp wants more bands than a tight limb ring.",
+      "maxBands": { "value": 24 },
+      "curve": { "value": 0.45 },
+      "scaleSkyZenith": { "value": 1.0 },
+      "scaleSkyDayNight": { "value": 0.5 },
+      "scaleSunGlare": { "value": 0.5 },
+      "scaleStarDots": { "value": 0.2 },
+      "scaleSunGlow": { "value": 0.55 },
+      "scaleLimbGlow": { "value": 0.35 },
+      "scaleAirTerminator": { "value": 0.4 }
     }
   }
 }
