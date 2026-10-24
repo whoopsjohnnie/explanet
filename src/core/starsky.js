@@ -120,10 +120,6 @@ export function radecToGalactic(raDeg, decDeg) {
   return { lDeg, bDeg: Math.asin(Math.max(-1, Math.min(1, zg))) / DEG }
 }
 
-/** Engine-frame unit vectors for the shader dome in WalkSky.jsx. */
-export const GALACTIC_CENTER_ENGINE = galacticToEngine(0, 0)
-export const GALACTIC_POLE_ENGINE = galacticToEngine(0, 90)
-
 // ---------------------------------------------------------------------------
 // Bright-star catalog (generated module: Int32 quads, base64)
 // ---------------------------------------------------------------------------

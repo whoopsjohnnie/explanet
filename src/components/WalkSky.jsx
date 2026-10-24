@@ -8,10 +8,10 @@
  * just hangs a sky on it):
  *
  *  • horizon→zenith gradient in the body's colors, plus a forward-scatter
- *    glow around the system's star, which also sets day vs. night — a planet
- *    with the star below the horizon gets a dark sky with procedural stars,
- *    thinned away by `opacity` so a Pluto sky stays translucent and a Venus
- *    sky never shows one;
+ *    glow around the system's star, which also sets day vs. night — the real
+ *    starfield (StarField.jsx) draws over the dome and fades itself along
+ *    this same curve, so a night walk shows the actual Milky Way and the
+ *    sun washes it out by day;
  *  • the dome NEVER writes depth and tests against the opaque scene: terrain
  *    and planets occlude it, the Sun stays a crisp disk through the haze
  *    (extinction-free, but honest-looking), and it can never eat the world;
@@ -29,7 +29,6 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
-import { GALACTIC_CENTER_ENGINE, GALACTIC_POLE_ENGINE } from '../core/starsky.js'
 
 const DEFAULTS = { zenith: '#3a6ab8', horizon: '#b8cfe4', glow: '#ffd9a0' }
 
@@ -43,7 +42,7 @@ void main() {
 
 const FRAG = /* glsl */ `
 varying vec3 vDir;
-uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunDir, uUpDir, uGalDir, uGalPole;
+uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunDir, uUpDir;
 uniform float uOpacity, uHasSun;
 
 vec3 aces(vec3 x) { // Narkowicz ACES fit — mirrors the renderer's pipeline
@@ -53,11 +52,6 @@ vec3 aces(vec3 x) { // Narkowicz ACES fit — mirrors the renderer's pipeline
 }
 vec3 toSRGB(vec3 c) {
   return mix(c * 12.92, pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) * 1.055 - 0.055, step(vec3(0.0031308), c));
-}
-float hash13(vec3 p) {
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
 }
 
 void main() {
@@ -75,26 +69,8 @@ void main() {
   float light = mix(1.0, smoothstep(-0.12, 0.30, dot(sun, uUpDir)), uHasSun);
   vec3 col = mix(uNight, day, light);
   col += uGlow * pow(sd, 250.0) * 2.0 * uHasSun; // corona, visible even at dusk
-
-  // night side: procedural stars (the real starfield hides while an
-  // atmosphere is up — Scene.jsx), attenuated by the thickness of the air.
-  // The dome is never rotated, so dir IS an engine-frame direction and the
-  // Milky Way sits where starsky.js puts it — aligned with the real sky.
-  float night = 1.0 - light;
-  if (night > 0.01) {
-    float gb = abs(dot(dir, uGalPole)); // |sin galactic latitude|
-    float dgc = acos(clamp(dot(dir, uGalDir), -1.0, 1.0)); // angular distance to center
-    float mw = exp(-gb / 0.10) * (1.0 + 1.6 * exp(-pow(dgc / 0.55, 2.0))); // disk + bulge
-    mw *= 1.0 - 0.6 * exp(-pow(dgc / 0.6, 2.0)) * exp(-pow((asin(gb) - 0.09) / 0.10, 2.0)); // Great Rift
-    mw = clamp(mw, 0.0, 3.0);
-    vec3 sdir = dir * 260.0;
-    float h = hash13(floor(sdir) + 0.5);
-    float thr = 0.9982 - 0.0021 * mw; // denser stars inside the band
-    float star = smoothstep(thr, thr + 0.00115, h) * smoothstep(0.30, 0.02, length(fract(sdir) - 0.5));
-    float clear = night * (1.0 - uOpacity * 0.85);
-    col += vec3(0.85, 0.89, 1.0) * star * clear;
-    col += vec3(0.42, 0.48, 0.68) * mw * clear * 0.03; // unresolved glow of the band
-  }
+  // no stars here: the real sky (StarField.jsx) rides on top of the dome,
+  // self-faded by the same sun-elevation curve — the dome only paints air.
   gl_FragColor = vec4(toSRGB(aces(col)), uOpacity);
 }
 `
@@ -127,8 +103,6 @@ export default function WalkSky({ planetId }) {
         uGlow: { value: color(atmo.glow, DEFAULTS.glow) },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uUpDir: { value: new THREE.Vector3(0, 1, 0) },
-        uGalDir: { value: new THREE.Vector3(...GALACTIC_CENTER_ENGINE) },
-        uGalPole: { value: new THREE.Vector3(...GALACTIC_POLE_ENGINE) },
         uOpacity: { value: atmo.opacity },
         uHasSun: { value: 0 },
       },

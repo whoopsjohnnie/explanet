@@ -63,10 +63,11 @@ export default function Scene() {
     return Math.max(1, (sunR * 3.2) / 450)
   }, [planets])
 
-  // Walking under an atmosphere: WalkSky paints the dome (and its own night
-  // stars), so the real starfield steps aside — additive points floating over
-  // a blue daytime sky would give the game away. Airless bodies keep it.
-  const walkAtmo = walkMode ? planets.find((p) => p.id === walkMode.planetId)?.atmosphere : null
+  // Walking under an atmosphere no longer hides the real sky: StarField
+  // stays mounted and fades itself per-frame (WalkSky's day/night curve ×
+  // opacity haze), so the Milky Way shows on the night side, washes out in
+  // daylight, and the dome (rendered beneath it, additive points on top)
+  // only carries the air's own color.
 
   return (
     <Canvas
@@ -84,9 +85,7 @@ export default function Scene() {
     >
       <color attach="background" args={['#04060d']} />
       <fog attach="fog" args={['#04060d', Math.max(900, sysR * 1.2), Math.max(2400, sysR * 9)]} />
-      <group visible={!walkAtmo}>
-        <StarField radius={starR} />
-      </group>
+      <StarField radius={starR} />
       {/* The star's pointLight (in Planet.jsx) is the system's only key
           light: with one present the fill drops to a whisper floor, so night
           sides fall into near-darkness like real photos — Jupiter's backside
