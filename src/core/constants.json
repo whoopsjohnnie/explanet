@@ -22,6 +22,17 @@
       "previewFrequency": 16,
       "fullInlineCells": 10000,
       "_note": "previewFrequency: the skeleton's stub sample grid — also the floor for generated-body grids. fullInlineCells: bodies at or below this cell count ship complete in the skeleton; larger ones are stubs whose atoms stream on intent."
+    },
+
+    "decor": {
+      "domeWidthSegs": 48,
+      "domeHeightSegs": 24,
+      "_note": "WalkSky dome + AtmosphereGlow shell share this tessellation."
+    },
+
+    "sky": {
+      "dustSeed": 7,
+      "_note": "Deterministic band geometry — the pinned numbers in scripts/test-starfield.mjs hang off this seed."
     }
   },
 

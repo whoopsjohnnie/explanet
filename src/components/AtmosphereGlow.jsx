@@ -123,7 +123,7 @@ export default function AtmosphereGlow({ planet, atmo, radius }) {
   const shellR = radius * (1 + Math.min(0.28, Math.max(0.025, atmo.top)))
   return (
     <mesh material={material} scale={shellR} raycast={NO_RAYCAST}>
-      <sphereGeometry args={[1, 48, 24]} />
+      <sphereGeometry args={[1, C.decor.domeWidthSegs, C.decor.domeHeightSegs]} />
     </mesh>
   )
 }

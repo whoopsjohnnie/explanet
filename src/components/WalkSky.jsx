@@ -162,7 +162,7 @@ export default function WalkSky({ planetId }) {
     <mesh ref={meshRef} material={material} renderOrder={-1} frustumCulled={false}>
       {/* unit dome, scaled to the frustum each frame; modest tessellation —
           every gradient term is per-pixel from the direction, not the mesh */}
-      <sphereGeometry args={[1, 48, 24]} />
+      <sphereGeometry args={[1, C.decor.domeWidthSegs, C.decor.domeHeightSegs]} />
     </mesh>
   )
 }
