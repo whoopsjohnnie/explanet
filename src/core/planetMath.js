@@ -22,6 +22,7 @@
  */
 
 import { getHexSphere, radiusFromCellCount, cellCountForFrequency } from './hexsphere.js'
+import { C } from './constants.js'
 
 export const DEFAULT_DENSITY = 0.05
 
@@ -30,7 +31,7 @@ export const DEFAULT_DENSITY = 0.05
  * the ladder holds ~10× the cells of the old freq-64 cap (412,092) now that
  * grids are stored as flat typed arrays (see hexsphere.js).
  */
-export const MAX_FREQUENCY = 203
+export const MAX_FREQUENCY = C.atom.maxFrequency
 
 /** Natural ("atom", scale 1) radius of the frequency-n grid. */
 export function radiusForFrequency(f) {

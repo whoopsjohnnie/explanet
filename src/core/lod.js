@@ -14,6 +14,7 @@
 
 import { getHexSphere } from './hexsphere.js'
 import { cellAtDirection } from './surface.js'
+import { C } from './constants.js'
 
 /**
  * Render-resolution chain for a planet frequency, halving toward 4:
@@ -37,7 +38,7 @@ export function lodChain(frequency) {
  * preview has frequency pf only needs its full atoms once the camera is
  * closer than (LOD_SWITCH / pf) · R.
  */
-export const LOD_SWITCH = 570
+export const LOD_SWITCH = C.lod.switch
 
 /**
  * Switch distances (from the planet CENTER) for the chain, in world units:

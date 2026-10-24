@@ -34,6 +34,7 @@ import { gzip } from 'node:zlib'
 import pg from 'pg'
 import { sampleLodElements } from '../src/core/lod.js'
 import { generateElements } from '../src/core/generators.js'
+import { C } from '../src/core/constants.js'
 
 const { Pool } = pg
 
@@ -44,8 +45,8 @@ const USER = process.env.PGUSER || '<db-user>'
 
 // bodies small enough to ship whole inside the skeleton (≈ frequency ≤ 31):
 // everything above stays a stub with a preview sample
-export const FULL_INLINE_CELLS = 10_000
-export const PREVIEW_FREQUENCY = 16
+export const FULL_INLINE_CELLS = C.server.fullInlineCells
+export const PREVIEW_FREQUENCY = C.server.previewFrequency
 
 // ---------------------------------------------------------------------------
 // Pool (lazy — never connect at import time, e.g. during `vite build`)

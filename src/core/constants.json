@@ -5,6 +5,23 @@
     "physics": {
       "softeningEpsSq": 4,
       "_note": "eps^2 of the softened gravity law — ONE law shared by stepGravity, orbitalSpeed and surfaceGravity (the AGENTS.md invariant, now one number)."
+    },
+
+    "atom": {
+      "maxFrequency": 203,
+      "_note": "top of the atom grid ladder (10n^2+2 = 412,092 cells ≈ a Jupiter)."
+    },
+
+    "lod": {
+      "switch": 570,
+      "asyncMinCells": 20000,
+      "_note": "switch: sample the render LOD once the camera exceeds this multiple of the body radius. asyncMinCells: geometry chains at or above this cell count build in the Web Worker (sync build would jank the frame)."
+    },
+
+    "server": {
+      "previewFrequency": 16,
+      "fullInlineCells": 10000,
+      "_note": "previewFrequency: the skeleton's stub sample grid — also the floor for generated-body grids. fullInlineCells: bodies at or below this cell count ship complete in the skeleton; larger ones are stubs whose atoms stream on intent."
     }
   },
 

@@ -17,9 +17,10 @@
 import * as THREE from 'three'
 import { packElements, packedForTransfer } from '../core/atoms.js'
 import { lodChain } from '../core/lod.js'
+import { C } from '../core/constants.js'
 
 /** At this cell count a full LOD chain costs under a frame; above it, async. */
-export const ASYNC_MIN_CELLS = 20_000
+export const ASYNC_MIN_CELLS = C.lod.asyncMinCells
 
 let worker = null
 let workerBroken = false
