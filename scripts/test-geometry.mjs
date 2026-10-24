@@ -21,7 +21,6 @@ import {
 } from '../src/core/planetMath.js'
 import { normalizeWorld, isPlanetStub, serializeWorld } from '../src/core/worldSchema.js'
 import { generateElements, PRESETS } from '../src/core/generators.js'
-import { readFileSync } from 'node:fs'
 
 let failures = 0
 const check = (name, cond) => {
@@ -163,11 +162,13 @@ check(
     massOf('Mercury') > massOf('Pluto')
 )
 
-// world.json round trip
-const raw = JSON.parse(readFileSync(new URL('../public/world.json', import.meta.url), 'utf8'))
+// starter world round trip — serialize to JSON text, parse, normalize. The
+// starter is generated in core/starter.js; public/world.json is a generated,
+// gitignored artifact, so this round trip runs fully in memory.
+const raw = JSON.parse(JSON.stringify(world))
 const norm = normalizeWorld(raw)
 check(
-  'public/world.json normalizes identically',
+  'starter world normalizes identically',
   norm.planets.length === raw.planets.length &&
     norm.planets.every((p, i) => p.elements.length === raw.planets[i].elements.length)
 )

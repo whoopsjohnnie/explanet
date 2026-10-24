@@ -2,8 +2,9 @@
 /**
  * import-stars.mjs — load the real-sky star catalog into the stars table.
  *
- * Reads the vendored Yale Bright Star Catalog JSON (scripts/stars/data/
- * BSC.json, public domain) and streams every field into `stars`
+ * Reads the Yale Bright Star Catalog JSON (seed file, kept in S3 —
+ * scripts/stars/data/BSC.json after fetching — public domain) and streams
+ * every field into `stars`
  * (db/migrations/006-stars.sql): HR number, J2000 RA/Dec, epoch, proper
  * motions, V magnitude, spectral string + extracted OBAFGKM class — plus the
  * galactic (l, b) and ecliptic (λ, β) coordinates DERIVED with the app's own
@@ -19,9 +20,9 @@
  *
  * Requires psql on PATH; connection via standard libpq env vars / ~/.pgpass.
  */
-import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { readSeed } from './seed.mjs'
 import { lookupPgpass } from '../server/db.mjs'
 import { radecToGalactic, radecToEcliptic } from '../src/core/starsky.js'
 
@@ -52,7 +53,7 @@ const parseDec = (s) => {
 }
 const numOrNull = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
 
-const raw = JSON.parse(readFileSync(src, 'utf8'))
+const raw = JSON.parse(readSeed(src, 'Yale BSC v5 is in the S3 seeds bucket (DATA.md); the parsed catalog is also mirrored in the world DB (stars table).'))
 if (!Array.isArray(raw) || !raw.length || raw[0]['harvard_ref_#'] == null) {
   console.error(`${src}: not a BSC star array`)
   process.exit(1)

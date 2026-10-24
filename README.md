@@ -10,6 +10,8 @@ All worlds live in a PostgreSQL database (the **world database**, schema in
 everything. The app streams what it needs: the solar system opens instantly
 from a skeleton, and each giant's atoms stream in when you approach, select
 it, or land on it. `world.json` files remain the import/export format.
+No world or seed data is committed — see `DATA.md` for where everything
+lives (world database + S3 seeds) and how to fetch or regenerate it.
 
 ```
 npm install
@@ -131,11 +133,13 @@ air read as "has air" from orbit. The real-world catalog lives in
 }
 ```
 
-`public/world.json` is the bundled demo system (the Sun and the nine planets
-at true relative distances — each world's hex count derived from its real
-radius, up to the frequency-203 cap: Jupiter 412,092 hexes, Earth 3,242,
-Pluto a chunky 92). Regenerate it with `npm run gen:world` — and import it
-into the world database with `npm run db:import`.
+`public/world.json` is the local demo system — generated with
+`npm run gen:world` (from `core/starter.js`) and **not committed**: this repo
+holds the engine and the world-building tools only, never world data (see
+`DATA.md`). It is the Sun and the nine planets at true relative distances —
+each world's hex count derived from its real radius, up to the
+frequency-203 cap: Jupiter 412,092 hexes, Earth 3,242, Pluto a chunky 92.
+Generate it, then import it into the world database with `npm run db:import`.
 
 The **Sol Real** world (`node scripts/gen-sol-real.mjs && node
 scripts/import-db.mjs public/sol-real.json`) is the full-scale version: all

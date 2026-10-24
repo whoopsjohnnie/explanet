@@ -6,6 +6,13 @@ dist/
 # stray OpenCode session files
 ses_*.json
 
+# world data never lives in this repo (see DATA.md):
+# worlds are rows in the world database (<db-host>/<db-name>), seed inputs are
+# in S3; these paths are local generated artifacts / fetched seeds only.
+public/world.json
+scripts/stars/data/
+scripts/sol-real/data/
+
 # generated trial artifact (scripts/gen-solar-world.mjs regenerates it)
 public/solar-trial.json
 public/sol-real.json

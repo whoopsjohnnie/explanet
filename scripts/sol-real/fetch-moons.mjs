@@ -8,8 +8,9 @@
  * per planet is the most complete public catalog of natural satellites there
  * is (Jupiter ~100, Saturn ~270, Uranus 28, Neptune 16, Pluto 5).
  *
- * Output: scripts/sol-real/data/moons.json (committed — generation is then
- * deterministic and offline; re-run only to refresh the catalog).
+ * Output: scripts/sol-real/data/moons.json (seed file — uploaded to S3 after
+ * a refresh, see DATA.md; generation is then deterministic and offline;
+ * re-run only to refresh the catalog).
  *
  *   node scripts/sol-real/fetch-moons.mjs
  */

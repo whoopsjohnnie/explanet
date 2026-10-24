@@ -25,7 +25,8 @@
  * Import:  node scripts/import-db.mjs public/sol-real.json
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
+import { readSeed } from './seed.mjs'
 import { generateElements } from '../src/core/generators.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import { keplerState } from '../src/core/kepler.js'
@@ -147,9 +148,10 @@ function stateFrom(el) {
 // ---------------------------------------------------------------------------
 // data files
 // ---------------------------------------------------------------------------
-const moonsData = JSON.parse(readFileSync(new URL('./sol-real/data/moons.json', import.meta.url), 'utf8'))
-const orbitsData = JSON.parse(readFileSync(new URL('./sol-real/data/orbits.json', import.meta.url), 'utf8'))
-const landTopo = JSON.parse(readFileSync(new URL('./sol-real/data/land-50m.json', import.meta.url), 'utf8'))
+const seedAt = (rel) => new URL(rel, import.meta.url).pathname
+const moonsData = JSON.parse(readSeed(seedAt('./sol-real/data/moons.json'), 'regenerate with scripts/sol-real/fetch-moons.mjs or fetch from S3 (DATA.md)'))
+const orbitsData = JSON.parse(readSeed(seedAt('./sol-real/data/orbits.json'), 'regenerate with scripts/sol-real/fetch-small.mjs or fetch from S3 (DATA.md)'))
+const landTopo = JSON.parse(readSeed(seedAt('./sol-real/data/land-50m.json'), 'world-atlas 1:50m land TopoJSON — fetch from S3 (DATA.md)'))
 
 const PLANET_DOC_ID = {}
 for (const p of PLANETS) PLANET_DOC_ID[p.name] = `p-${p.name.toLowerCase()}`

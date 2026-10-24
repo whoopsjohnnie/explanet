@@ -2,13 +2,14 @@
 /**
  * gen-starfield.mjs — the real-sky star catalog.
  *
- * Reads the vendored Yale Bright Star Catalog v5 JSON (public domain;
- * scripts/stars/data/BSC.json — all 9,096 naked-eye stars ≤ ~6.5 mag with
- * J2000 positions and spectral class) and emits a compact packed module
- * the app can import: per star, RA and Dec in thousandths of a degree,
- * magnitude in hundredths, and the spectral class OBAFGKM index (7 = unknown;
- * the class string may carry luminosity/variable prefixes, so we take the
- * first OBAFGKM letter). core/starsky.js decodes and projects it.
+ * Reads the Yale Bright Star Catalog v5 JSON (public domain; seed file, kept
+ * in S3 — scripts/stars/data/BSC.json after fetching — all 9,096 naked-eye
+ * stars ≤ ~6.5 mag with J2000 positions and spectral class) and emits a
+ * compact packed module the app can import: per star, RA and Dec in
+ * thousandths of a degree, magnitude in hundredths, and the spectral class
+ * OBAFGKM index (7 = unknown; the class string may carry luminosity/variable
+ * prefixes, so we take the first OBAFGKM letter). core/starsky.js decodes
+ * and projects it.
  *
  * Positions stay in the catalog's own J2000 equatorial frame — the projection
  * into the engine's ecliptic frame happens at load time in starsky.js, so
@@ -17,9 +18,10 @@
  *   node scripts/gen-starfield.mjs
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSeed } from './seed.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const IN = join(here, 'stars/data/BSC.json')
@@ -37,7 +39,7 @@ const parseDec = (s) => {
   return sign * (Math.abs(d) + m / 60 + sec / 3600)
 }
 
-const raw = JSON.parse(readFileSync(IN, 'utf8'))
+const raw = JSON.parse(readSeed(IN, 'Yale BSC v5 is in the S3 seeds bucket (DATA.md) and mirrored in the world DB (stars table).'))
 const rows = []
 for (const s of raw) {
   const ra = parseRA(s.RA)
