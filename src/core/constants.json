@@ -1,0 +1,12 @@
+{
+  "_note": "Every tuned number in the engine, defined ONCE. See core/constants.js for the semantics: structural = invariants (no dial, variants can never touch them); tunables = { value } or { range: [at0, at1], dial, gamma? } resolved from variants.json. Keys starting with _ are skipped.",
+
+  "structural": {
+    "physics": {
+      "softeningEpsSq": 4,
+      "_note": "eps^2 of the softened gravity law — ONE law shared by stepGravity, orbitalSpeed and surfaceGravity (the AGENTS.md invariant, now one number)."
+    }
+  },
+
+  "tunables": {}
+}
