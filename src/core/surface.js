@@ -32,6 +32,7 @@
 
 import { getHexSphere, dotCenter } from './hexsphere.js'
 import { planetRadius } from './planetMath.js'
+import { C } from './constants.js'
 
 // ---------------------------------------------------------------------------
 // Small vec helpers (arrays of 3)
@@ -85,7 +86,7 @@ export const walkReadout = { alt: 0, vel: 0, grounded: false, sprint: false }
  * scaled and clamped to stay walkable on everything from moons to giants.
  */
 export function surfaceGravity(worldG, mass, r) {
-  const a = ((worldG * Math.abs(mass)) / (r * r + 4)) * SURFACE.gravityScale
+  const a = ((worldG * Math.abs(mass)) / (r * r + C.physics.softeningEpsSq)) * SURFACE.gravityScale
   return Math.min(SURFACE.maxGravity, Math.max(SURFACE.minGravity, a))
 }
 

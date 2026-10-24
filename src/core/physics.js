@@ -11,6 +11,8 @@
  * 60 Hz updates through React state.
  */
 
+import { C } from './constants.js'
+
 export const registry = {
   // id -> { api, pos:{x,y,z}, vel:{x,y,z}, quat:{x,y,z,w}, mass, isStatic, radius }
   // pos/vel/quat are live; the surface walker (core/surface.js) composes the
@@ -50,7 +52,7 @@ export function stepGravity(G) {
       const dist = Math.sqrt(distSq)
       if (dist < 1e-6) continue
       // force magnitude on each body
-      const F = (G * a.mass * b.mass) / (distSq + 4) // small softening
+      const F = (G * a.mass * b.mass) / (distSq + C.physics.softeningEpsSq) // softened
       const nx = dx / dist
       const ny = dy / dist
       const nz = dz / dist
@@ -68,5 +70,5 @@ export function stepGravity(G) {
 /** Circular orbit speed at distance r around a mass m, matching the
  *  softened force law used in stepGravity: v² / r = G·m / (r² + ε²). */
 export function orbitalSpeed(G, mass, r) {
-  return Math.sqrt((G * mass * r) / (r * r + 4))
+  return Math.sqrt((G * mass * r) / (r * r + C.physics.softeningEpsSq))
 }
