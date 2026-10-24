@@ -1,5 +1,6 @@
 {
   "_note": "Variant dials (0..1) — the fiddling file. 0.5 = the reference look the constants.json ranges were built around. gradientSteps: 1.0 = smooth (quantization off), ~0.1 ≈ 9-band DOS gradients, 0 = no gradients at all (hard lines).",
+  "_look": "normal reference look — set gradientSteps to 0.1 for the 90s VGA variant (≈9-band gradients). Docs: docs/variants.md.",
   "skyGlow": 0.5,
   "gradientSteps": 1.0
 }
