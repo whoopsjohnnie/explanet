@@ -30,7 +30,8 @@ if [[ "$PGHOST" == "your-pg-host" ]]; then
 fi
 
 # --- dev server -------------------------------------------------------------
-# Extra args are forwarded to vite, e.g. for LAN testing:
-#   ./startdevserver.sh --host 0.0.0.0
+# Binds all interfaces so the app is reachable from other machines on the
+# LAN (drop the flag to keep it localhost-only); extra args are forwarded to
+# vite and override this if repeated.
 cd "$(dirname "$0")"
-exec npm run dev -- "$@"
+exec npm run dev -- --host 0.0.0.0 "$@"
