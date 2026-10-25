@@ -3,6 +3,9 @@ dist/
 *.local
 .DS_Store
 
+# local launcher with DB connection details (copy startdevserver.example.sh)
+startdevserver.sh
+
 # stray OpenCode session files
 ses_*.json
 

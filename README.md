@@ -15,10 +15,17 @@ lives (world database + S3 seeds) and how to fetch or regenerate it.
 
 ```
 npm install
-npm run dev        # → http://localhost:5173   (uses the world database; falls
-                   #                            back to the built-in starter
-                   #                            world if it is unreachable)
+cp startdevserver.example.sh startdevserver.sh   # then edit it with your
+                                                 # database host/database/user
+./startdevserver.sh  # → http://localhost:5173   (uses the world database;
+                     #                           falls back to the built-in
+                     #                           starter world if unreachable)
 ```
+
+`startdevserver.sh` just exports the required `PG*` connection variables and
+runs `npm run dev` (which works on its own if your shell already has them).
+It is gitignored so your infrastructure details never enter the repo — the
+template next to it is what gets committed.
 
 ## What it does
 
@@ -179,6 +186,10 @@ has to swallow the whole 90 MB document again:
   password comes from `PGPASSWORD` or `~/.pgpass`. The served world defaults
   to the newest import — pin one with `EXPLANET_WORLD=8` or `?world=8` in the
   browser URL.
+- **Local launch**: copy `startdevserver.example.sh` → `startdevserver.sh`,
+  fill in your host/database/user, and run it — the script exports the env
+  vars and starts the dev server. Your copy stays out of git (gitignored);
+  the same variables work for `npm run serve` and the `db:*` scripts.
 - **Smoke test**: `node scripts/check-db-live.mjs` runs the real client path
   against a live API and reports the staged-load picture.
 
