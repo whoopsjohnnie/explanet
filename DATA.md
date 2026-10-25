@@ -7,10 +7,11 @@ file is missing).
 
 ## The world database (source of truth for worlds)
 
-PostgreSQL on **<db-host>**, database **<db-name>**, schema **explanet**.
-DDL: `db/schema.sql` + `db/migrations/`. Connection: standard libpq env
-vars (`PGHOST`/`PGUSER`/`PGDATABASE`) with password via `PGPASSWORD` or
-`~/.pgpass`.
+Your PostgreSQL server — set `PGHOST`, `PGDATABASE`, `PGUSER` env vars. This
+repository ships **no** infrastructure names: hosts, database names, users
+and credentials belong in your shell env / secret manager, never in code,
+docs or commit messages. Schema: `explanet`. DDL: `db/schema.sql` +
+`db/migrations/`. Password: `PGPASSWORD` or `~/.pgpass`.
 
 | table     | contents                                                       |
 | --------- | -------------------------------------------------------------- |
@@ -61,7 +62,10 @@ committed. To load the demo system into the database:
 1. Never commit a world document, world export, or seed data file. If a
    tool needs data, it reads the DB, a `scripts/**/data/` seed (fetched
    via `scripts/seed.mjs`), or the starter generator.
-2. New seeds get added to the bucket, listed in the table above, and read
+2. Never commit infrastructure identifiers — hostnames, database names,
+   users, credentials, URLs. Tools read `PGHOST`/`PGDATABASE`/`PGUSER` and
+   fail with a clear message when they are unset.
+3. New seeds get added to the bucket, listed in the table above, and read
    through `readSeed()`.
-3. Large generated *source* the app bundles at build time (like
+4. Large generated *source* the app bundles at build time (like
    `starCatalog.js`) may be tracked — keep those under ~200 KB.

@@ -1,5 +1,5 @@
 /**
- * db.mjs — PostgreSQL access for the ExPlanet world database (<db-host> / <db-name>).
+ * db.mjs — PostgreSQL access for the ExPlanet world database.
  *
  * Read side of the schema in db/schema.sql. Two grains of reading, matching
  * how the app consumes worlds:
@@ -24,9 +24,10 @@
  * Bodies are LRU-cached in compact form, so a skeleton build (which samples
  * every preview) warms the cache and later per-body requests are memory-only.
  *
- * Connection: standard libpq env vars (PGHOST/PGPORT/PGDATABASE/PGUSER),
- * defaulting to <db-host> / <db-name> / <db-user>; the password falls back to
- * ~/.pgpass (pg itself does not read that file — we do).
+ * Connection: standard libpq env vars — PGHOST, PGDATABASE and PGUSER are
+ * REQUIRED (this repo ships no infrastructure names; keep them in your shell
+ * env or a secret manager). The password falls back to ~/.pgpass (pg itself
+ * does not read that file — we do).
  */
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -38,10 +39,10 @@ import { C } from '../src/core/constants.js'
 
 const { Pool } = pg
 
-const HOST = process.env.PGHOST || '<db-host>'
+const HOST = process.env.PGHOST || ''
 const PORT = Number(process.env.PGPORT || 5432)
-const DATABASE = process.env.PGDATABASE || '<db-name>'
-const USER = process.env.PGUSER || '<db-user>'
+const DATABASE = process.env.PGDATABASE || ''
+const USER = process.env.PGUSER || ''
 
 // bodies small enough to ship whole inside the skeleton (≈ frequency ≤ 31):
 // everything above stays a stub with a preview sample
@@ -66,7 +67,7 @@ export function lookupPgpass(host, port, database, user) {
     const fields = l.split(/(?<!\\):/).map((s) => s.replace(/\\:/g, ':').replace(/\\\\/g, '\\'))
     if (fields.length < 5) continue
     const [h, p, d, u] = fields
-    // connect host '<db-host>' should match a '<db-host>.localdomain' entry
+    // connect host 'somehost' should match a 'somehost.localdomain' entry
     const hostOk = h === '*' || h === host || h.split('.')[0] === host.split('.')[0]
     if (
       hostOk &&
@@ -82,6 +83,11 @@ export function lookupPgpass(host, port, database, user) {
 let pool = null
 export function getPool() {
   if (!pool) {
+    const missing = ['PGHOST', 'PGDATABASE', 'PGUSER'].filter((k) => !process.env[k])
+    if (missing.length)
+      throw new Error(
+        `world database: ${missing.join(', ')} not set — point the server at your world database (see README, "The world database")`
+      )
     pool = new pg.Pool({
       host: HOST,
       port: PORT,

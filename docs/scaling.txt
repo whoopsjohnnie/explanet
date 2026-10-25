@@ -645,7 +645,7 @@
   and server-side synthesis, so the app never learns a generated body exists:
 
   * Schema: bodies.generation jsonb (migration db/migrations/
-    001-body-generation.sql, applied to <db-host>; db/schema.sql mirrors it for
+    001-body-generation.sql, applied to the deployment database; db/schema.sql mirrors it for
     fresh installs). NULL = stored atoms — every pre-existing row behaves
     exactly as before. An object means a GENERATED body with ZERO atom rows:
 

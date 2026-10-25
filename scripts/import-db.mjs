@@ -18,7 +18,7 @@
  * cell_count_for_frequency(frequency) — a truncated/corrupt stream aborts.
  *
  * Usage:
- *   PGHOST=... PGUSER=... PGDATABASE=<db-name> node scripts/import-db.mjs [path/to/world.json]
+ *   PGHOST=<host> PGDATABASE=<db> PGUSER=<user> node scripts/import-db.mjs [path/to/world.json]
  *
  * Requires psql on PATH (data streams to it via COPY FROM STDIN); connection
  * settings are standard libpq env vars / ~/.pgpass. Re-running imports the
@@ -29,13 +29,15 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { lookupPgpass } from '../server/db.mjs'
 
-// psql connection: same defaults and ~/.pgpass fallback as server/db.mjs —
-// psql matches hostnames EXACTLY, so it would prompt even though .pgpass has
-// a '<db-host>.localdomain' entry for the '<db-host>' we connect to.
-process.env.PGHOST ||= '<db-host>'
+// psql connection: env vars REQUIRED (no infrastructure names in this repo —
+// see DATA.md). psql matches hostnames EXACTLY, so a ~/.pgpass entry must be
+// written for the host exactly as PGHOST gives it.
+for (const k of ['PGHOST', 'PGDATABASE', 'PGUSER'])
+  if (!process.env[k]) {
+    console.error(`import-db: ${k} is required — set your world-database connection env vars (see README / DATA.md)`)
+    process.exit(1)
+  }
 process.env.PGPORT ||= '5432'
-process.env.PGDATABASE ||= '<db-name>'
-process.env.PGUSER ||= '<db-user>'
 if (!process.env.PGPASSWORD)
   process.env.PGPASSWORD =
     lookupPgpass(process.env.PGHOST, Number(process.env.PGPORT), process.env.PGDATABASE, process.env.PGUSER) || ''

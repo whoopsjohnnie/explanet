@@ -153,7 +153,7 @@ collapsible groups. See `AGENTS.md` for the schema details.
 
 ## The world database
 
-Worlds are stored relationally in PostgreSQL (`<db-name>` on `<db-host>`,
+Worlds are stored relationally in PostgreSQL (your world database server;
 schema in [`db/schema.sql`](db/schema.sql)): `worlds → bodies → atoms`, with
 `materials` as the terrain palette. Because atoms are rows, a browser never
 has to swallow the whole 90 MB document again:
@@ -174,10 +174,11 @@ has to swallow the whole 90 MB document again:
   `GET /api/worlds`, `GET /api/worlds/:id` (skeleton, `?refresh=1` rebakes),
   `GET /api/bodies/:dbId/elements` (compact columnar atoms, gzipped),
   `GET /api/health`.
-- **Connection**: `PGHOST` (default `<db-host>`), `PGPORT`, `PGDATABASE`
-  (default `<db-name>`), `PGUSER` (default `<db-user>`); the password comes
-  from `PGPASSWORD` or `~/.pgpass`. The served world defaults to the newest
-  import — pin one with `EXPLANET_WORLD=8` or `?world=8` in the browser URL.
+- **Connection**: `PGHOST`, `PGDATABASE`, `PGUSER` are **required** env vars —
+  this repo ships no infrastructure names; `PGPORT` defaults to 5432 and the
+  password comes from `PGPASSWORD` or `~/.pgpass`. The served world defaults
+  to the newest import — pin one with `EXPLANET_WORLD=8` or `?world=8` in the
+  browser URL.
 - **Smoke test**: `node scripts/check-db-live.mjs` runs the real client path
   against a live API and reports the staged-load picture.
 

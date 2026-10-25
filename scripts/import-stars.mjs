@@ -26,10 +26,13 @@ import { readSeed } from './seed.mjs'
 import { lookupPgpass } from '../server/db.mjs'
 import { radecToGalactic, radecToEcliptic } from '../src/core/starsky.js'
 
-process.env.PGHOST ||= '<db-host>'
+// env vars REQUIRED (no infrastructure names in this repo — see DATA.md)
+for (const k of ['PGHOST', 'PGDATABASE', 'PGUSER'])
+  if (!process.env[k]) {
+    console.error(`import-stars: ${k} is required — set your world-database connection env vars (see README / DATA.md)`)
+    process.exit(1)
+  }
 process.env.PGPORT ||= '5432'
-process.env.PGDATABASE ||= '<db-name>'
-process.env.PGUSER ||= '<db-user>'
 if (!process.env.PGPASSWORD)
   process.env.PGPASSWORD =
     lookupPgpass(process.env.PGHOST, Number(process.env.PGPORT), process.env.PGDATABASE, process.env.PGUSER) || ''
