@@ -68,9 +68,15 @@ app, geometry worker, node tests, `server/`. It throws with a complete list:
 
 ### tunables — `skyFade` (no dial)
 
-The day→night sun-elevation curve `smoothstep(sunDown, sunUp, sun·up)`,
-**one definition consumed in two languages**: StarField's JS fade and WalkSky's
-GLSL (injected via `gnum()`).
+The twilight model, **one definition consumed in three languages**: StarField's
+JS star fade, WalkSky's GLSL (injected via `gnum()`), and the walk ground fill.
+
+- `light = smoothstep(sunDown, 0, sun·up)` — the sky stays fully lit while the
+  sun is above the horizon and fades to full night by `sunDown` below it
+  (twilight, ~ −14°). Stars fade in on the same curve.
+- `tint = 1 − smoothstep(0, sunUp, sun·up)` — the warm sunset zone: a deep red
+  horizon band (full width in azimuth) plus wide forward scatter at the
+  horizon, faded to the body's day colors by `sunUp` above it (~ +17°).
 
 ### tunables — `sky` (the `skyGlow` covariant group)
 

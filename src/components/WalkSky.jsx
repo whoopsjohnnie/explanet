@@ -8,10 +8,20 @@
  * just hangs a sky on it):
  *
  *  • horizon→zenith gradient in the body's colors, plus a forward-scatter
- *    glow around the system's star, which also sets day vs. night — the real
- *    starfield (StarField.jsx) draws over the dome and fades itself along
- *    this same curve, so a night walk shows the actual Milky Way and the
- *    sun washes it out by day;
+ *    glow around the system's star — the real starfield (StarField.jsx)
+ *    draws over the dome and fades itself along the same twilight curve,
+ *    so a night walk shows the actual Milky Way and the sun washes it out;
+ *  • twilight, the real one: the sky stays FULLY lit while the sun is above
+ *    the horizon and only fades to night once it has sunk `skyFade.sunDown`
+ *    below it — a sunset must not cut to black at the horizon. Inside the
+ *    `skyFade.sunUp` band above the horizon the day colors blend into the
+ *    sunset palette: a deep red band hugging the horizon (full width in
+ *    azimuth) fading up to a warm amber zenith, with a wide, intense
+ *    forward-scatter patch around the low sun;
+ *  • the sky's own light on the ground: while the sun is low the star's
+ *    pointLight grazes the terrain, so an ambientLight rides the same curve
+ *    (pale fill by day → warm orange glow at sunset, scaled by air density)
+ *    and the ground stays visible through the whole sunset;
  *  • the dome NEVER writes depth and tests against the opaque scene: terrain
  *    and planets occlude it, the Sun stays a crisp disk through the haze
  *    (extinction-free, but honest-looking), and it can never eat the world;
@@ -33,6 +43,24 @@ import { C, gnum } from '../core/constants.js'
 import { BAND_FN } from '../core/glsl.js'
 
 const DEFAULTS = { zenith: '#3a6ab8', horizon: '#b8cfe4', glow: '#ffd9a0' }
+// The sunset palette is universal warm — Rayleigh red, not a per-body dial:
+// what the air does to a low sun is the same on every world (pass-2 group,
+// lives in code like the rest of the walkSky colors).
+const SUNSET_HORIZON = '#ff5a1f' // deep orange-red hugging the horizon
+const SUNSET_ZENITH = '#f0ad60' // warm amber the band fades up into
+// The sky's own light on the ground (the ambientLight below): with the sun
+// low, the orange sky IS the light. Intensity follows the twilight curve;
+// thin air scatters little, so it scales with the atmosphere's opacity.
+const FILL_DAY = 0.22
+const FILL_SUNSET = 0.7
+const FILL_SUNSET_COLOR = '#ff8a4a'
+const FILL_REF_OPACITY = 0.62 // Earth: full-strength fill
+
+/** GLSL smoothstep mirror — the twilight curve is evaluated in JS for the fill light. */
+const smoothstep = (a, b, x) => {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)))
+  return t * t * (3 - 2 * t)
+}
 
 const VERT = /* glsl */ `
 varying vec3 vDir;
@@ -42,13 +70,14 @@ void main() {
 }
 `
 
-// The day-curve bounds and gradient-step counts are injected from constants.json
-// (StarField's JS fade reads the same numbers — one definition, two languages).
-// Step counts of 0 make bandize a pass-through, so the default sky stays smooth.
+// The twilight bounds and gradient-step counts are injected from constants.json
+// (StarField's JS star fade and the ground fill below read the same numbers —
+// one definition, three consumers). Step counts of 0 make bandize a
+// pass-through, so the default sky stays smooth.
 const FRAG = /* glsl */ `
 ${BAND_FN}
 varying vec3 vDir;
-uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunDir, uUpDir;
+uniform vec3 uZenith, uHorizon, uNight, uGlow, uSunsetHorizon, uSunsetZenith, uSunDir, uUpDir;
 uniform float uOpacity, uHasSun;
 
 vec3 aces(vec3 x) { // Narkowicz ACES fit — mirrors the renderer's pipeline
@@ -65,23 +94,36 @@ void main() {
   float up = max(dot(dir, uUpDir), 0.0);
   vec3 sun = mix(vec3(0.0, 1.0, 0.0), uSunDir, uHasSun);
   float sd = max(dot(dir, sun), 0.0);
+  float elev = dot(sun, uUpDir); // the sun's own elevation above the horizon
 
-  // day sky: horizon → zenith with the dense band hugging the horizon,
-  // plus a wide forward-scatter brightening toward the star
-  vec3 day = mix(uHorizon, uZenith, bandize(pow(up, 0.55), ${gnum(C.gradient.steps.skyZenith)}));
-  // forward scatter bands too → contour rings around the star (the glare
-  // "lines" of the VGA look)
-  day += uGlow * bandize(pow(sd, 7.0), ${gnum(C.gradient.steps.sunGlare)}) * 0.4 * uHasSun;
-  // sun elevation drives day→night (t=1 must select the smoothstep: mix picks
-  // the SECOND arg when the factor is 1, and uHasSun IS 1 in every star world)
-  float light = mix(1.0, smoothstep(${gnum(C.skyFade.sunDown)}, ${gnum(C.skyFade.sunUp)}, dot(sun, uUpDir)), uHasSun);
+  // twilight: the sky stays fully lit while the sun is up and fades to night
+  // only once it has sunk sunDown below the horizon — a sunset must not cut
+  // to black at the horizon (t=1 must select the smoothstep: mix picks the
+  // SECOND arg when the factor is 1, and uHasSun IS 1 in every star world)
+  float light = mix(1.0, smoothstep(${gnum(C.skyFade.sunDown)}, 0.0, elev), uHasSun);
+  // the warm sunset zone: full at the horizon, gone by sunUp above it
+  float sunsetT = mix(0.0, 1.0 - smoothstep(0.0, ${gnum(C.skyFade.sunUp)}, elev), uHasSun);
   light = bandize(light, ${gnum(C.gradient.steps.skyDayNight)});
+  sunsetT = bandize(sunsetT, ${gnum(C.gradient.steps.skyDayNight)});
+
+  // day sky: horizon → zenith with the dense band hugging the horizon — with
+  // the sunset bleeding into BOTH ends of the gradient: a deep red band hugging
+  // the horizon (full width in azimuth) fading up to a warm amber zenith; the
+  // body's own colors take over as the sun rises
+  vec3 hor = mix(uHorizon, uSunsetHorizon, sunsetT);
+  vec3 zen = mix(uZenith, uSunsetZenith, sunsetT);
+  vec3 day = mix(hor, zen, bandize(pow(up, 0.55), ${gnum(C.gradient.steps.skyZenith)}));
+  // forward scatter around the star: wide + intense at the horizon (the
+  // broad bright patch of a real sunset), tight + faint by day; banded too
+  // → contour rings around the star (the glare "lines" of the VGA look)
+  day += uGlow * bandize(pow(sd, mix(7.0, 3.0, sunsetT)), ${gnum(C.gradient.steps.sunGlare)})
+       * mix(0.4, 1.5, sunsetT) * uHasSun;
   vec3 col = mix(uNight, day, light);
   // corona, visible even at dusk — banded with the same sunGlare count, so
   // the halo around the star steps through the same contour rings
-  col += uGlow * bandize(pow(sd, 250.0), ${gnum(C.gradient.steps.sunGlare)}) * 2.0 * uHasSun;
+  col += uGlow * bandize(pow(sd, 250.0), ${gnum(C.gradient.steps.sunGlare)}) * mix(2.0, 3.0, sunsetT) * uHasSun;
   // no stars here: the real sky (StarField.jsx) rides on top of the dome,
-  // self-faded by the same sun-elevation curve — the dome only paints air.
+  // self-faded by the same twilight curve — the dome only paints air.
   gl_FragColor = vec4(toSRGB(aces(col)), uOpacity);
 }
 `
@@ -94,6 +136,7 @@ export default function WalkSky({ planetId }) {
   )
   const atmo = planet?.atmosphere
   const meshRef = useRef(null)
+  const fillRef = useRef(null)
 
   // rebuild only when the descriptor itself changes (hydration copy-on-write
   // preserves the atmosphere reference, so streaming atoms costs nothing)
@@ -112,6 +155,8 @@ export default function WalkSky({ planetId }) {
         uHorizon: { value: color(atmo.horizon, DEFAULTS.horizon) },
         uNight: { value: color(atmo.zenith, DEFAULTS.zenith).multiplyScalar(0.04) },
         uGlow: { value: color(atmo.glow, DEFAULTS.glow) },
+        uSunsetHorizon: { value: color(SUNSET_HORIZON, SUNSET_HORIZON) },
+        uSunsetZenith: { value: color(SUNSET_ZENITH, SUNSET_ZENITH) },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uUpDir: { value: new THREE.Vector3(0, 1, 0) },
         uOpacity: { value: atmo.opacity },
@@ -120,6 +165,17 @@ export default function WalkSky({ planetId }) {
     })
   }, [atmo])
   useEffect(() => () => material?.dispose(), [material])
+
+  // ground-fill light state (the ambientLight in the render tree): color
+  // rides the day→sunset blend, intensity the twilight curve × air density
+  const fill = useMemo(() => {
+    if (!atmo) return null
+    return {
+      day: new THREE.Color(atmo.horizon || DEFAULTS.horizon), // pale sky fill by day
+      sunset: new THREE.Color(FILL_SUNSET_COLOR),
+      scale: Math.min(1, (atmo.opacity ?? 0) / FILL_REF_OPACITY),
+    }
+  }, [atmo])
 
   const tmp = useMemo(() => ({ up: new THREE.Vector3(), sun: new THREE.Vector3() }), [])
 
@@ -155,14 +211,31 @@ export default function WalkSky({ planetId }) {
       }
     }
     material.uniforms.uHasSun.value = hasSun
+
+    // ground fill: the sky's own light on the terrain — see the FILL_*
+    // constants above. The same twilight curve as the dome (JS mirror); the
+    // color rides the day→sunset blend. Without it the sun's point light
+    // grazes the terrain and the ground goes black long before the sky.
+    const fl = fillRef.current
+    if (fl && fill) {
+      const elev = hasSun ? tmp.sun.dot(up) : 1
+      const light = smoothstep(C.skyFade.sunDown, 0, elev)
+      const tint = hasSun ? 1 - smoothstep(0, C.skyFade.sunUp, elev) : 0
+      fl.color.copy(fill.day).lerp(fill.sunset, tint)
+      fl.intensity = hasSun ? light * (FILL_DAY + (FILL_SUNSET - FILL_DAY) * tint) * fill.scale : 0
+    }
   })
 
   if (!atmo) return null
   return (
-    <mesh ref={meshRef} material={material} renderOrder={-1} frustumCulled={false}>
-      {/* unit dome, scaled to the frustum each frame; modest tessellation —
-          every gradient term is per-pixel from the direction, not the mesh */}
-      <sphereGeometry args={[1, C.decor.domeWidthSegs, C.decor.domeHeightSegs]} />
-    </mesh>
+    <>
+      <mesh ref={meshRef} material={material} renderOrder={-1} frustumCulled={false}>
+        {/* unit dome, scaled to the frustum each frame; modest tessellation —
+            every gradient term is per-pixel from the direction, not the mesh */}
+        <sphereGeometry args={[1, C.decor.domeWidthSegs, C.decor.domeHeightSegs]} />
+      </mesh>
+      {/* the sky's light on the ground — driven in useFrame, walk-mode only */}
+      <ambientLight ref={fillRef} intensity={0} />
+    </>
   )
 }

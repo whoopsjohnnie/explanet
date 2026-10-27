@@ -22,8 +22,8 @@
 
   "tunables": {
     "skyFade": {
-      "_note": "The day->night sun-elevation curve, shared by StarField (JS) and WalkSky (injected GLSL) — one definition, two languages.",
-      "sunDown": { "value": -0.12 },
+      "_note": "The twilight model — one definition, three consumers: StarField's JS star fade, WalkSky's GLSL (injected via gnum()), and the walk ground fill. light = smoothstep(sunDown, 0, sun·up): the sky stays fully lit while the sun is up and fades to full night by sunDown below the horizon (twilight, ~ -14 deg). tint = 1 - smoothstep(0, sunUp, sun·up): the warm sunset zone — full red horizon band at the horizon, faded to the body's day colors by sunUp above it (~ +17 deg).",
+      "sunDown": { "value": -0.25 },
       "sunUp": { "value": 0.3 }
     },
 

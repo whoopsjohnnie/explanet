@@ -17,7 +17,7 @@
  * and a sky shell must never swallow clicks.
  *
  * The sky stays mounted under atmospheres (the WalkSky dome draws beneath it,
- * additive stars on top): a per-frame gain reproduces WalkSky's day/night
+ * additive stars on top): a per-frame gain reproduces WalkSky's twilight
  * curve from the live star altitude and thins by the air's opacity, so the
  * Milky Way shows on the night side of a walk, washes out under the sun, and
  * never competes with opaque cloud decks (Venus) — while airless bodies keep
@@ -203,11 +203,12 @@ export default function StarField({ radius }) {
             (se ? se.pos.z : star.center.z) - camera.position.z
           )
           if (tmp.sun.lengthSq() > 1e-9) {
-            // the same sun-elevation curve the dome darkens with (shared via
-            // constants.json) — bandize quantizes both together on the
-            // gradientSteps dial, so stars pop on schedule with the sky
+            // the same twilight curve the dome darkens with (shared via
+            // constants.json): stars stay washed out while the sun is up and
+            // fade in only as it sinks below the horizon; bandize quantizes
+            // both together on the gradientSteps dial
             light = bandize(
-              smoothstep(C.skyFade.sunDown, C.skyFade.sunUp, tmp.sun.normalize().dot(tmp.up)),
+              smoothstep(C.skyFade.sunDown, 0, tmp.sun.normalize().dot(tmp.up)),
               C.gradient.steps.skyDayNight
             )
           }
