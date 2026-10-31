@@ -444,7 +444,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
   if (!refresh && cached && Date.now() - cached.at < SKELETON_TTL_MS) return cached
 
   const { rows: w } = await getPool().query(
-    `SELECT id, name, gravity, doc_version FROM worlds WHERE id = $1`,
+    `SELECT id, name, gravity, doc_version, scale FROM worlds WHERE id = $1`,
     [id]
   )
   if (!w.length) throw new Error(`no world ${id} in ${DATABASE}@${HOST}`)
@@ -509,6 +509,10 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     version: w[0].doc_version || 1,
     name: w[0].name,
     gravity: w[0].gravity,
+    // physical scale (migration 007): length of one world unit, in METERS —
+    // the surface walker becomes a real human (core/surface.js SURFACE_REAL).
+    // Absent for game-scale worlds, exactly like the document field.
+    ...(w[0].scale != null ? { scale: w[0].scale } : {}),
     source: `db:${DATABASE}@${HOST} · ${w[0].name}`,
     planets,
   }

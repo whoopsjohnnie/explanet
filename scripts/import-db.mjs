@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------
  * Import a world.json document into the PostgreSQL schema (db/schema.sql).
  *
- *   world.json →  worlds   (name, gravity, doc version)
+ *   world.json →  worlds   (name, gravity, scale [meters per world unit], doc version)
  *                 bodies   (planets[] rows; isStatic → gravity_immune;
  *                          planets[].generation → bodies.generation jsonb —
  *                          a GENERATED body carries no elements and gets no
@@ -116,8 +116,9 @@ ${bodyRows}
 \\.
 
 WITH w AS (
-  INSERT INTO worlds (name, gravity, doc_version)
-  VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)})
+  INSERT INTO worlds (name, gravity, doc_version, scale)
+  VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)},
+    ${Number.isFinite(Number(world.scale)) && Number(world.scale) > 0 ? num(world.scale) : 'NULL'})
   RETURNING id
 )
 INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, atmosphere, scripts, parent_body_id)

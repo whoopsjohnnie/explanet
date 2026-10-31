@@ -15,7 +15,7 @@ docs or commit messages. Schema: `explanet`. DDL: `db/schema.sql` +
 
 | table     | contents                                                       |
 | --------- | -------------------------------------------------------------- |
-| `worlds`  | one row per world document (name, gravity, version)            |
+| `worlds`  | one row per world document (name, gravity, scale [meters per world unit], version) |
 | `bodies`  | per-body documents (orbit, spin, presets, rings/scripts/kind/atmosphere/generation) |
 | `atoms`   | hex cell elements — the atom model, one row per cell chunk     |
 | `stars`   | real-sky reference catalog (Yale BSC v5, `BSC5`, 9,096 rows)   |
