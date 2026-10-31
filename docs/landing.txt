@@ -258,12 +258,37 @@
   the small astronaut does not clip the plates under foot, and restores
   the editor's plane on lift-off.
 
+  True-scale worlds (real mode, SURFACE_REAL)
+  --------------------------------------------
+  A world carrying a positive `scale` document field — the length of ONE
+  WORLD UNIT, in METERS (Sol Real / Sol Trial emit it: 1 u ≈ 35.2 km, 1
+  document second = 1 real second; distinct from a body's `scale` size
+  factor) — is not a game — its tiles are 35 km of terrain, and the
+  tile-anchored astronaut there is a 22 km being striding at 133 km/s.
+  makeSurface() switches such worlds to a REAL human, authored in meters:
+
+    eye 1.6 m · walkSpeed 1.4 m/s · stepUp 0.3 m · stepDownSnap 0.5 m
+    jumpHeight 0.5 m · maxFallSpeed 15 m/s · spawnHover 120 m
+    (sprintMult 1.8 / airControl 0.75 — the same unitless ratios)
+
+  converted with 1 m = 1/scale units. Gravity obeys the same rule
+  as everything else on a true-scale world: the sim's softened law IS the
+  physical attraction (masses are calibrated to reproduce it), so
+  surfaceGravity() skips gravityScale and clamps in m/s² instead —
+  [0.5, 30] keeps a Moon walkable and a dense super-Earth from becoming a
+  pinball table (Earth lands at its real 9.8 m/s²). The consequence is
+  honest: per-hex relief on a 35 km grid (21 km plates, km-scale cliffs)
+  makes mountain flanks impassable walls at stepUp 0.3 m — that is what
+  real size means at this terrain resolution. Walker.jsx lowers the near
+  plane to eye·0.08 (≈ 13 cm on Sol Real) with a 1e-7 u floor — safe
+  because Scene.jsx runs a logarithmic depth buffer.
+
 
 --------------------------------------------------------------------------------
  10. TESTING
 --------------------------------------------------------------------------------
   All risky logic is in core/surface.js and runs headlessly
-  (scripts/test-surface.mjs, wired into npm test — 15 checks):
+  (scripts/test-surface.mjs, wired into npm test — 32 checks):
 
   * funnel Voronoi lookup == brute-force nearest center, thousands of
     random directions × frequencies, from random hints;
@@ -280,6 +305,11 @@
     re-lands;
   * determinism (identical scripts → identical states) and a 30 s random
     walk + jumps fuzz with all values finite.
+   * real mode (world.scale, meters per unit): metrics are a human in meters (160 cm eye,
+     140 cm/s walk), surfaceGravity reproduces the physical pull (Earth
+     9.8 m/s²) while the tile-mode clamp stays pinned for the same body,
+     and the 120 m spawn fall + 0.5 m jump are human-scale; a world
+     WITHOUT the field keeps the tile-anchored astronaut.
 
   The R3F half (camera, input, avatar) is verified by build + manual
   browser testing, as everywhere else in this project.

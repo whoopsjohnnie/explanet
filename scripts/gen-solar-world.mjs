@@ -23,6 +23,10 @@
  * densities reproduce the real mass ratios (so the Sun dominates and the
  * system is stable).
  *
+ * The world carries `scale` (the 35 km anchor, in meters per unit) so the
+ * surface walker is a REAL human (1.6 m eyes, 9.8 m/s² on Earth) instead of
+ * one 35 km tile tall — core/surface.js SURFACE_REAL.
+ *
  * Writes public/solar-trial.json; import with:
  *   node scripts/import-db.mjs public/solar-trial.json
  */
@@ -175,7 +179,9 @@ for (const d of GENERATED) {
   planets.push(planet)
 }
 
-const world = { version: 1, name: 'Sol Trial', gravity: G, planets }
+// scale: physical scale (meters per world unit, 1 doc s = 1 real s) —
+// the surface walker is a real human (core/surface.js SURFACE_REAL)
+const world = { version: 1, name: 'Sol Trial', gravity: G, scale: 1000 / KM2U, planets }
 mkdirSync(new URL('../public', import.meta.url), { recursive: true })
 const out = new URL('../public/solar-trial.json', import.meta.url)
 writeFileSync(out, JSON.stringify(world))

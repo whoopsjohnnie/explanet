@@ -24,7 +24,12 @@ const doc = await fetchWorldDocument()
 const world = normalizeWorld(doc)
 const skeletonMs = Date.now() - t0
 
-console.log(`${doc.name} — ${world.planets.length} bodies, skeleton in ${skeletonMs} ms (${doc.source})`)
+console.log(
+  `${doc.name} — ${world.planets.length} bodies, skeleton in ${skeletonMs} ms (${doc.source})` +
+    (world.scale
+      ? ` · true-scale: 1 u = ${world.scale.toFixed(0)} m (${(world.scale / 1000).toFixed(2)} km) → real-human walker`
+      : ' · game scale (tile-anchored walker)')
+)
 let failed = false
 for (const p of world.planets) {
   const stub = isPlanetStub(p)

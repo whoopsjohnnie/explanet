@@ -10,8 +10,9 @@
  *    spin and orbit for free; world pose = planetPos + quat·(dir·r), read
  *    from the live body registry every frame (never through React state),
  *  • first-person camera at all times: the camera sits at the astronaut's
- *    eye height (surface.metrics.eye — tied to the planet's tile scale, so
- *    the astronaut is one tile tall on every world) above the surface,
+ *    eye height (surface.metrics.eye — one tile tall on ordinary worlds, a
+ *    real 1.6 m human on true-scale worlds that carry world.scale (meters
+ *    per world unit; see core/surface.js) above the surface,
  *    exactly where the astronaut's eyes are, through the landing
  *    fall, the walk and every jump. The view heading is stored PLANET-LOCAL —
  *    exactly like the walker's position — so it composes through the planet's
@@ -47,28 +48,36 @@ import { makeSurface, createWalker, stepWalker, surfaceGravity, walkReadout } fr
 
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
 const PITCH_LIMIT = 1.45 // ±83° from the horizon; never flips past straight up/down
-const MIN_NEAR = 0.002 // never-nearer walk-mode near plane (depth-buffer sanity)
+const MIN_NEAR = 0.002 // never-nearer walk-mode near plane, tile mode
+const MIN_NEAR_REAL = 1e-7 // …real mode: the 1.6 m eye is ~4.5e-5 u on Sol Real, so
+                           // the floor has to sit far below it. Safe because Scene.jsx
+                           // runs a logarithmic depth buffer, which carries the
+                           // far/near ratio (~1e14 at system scale) without z-fighting
 
 export default function Walker({ planetId }) {
   const camera = useThree((s) => s.camera)
   const controls = useThree((s) => s.controls)
   const gl = useThree((s) => s.gl)
   const planet = useStore((s) => s.world.planets.find((p) => p.id === planetId))
+  // physical scale (world-level, meters per world unit): positive → the real-human astronaut
+  const worldScale = useStore((s) => s.world.scale)
 
   // rebuild the surface query when the planet document identity changes
   // (same copy-on-write contract as the geometry memo)
-  const surface = useMemo(() => (planet ? makeSurface(planet) : null), [planet])
+  const surface = useMemo(() => (planet ? makeSurface(planet, worldScale) : null), [planet, worldScale])
   const mass = useMemo(() => (planet ? planetMass(planet) : 0), [planet])
 
   // First-person near plane: on a true-scale world the astronaut's eye sits
-  // ~0.02 u above the tiles — far inside the editor's near plane, which would
-  // clip away the ground under foot. Swap in a near plane just below eye
-  // height for the walk (floored to keep the far scene's depth precision);
-  // restore the editor's plane on unmount.
+  // ~0.02 u (tile mode) or ~4.5e-5 u (real mode: 1.6 m) above the ground —
+  // far inside the editor's near plane, which would clip away the ground
+  // under foot. Swap in a near plane just below eye height for the walk
+  // (floored per mode: the log depth buffer lets real mode go tiny); restore
+  // the editor's plane on unmount.
   useEffect(() => {
     if (!surface) return
     const prev = camera.near
-    camera.near = Math.min(prev, Math.max(MIN_NEAR, surface.metrics.eye * 0.08))
+    const floor = surface.real ? MIN_NEAR_REAL : MIN_NEAR
+    camera.near = Math.min(prev, Math.max(floor, surface.metrics.eye * 0.08))
     camera.updateProjectionMatrix()
     return () => {
       camera.near = prev
@@ -340,7 +349,9 @@ export default function Walker({ planetId }) {
 
     // ---- integrate (pure core math, planet-local frame) --------------------
     tmp.prevDir.set(w.dir[0], w.dir[1], w.dir[2])
-    const g = surfaceGravity(st.world.gravity, mass, w.r)
+    // real mode (world.scale, meters per unit): physical gravity in m/s², clamped human-livable;
+    // tile mode (absent): the classic game-feel gravityScale + clamp
+    const g = surfaceGravity(st.world.gravity, mass, w.r, st.world.scale)
     stepWalker(surface, w, g, tmp.wishArr, { jump: k.jump, sprint: k.sprint }, dt)
     k.jump = false
 

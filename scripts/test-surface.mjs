@@ -7,8 +7,8 @@
 
 import { makeStarterWorld } from '../src/core/starter.js'
 import { generateElements } from '../src/core/generators.js'
-import { getHexSphere, dotCenter, hasNeighbor } from '../src/core/hexsphere.js'
-import { planetMass } from '../src/core/planetMath.js'
+import { getHexSphere, dotCenter, hasNeighbor, cellCountForFrequency } from '../src/core/hexsphere.js'
+import { planetMass, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import {
   SURFACE,
   surfaceGravity,
@@ -279,6 +279,94 @@ const landable = world.planets.find((p) => p.preset !== 'star')
       Math.abs(m.jumpHeight - 1.15) < 0.01 &&
       Math.abs(m.spawnHover - 4.5) < 0.02
   )
+}
+
+// ---------------------------------------------------------------------------
+// real-size astronaut (world.scale): a true-scale world carries the length
+// of one world unit in METERS — the walker is a real human (meters,
+// SURFACE_REAL), gravity is physical (the sim's softened law IS the real
+// pull there), and the tile-anchored defaults above stay untouched for
+// worlds without the field.
+// ---------------------------------------------------------------------------
+{
+  // the same anchor the true-scale generators use (gen-sol-real.mjs): Earth
+  // fills the top of the ladder, 1 document second = 1 real second
+  const SCALE = (6371.009 * 1e3) / radiusForFrequency(MAX_FREQUENCY) // ≈ 35182 m/u
+  const toM = (v) => v * SCALE
+
+  // metrics: a human in meters, converted through the world scale (grid-independent)
+  const rs = makeSurface({ frequency: 6, elements: generateElements('rocky', 6, 1) }, SCALE)
+  const m = rs.metrics
+  check(
+    `real-mode metrics are a human (eye ${(toM(m.eye) * 100).toFixed(0)} cm, walk ${(toM(m.walkSpeed) * 100).toFixed(0)} cm/s)`,
+    Math.abs(toM(m.eye) - 1.6) < 1e-9 &&
+      Math.abs(toM(m.walkSpeed) - 1.4) < 1e-9 &&
+      Math.abs(toM(m.stepUp) - 0.3) < 1e-9 &&
+      Math.abs(toM(m.jumpHeight) - 0.5) < 1e-9 &&
+      Math.abs(toM(m.spawnHover) - 120) < 1e-9 &&
+      rs.real === SCALE
+  )
+  // the same world without the annotation keeps the tile-anchored astronaut
+  const ts = makeSurface({ frequency: 6, elements: generateElements('rocky', 6, 1) })
+  check(
+    'no scale → tile-anchored astronaut unchanged',
+    ts.real === null && Math.abs(ts.metrics.eye - SURFACE.eye * ts.tile) < 1e-12
+  )
+
+  // gravity: the true-scale softened law reproduces the REAL pull (Earth
+  // ≈ 9.8 m/s²). Masses follow the generators' density trick (mu × mSun),
+  // with mSun solved for the true 1-AU Earth year exactly like gen-sol-real.
+  const EARTH_YEAR = 365.25 * 86400
+  const AU = (149_597_870.7 * 1e3) / SCALE // meters → world units
+  const mSun = (4 * Math.PI * Math.PI * AU * (AU * AU + 4)) / (G * EARTH_YEAR * EARTH_YEAR)
+  const mEarth = 3.003e-6 * mSun
+  const R_earth = (6371.009 * 1e3) / SCALE
+  const gEarth = surfaceGravity(G, mEarth, R_earth, SCALE)
+  check(
+    `real-mode surface gravity is physical (Earth ${(gEarth * SCALE).toFixed(2)} m/s²)`,
+    Math.abs(gEarth * SCALE - 9.82) < 0.2
+  )
+  // the tile-mode path on the same body is the old game-feel clamp (pinned)
+  check(
+    'tile mode on the same true-scale body keeps the game-feel clamp (1.0 u/s²)',
+    surfaceGravity(G, mEarth, R_earth) === SURFACE.minGravity
+  )
+
+  // motion: the 120 m spawn fall and a ~0.5 m jump under ~9.8 m/s²
+  {
+    const flatWorld = { frequency: 4, elements: new Array(cellCountForFrequency(4)).fill(0).map(() => ({ t: 'rock', h: 0 })) }
+    const surf = makeSurface(flatWorld, SCALE)
+    // a body mass whose real-mode gravity is 9.807 m/s² at the world radius
+    const mass = ((9.807 / SCALE) * (surf.R * surf.R + 4)) / G // eps² = 4
+    const w = createWalker(surf, [0, 1, 0])
+    let steps = 0
+    while (!w.grounded && steps < 60 * 20) {
+      stepWalker(surf, w, surfaceGravity(G, mass, w.r, SCALE), null, {}, 1 / 60)
+      steps++
+    }
+    check(
+      `real-mode spawn fall is a human landing (120 m in ${(steps / 60).toFixed(1)} s)`,
+      w.landedOnce && w.grounded && steps > 60 * 8 && steps < 60 * 12
+    )
+    const target = surf.metrics.jumpHeight // 0.5 m in units
+    let jumped = false
+    let landed = false
+    let peak = 0
+    for (let i = 0; i < 60 * 8; i++) {
+      const ev = stepWalker(surf, w, surfaceGravity(G, mass, w.r, SCALE), null, { jump: i === 0 }, 1 / 60)
+      if (ev === 'jumped') jumped = true
+      if (i > 3 && ev === 'landed') {
+        landed = true
+        break
+      }
+      const gnd = surf.heightAt(w.dir, w.cell)
+      peak = Math.max(peak, w.r - gnd.radius)
+    }
+    check(
+      `real-mode jump apex ≈ 0.5 m (got ${(toM(peak)).toFixed(2)} m)`,
+      jumped && landed && peak > target * 0.7 && peak < target * 1.6
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------

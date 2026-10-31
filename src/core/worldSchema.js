@@ -7,6 +7,18 @@
  *   "version": 1,
  *   "name": "My Universe",
  *   "gravity": 40,                       // gravitational constant G (scaled)
+ *   "scale": 35181.6,                    // optional: TRUE-SCALE worlds only —
+ *                                        //   the length of ONE WORLD UNIT, in
+ *                                        //   METERS (1 doc second = 1 real
+ *                                        //   second, e.g. Sol Real). Makes the
+ *                                        //   surface walker a real human in
+ *                                        //   meters (core/surface.js
+ *                                        //   SURFACE_REAL) instead of one tile
+ *                                        //   tall; radius in meters =
+ *                                        //   radius (units) × scale. Absent or
+ *                                        //   ≤ 0 = the classic tile-anchored
+ *                                        //   walk. NOTE: distinct from a body's
+ *                                        //   `scale` (size factor, default 1).
  *   "planets": [
  *     {
  *       "id": "p1",
@@ -243,6 +255,8 @@ export function normalizeWorld(raw) {
   const world = createEmptyWorld(raw.name || 'Loaded World')
   world.version = WORLD_VERSION
   world.gravity = num(raw.gravity, 40)
+  const wScale = positive(raw.scale, null) // physical scale: length of one world unit, in meters
+  if (wScale) world.scale = wScale
 
   const planets = Array.isArray(raw.planets) ? raw.planets : []
   for (const p of planets) {
@@ -291,12 +305,14 @@ export function isPlanetStub(planet) {
 /**
  * The document as it is saved to world.json: schema fields only. Database
  * internals (dbId, preview samples, stub stats) never leak into files.
+ * `scale` (the true-scale annotation, meters per world unit) round-trips.
  */
 export function serializeWorld(world) {
   return {
     version: world.version ?? WORLD_VERSION,
     name: world.name,
     gravity: world.gravity,
+    ...(world.scale ? { scale: world.scale } : {}),
     planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, ...doc }) => doc),
   }
 }

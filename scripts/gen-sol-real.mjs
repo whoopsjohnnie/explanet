@@ -21,6 +21,9 @@
  * Same anchors as the Sol Trial (gen-solar-world.mjs): one hex ≈ 35 km on
  * the f203 Earth, 1 AU ≈ 4.25 million units, one document second = one real
  * second, solar mass solved from the softened law for a true Earth year.
+ * The world carries `scale` (that same anchor, in meters per unit) so the
+ * surface walker is a REAL human — 1.6 m eyes, 1.4 m/s, 9.8 m/s² on Earth —
+ * instead of one 35 km tile tall (core/surface.js SURFACE_REAL).
  *
  * Import:  node scripts/import-db.mjs public/sol-real.json
  */
@@ -529,7 +532,9 @@ for (const c of orbitsData.comets) {
 // ---------------------------------------------------------------------------
 // write + summary
 // ---------------------------------------------------------------------------
-const world = { version: 1, name: 'Sol Real', gravity: G, planets }
+// physical scale: length of one world unit, in METERS (1 doc second = 1 real
+// second) — turns the surface walker into a real human (SURFACE_REAL)
+const world = { version: 1, name: 'Sol Real', gravity: G, scale: 1000 / KM2U, planets }
 writeFileSync(new URL('../public/sol-real.json', import.meta.url), JSON.stringify(world))
 
 let storedAtoms = 0

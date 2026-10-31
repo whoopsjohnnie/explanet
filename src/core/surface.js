@@ -22,9 +22,20 @@
  *     are walls — the move is blocked and slides along the wall instead.
  *     Walking off a bigger ledge turns into a real fall.
  *   • Airborne: r integrates against surface gravity — the same softened
- *     law as the orbital sim, F = G·m/(r² + ε²), scaled for feel — and the
- *     fall terminates on contact (the surface is star-shaped, so every fall
- *     ends somewhere).
+ *     law as the orbital sim, F = G·m/(r² + ε²) — and the fall terminates on
+ *     contact (the surface is star-shaped, so every fall ends somewhere).
+ *
+ * Astronaut scale: one of TWO modes, resolved by makeSurface():
+ *   • TILE mode (default, worlds without a scale annotation): every length
+ *     is a SURFACE ratio × the planet's tile radius — the astronaut is one
+ *     hex plate tall on every world (see the tuning section below).
+ *   • REAL mode (worlds carrying a positive `scale` document field —
+ *     true-scale worlds where one world unit is that many METERS and 1
+ *     document second is 1 real second, e.g. Sol Real): the astronaut is a
+ *     real human, authored in meters in SURFACE_REAL and converted through
+ *     the world scale (1 m = 1/scale units). Gravity skips the game-feel
+ *     gravityScale: the sim's softened law IS the physical gravity on such
+ *     worlds, so surfaceGravity() clamps in m/s² instead (see below).
  *
  * Walker state is a plain mutable object stepped at 60 Hz outside React
  * state — the same rule as the body registry in physics.js.
@@ -45,7 +56,7 @@ function norm3(a) {
 }
 
 // ---------------------------------------------------------------------------
-// Tuning — the astronaut scales WITH its world
+// Tuning — the astronaut scales WITH its world (tile mode)
 // ---------------------------------------------------------------------------
 // Every LENGTH constant below is a multiple of the planet's TILE SCALE: the
 // circumradius of one hex plate on the planet being walked (makeSurface()
@@ -73,6 +84,30 @@ export const SURFACE = {
   maxGravity: 30,
 }
 
+// ---------------------------------------------------------------------------
+// Tuning — the real-human astronaut (real mode, worlds with `scale`)
+// ---------------------------------------------------------------------------
+// Tile mode makes a true-scale world (Sol Real: 1 u ≈ 35 km, 1 doc second =
+// 1 real second) a game: the walker there is one tile tall — a 22 km being
+// striding at 133 km/s, with 21 km plates under its feet. Worlds that carry
+// a positive `scale` document field (METERS per world unit) instead get a
+// REAL human, authored in meters here and converted to world units by
+// makeSurface() (1 m = 1/scale units). sprintMult/airControl stay in
+// SURFACE: they are unitless multipliers, identical in both modes.
+export const SURFACE_REAL = {
+  eye: 1.6, // m — eye height
+  walkSpeed: 1.4, // m/s — a brisk stroll
+  stepUp: 0.3, // m — a stride climbs a 30 cm rise, no more (km-scale cliffs
+               //   on a 35 km hex grid ARE walls at this size — honest)
+  stepDownSnap: 0.5, // m — descents up to this keep you grounded
+  jumpHeight: 0.5, // m — a standing jump apex
+  maxFallSpeed: 15, // m/s — terminal speed of the landing fall
+  spawnHover: 120, // m — spawn this far above the surface → the landing
+  minGravityMs2: 0.5, // m/s² — real-mode gravity clamp: below this, falls
+  maxGravityMs2: 30, //   and jumps stop feeling physical (moon-ish floor,
+                     //   super-Earth-ish ceiling)
+}
+
 /**
  * HUD telemetry side-channel: the walker component writes these numbers at
  * 60 Hz; the HUD polls them slowly. Keeps live walk numbers out of React
@@ -82,12 +117,25 @@ export const walkReadout = { alt: 0, vel: 0, grounded: false, sprint: false }
 
 /**
  * Downward acceleration at radius r around a body of mass `mass` under the
- * world's softened gravity law (matches stepGravity / orbitalSpeed),
- * scaled and clamped to stay walkable on everything from moons to giants.
+ * world's softened gravity law (matches stepGravity / orbitalSpeed).
+ *
+ * Tile mode (3-arg, the default): scaled for feel and clamped in world
+ * units to stay walkable on everything from moons to giants — the sim's G
+ * values are game-scale by design.
+ *
+ * Real mode (positive `scale`, meters per world unit): the world is
+ * true-scale (masses are calibrated so the softened law reproduces the REAL
+ * gravitational attraction in engine units), so the game-feel gravityScale
+ * would corrupt a physical 9.8 m/s² Earth — instead the raw acceleration is
+ * converted to m/s², clamped to the human-livable band, and converted back
+ * to world units.
  */
-export function surfaceGravity(worldG, mass, r) {
-  const a = ((worldG * Math.abs(mass)) / (r * r + C.physics.softeningEpsSq)) * SURFACE.gravityScale
-  return Math.min(SURFACE.maxGravity, Math.max(SURFACE.minGravity, a))
+export function surfaceGravity(worldG, mass, r, scale) {
+  const raw = (worldG * Math.abs(mass)) / (r * r + C.physics.softeningEpsSq)
+  if (!(Number.isFinite(scale) && scale > 0))
+    return Math.min(SURFACE.maxGravity, Math.max(SURFACE.minGravity, raw * SURFACE.gravityScale))
+  const ms2 = raw * scale
+  return Math.min(SURFACE_REAL.maxGravityMs2, Math.max(SURFACE_REAL.minGravityMs2, ms2)) / scale
 }
 
 // ---------------------------------------------------------------------------
@@ -139,9 +187,14 @@ export function cellAtDirection(hex, dir, hint) {
  * Build a surface query over a snapshot of a planet document. Rebuild when
  * `planet.elements` identity changes — the same copy-on-write contract as
  * the geometry memo.
- * @returns {{ hex, R: number, maxH: number, tile: number, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
+ *
+ * `scale` (the world's physical scale — METERS per world unit, see the
+ * tuning sections above): when positive, the astronaut is a real human —
+ * SURFACE_REAL meters converted through it (1 m = 1/scale units) — instead
+ * of one tile tall.
+ * @returns {{ hex, R: number, maxH: number, tile: number, real: number|null, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
  */
-export function makeSurface(planet) {
+export function makeSurface(planet, scale) {
   const hex = getHexSphere(planet.frequency)
   const R = planetRadius(planet)
   const hs = new Float64Array(planet.elements.length)
@@ -155,22 +208,25 @@ export function makeSurface(planet) {
   // ~0.6204 for a natural grid (scale 1); it shrinks with true-scale planets.
   const tile = R * Math.sqrt((8 * Math.PI) / (3 * Math.sqrt(3) * hex.cellCount))
   // The astronaut's resolved body metrics in world units — the one place the
-  // SURFACE ratios become lengths. Everything walker-side reads these.
+  // tuning becomes lengths. Everything walker-side reads these.
+  const real = Number.isFinite(scale) && scale > 0 ? scale : null
+  const S = real ? SURFACE_REAL : SURFACE
+  const m2u = real ? 1 / real : tile // meters→units (real) | the tile scale
   const metrics = {
-    eye: SURFACE.eye * tile,
-    walkSpeed: SURFACE.walkSpeed * tile,
-    stepUp: SURFACE.stepUp * tile,
-    stepDownSnap: SURFACE.stepDownSnap * tile,
-    jumpHeight: SURFACE.jumpHeight * tile,
-    maxFallSpeed: SURFACE.maxFallSpeed * tile,
-    spawnHover: SURFACE.spawnHover * tile,
+    eye: S.eye * m2u,
+    walkSpeed: S.walkSpeed * m2u,
+    stepUp: S.stepUp * m2u,
+    stepDownSnap: S.stepDownSnap * m2u,
+    jumpHeight: S.jumpHeight * m2u,
+    maxFallSpeed: S.maxFallSpeed * m2u,
+    spawnHover: S.spawnHover * m2u,
   }
   const heightAt = (dir, hint) => {
     const cell = cellAtDirection(hex, dir, hint)
     const h = hs[cell]
     return { cell, h, radius: R + h }
   }
-  return { hex, R, maxH, hs, tile, metrics, heightAt }
+  return { hex, R, maxH, hs, tile, real, metrics, heightAt }
 }
 
 /**

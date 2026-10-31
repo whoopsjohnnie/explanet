@@ -94,6 +94,15 @@ onto a planet. While landed:
 | `Esc` | Lift off — back to the editor camera |
 | `Ctrl/Cmd + S` | Save (still works while walking) |
 
+The walker scales with the world: on ordinary (game-scale) worlds the
+astronaut is one hex-tile tall, so a 0.4 u moon and a 21 u giant feel
+identical to walk. On a TRUE-SCALE world — one carrying `scale` (the length
+of one world unit, in METERS; 1 document second = 1 real second) — the walker
+is a real human instead: 1.6 m eye height, 1.4 m/s on foot, a 0.5 m jump,
+and the planet's real surface gravity (9.8 m/s² on Earth's surface), with
+the HUD reading out in meters. The honest consequence: mountain flanks are
+km-scale walls on a ~35 km hex grid, so they block rather than climb.
+
 Bodies that carry an `atmosphere` descriptor get a real sky: a horizon →
 zenith gradient in the body's own colors, glare around the sun, and a starry
 night once it sets — the thicker the air, the more it swallows the stars.
@@ -110,6 +119,13 @@ air read as "has air" from orbit. The real-world catalog lives in
   "version": 1,
   "name": "Helios System",
   "gravity": 40,                       // scaled gravitational constant G
+  "scale": 35181.6,                    // optional — TRUE-SCALE worlds only:
+                                       // length of ONE WORLD UNIT, in METERS
+                                       // (1 doc second = 1 real second). The
+                                       // surface walker is a real human in
+                                       // meters instead of one tile tall (Sol
+                                       // Real / Sol Trial set it). Distinct
+                                       // from a body's "scale" (size factor)
   "planets": [
     {
       "id": "p-ab12cd34",
@@ -156,7 +172,10 @@ Saturn's rings, a glowing Sun, and real atmospheres (Earth's blue, Venus's
 opaque ochre, Titan's orange, Pluto's thin haze) that render as skies in
 walk mode. Small bodies ride scripted Keplerian orbits
 as test particles (no N-body cost); the body list gets a search box and
-collapsible groups. See `AGENTS.md` for the schema details.
+collapsible groups. It carries `scale` (1 u ≈ 35 km), so landing on a
+planet puts a real-size human on its surface — 1.6 m eyes, 9.8 m/s² on
+Earth — instead of a 35 km tile-tall giant. See `AGENTS.md` for the schema
+details.
 
 ## The world database
 
