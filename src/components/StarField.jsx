@@ -180,7 +180,9 @@ export default function StarField({ radius }) {
   useFrame(({ camera }, dt) => {
     const s = useStore.getState()
     let target = 1
-    const wm = s.walkMode
+    // the sky fades only while ON FOOT under an atmosphere (the WalkSky dome
+    // owns that view); piloting and EVA keep the bare starfield
+    const wm = s.player?.kind === 'foot' ? { planetId: s.player.bodyId } : null
     if (wm) {
       const p = s.world.planets.find((q) => q.id === wm.planetId)
       const atmo = p?.atmosphere

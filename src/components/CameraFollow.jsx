@@ -16,7 +16,8 @@ export default function CameraFollow() {
   const camera = useThree((s) => s.camera)
   useFrame(() => {
     if (!controls?.target) return
-    if (useStore.getState().walkMode) return // surface walker owns the camera (first person)
+    const kind = useStore.getState().player?.kind
+    if (!kind || kind !== 'freeCam') return // the motion sessions own the camera
     if (!useStore.getState().followSelected) return
     const id = useStore.getState().selectedId
     const body = id ? registry.bodies.get(id) : null

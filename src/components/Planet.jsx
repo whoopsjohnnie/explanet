@@ -186,7 +186,9 @@ function useLodLevels(planet, renderPlanet, radius) {
 /** Analytic heightfield pick + brush painting (identical for both flavors). */
 function usePlanetPick(planet, renderPlanet) {
   const tool = useStore((s) => s.tool)
-  const walking = useStore((s) => !!s.walkMode)
+  // in any motion session (foot/craft/EVA) the pointer drives the camera —
+  // hold & drag to look/aim — not the editor tools, so picking stands down
+  const walking = useStore((s) => !!s.player && s.player.kind !== 'freeCam')
   const applyBrush = useStore((s) => s.applyBrush)
   const select = useStore((s) => s.select)
   const controls = useThree((s) => s.controls)
@@ -472,6 +474,7 @@ function PlanetSim({ planet }) {
       mass,
       isStatic,
       radius,
+      planet, // live document ref — motion.js reads its elements (terrain) + frequency
     }
     entryRef.current = entry
     // The rendered mesh transform is composed from the worker's Float32Array
@@ -516,9 +519,10 @@ function PlanetSim({ planet }) {
       entry.mass = mass
       entry.isStatic = isStatic
       entry.radius = radius
+      entry.planet = planet // copy-on-write: fresh document on every change
     }
     api.mass.set(isStatic ? 0 : mass)
-  }, [mass, isStatic, radius, api])
+  }, [mass, isStatic, radius, api, planet])
 
   // document edits (position/velocity/spin fields) → physics body
   useEffect(() => {

@@ -18,6 +18,9 @@ import Walker from './Walker.jsx'
 import WalkSky from './WalkSky.jsx'
 import StarField from './StarField.jsx'
 import CameraFollow from './CameraFollow.jsx'
+import AmbientCrafts from './Crafts.jsx'
+import CraftCockpit from './CraftCockpit.jsx'
+import EvaCam from './EvaCam.jsx'
 
 function GravityRunner() {
   useFrame(() => {
@@ -35,7 +38,7 @@ function MaterialAnimator() {
 export default function Scene() {
   const planets = useStore((s) => s.world.planets)
   const playing = useStore((s) => s.playing)
-  const walkMode = useStore((s) => s.walkMode)
+  const player = useStore((s) => s.player)
 
   // The viewport sizes itself to the system's own extent: for compact worlds
   // every constant below evaluates to its classic value (starfield 900 u,
@@ -115,14 +118,21 @@ export default function Scene() {
         <GravityRunner />
       </Physics>
 
-      {/* disabled while walking: the surface walker drives the camera in
-          first person, and OrbitControls' world-Y azimuth fights that */}
-      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={Math.max(1600, sysR * 2.4)} enabled={!walkMode} />
+      {/* The crafts step BEFORE the cameras read them (mount order = useFrame
+          order): every craft integrates its mover, the piloted one fed the
+          live input, and the player's craft renders among them. */}
+      <AmbientCrafts />
+      {/* the editor camera — the old orbit mode — is ONLY the freeCam
+          session: walking, piloting and EVA each own the camera in first
+          (or chase) person, and OrbitControls' world-Y azimuth fights them */}
+      <OrbitControls makeDefault enableDamping dampingFactor={0.09} minDistance={1.5} maxDistance={Math.max(1600, sysR * 2.4)} enabled={!player || player.kind === 'freeCam'} />
       <CameraFollow />
-      {walkMode && <Walker key={walkMode.planetId} planetId={walkMode.planetId} />}
+      {player?.kind === 'craft' && <CraftCockpit key={player.craftId} craftId={player.craftId} />}
+      {player?.kind === 'eva' && <EvaCam />}
+      {player?.kind === 'foot' && <Walker key={player.bodyId} planetId={player.bodyId} />}
       {/* the sky rides along: mounted after Walker so its useFrame reads the
           camera pose the walker just wrote; renders only with an atmosphere */}
-      {walkMode && <WalkSky key={walkMode.planetId} planetId={walkMode.planetId} />}
+      {player?.kind === 'foot' && <WalkSky key={player.bodyId} planetId={player.bodyId} />}
       <MaterialAnimator />
     </Canvas>
   )
