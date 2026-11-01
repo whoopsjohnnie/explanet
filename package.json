@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "serve": "node server/serve.mjs",
-    "test": "node scripts/test-hexsphere.mjs && node scripts/test-geometry.mjs && node scripts/test-surface.mjs && node scripts/test-starfield.mjs",
+    "test": "node scripts/test-hexsphere.mjs && node scripts/test-geometry.mjs && node scripts/test-surface.mjs && node scripts/test-starfield.mjs && node scripts/test-motion.mjs",
     "gen:world": "node scripts/gen-sample-world.mjs",
     "gen:stars": "node scripts/gen-starfield.mjs",
     "db:import": "node scripts/import-db.mjs",

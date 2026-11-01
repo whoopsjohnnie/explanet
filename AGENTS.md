@@ -7,7 +7,7 @@ Design rationale: `docs/design.txt` (explains WHY), usage: `README.md`.
 ## Commands
 
 - `npm run dev` — dev server (add `-- --host 0.0.0.0` for LAN testing); mounts the `/api` world-database endpoints via a vite plugin
-- `npm test` — runs the three node test scripts; a single one is just `node scripts/test-hexsphere.mjs` (or `test-geometry.mjs` / `test-surface.mjs`)
+- `npm test` — runs the node test scripts; a single one is just `node scripts/test-hexsphere.mjs` (or `test-geometry.mjs` / `test-surface.mjs` / `test-starfield.mjs` / `test-motion.mjs`)
 - `npm run test:headless` — rendered-pipeline tests (real tree + workers in memory, no browser — see "Headless render harness"); kept separate from `npm test` (needs devDeps, slower boot)
 - `npm run build` — production build; this + `npm test` + `npm run test:headless` is the **entire** verification loop
 - `npm run serve` — production server: `dist/` + `/api` on one port (build first)
