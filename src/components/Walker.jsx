@@ -46,6 +46,7 @@ import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
 import { planetMass } from '../core/planetMath.js'
 import { makeSurface, createWalker, stepWalker, surfaceGravity, walkReadout } from '../core/surface.js'
+import { isPlanetStub } from '../core/worldSchema.js'
 import { pendingFoot } from '../core/motion.js'
 
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
@@ -89,6 +90,8 @@ export default function Walker({ planetId }) {
 
   // live session: { walker, fwdL (view heading, planet-local), lastFwd, placed }
   const stateRef = useRef(null)
+  // stub patience: one hydration kick, then ~5 s of frames before giving up
+  const stubWait = useRef({ kicked: false, frames: 0 })
   const keys = useRef({ up: false, down: false, left: false, right: false, sprint: false, jump: false })
   // accumulated look-drag in pixels, consumed by the frame loop
   const look = useRef({ id: null, x: 0, y: 0, dx: 0, dy: 0 })
@@ -245,8 +248,30 @@ export default function Walker({ planetId }) {
     const st = useStore.getState()
     if (!st.player || st.player.kind !== 'foot' || st.player.bodyId !== planetId) return
 
+    if (!planet) {
+      st.setFreeCam()
+      return
+    }
+
+    // A fall can end on a body whose atoms are still STREAMING (DB stub,
+    // elements: null — an EVA fall needs no elements, the registry radius
+    // does). Kick the hydration once and wait: the copy-on-write hydrate
+    // changes `planet` identity, the surface memo rebuilds, and the walk
+    // begins. If the atoms never arrive (offline), give up to the camera.
+    if (isPlanetStub(planet)) {
+      const sw = stubWait.current
+      if (!sw.kicked) {
+        sw.kicked = true
+        st.hydratePlanet(planetId) // deduped in-flight by the store
+      } else if (++sw.frames > 300) {
+        st.setFreeCam()
+      }
+      return
+    }
+    stubWait.current = { kicked: false, frames: 0 }
+
     const entry = registry.bodies.get(planetId)
-    if (!entry || !surface || !planet) {
+    if (!entry || !surface) {
       st.setFreeCam()
       return
     }

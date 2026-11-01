@@ -49,11 +49,12 @@ const THREE = await import('three')
 const { useFrame, useThree } = await import('@react-three/fiber')
 const { Physics } = await import('@react-three/cannon')
 const { OrbitControls } = await import('@react-three/drei')
-const { useStore } = await import('../../src/state/store.js')
+const { useStore, defaultPlayer } = await import('../../src/state/store.js')
 const { registry, stepGravity } = await import('../../src/core/physics.js')
 const { makeStarterWorld } = await import('../../src/core/starter.js')
 const { normalizeWorld, createPlanet, createCraft } = await import('../../src/core/worldSchema.js')
 const { planetRadius, radiusForFrequency } = await import('../../src/core/planetMath.js')
+const { sampleLodElements } = await import('../../src/core/lod.js')
 const { animateTerrainMaterials } = await import('../../src/three/materials.js')
 const Planet = (await import('../../src/components/Planet.jsx')).default
 const Walker = (await import('../../src/components/Walker.jsx')).default
@@ -128,9 +129,75 @@ export function makeTestballWorld() {
   }
 }
 
+/**
+ * Synthetic DB-skeleton fixture (spec 'stubworld'), built in code: the first
+ * landable body is a STUB — `elements: null`, a freq-8 `preview` sample, a
+ * `dbId` no server answers to (the harness has no world database) — exactly
+ * the shape `server/db.mjs` serves for a giant. Pins the boot regression
+ * "can't access property 'length', planet.elements is null": defaultPlayer
+ * must skip the stub (it lands on the small complete body behind it),
+ * landOnPlanet must hydrate-first and bail when the atoms can't come, and a
+ * foot session on the stub (an EVA fall ends on a registry radius, which a
+ * stub has) must kick hydration, wait, and give up to the free camera —
+ * never crash in makeSurface.
+ */
+export function makeStubWorld() {
+  const FREQ = 12
+  const full = createPlanet({
+    id: 'p-stub',
+    name: 'Stubby',
+    preset: 'earthlike',
+    seed: 11, // fixed: the fixture is deterministic
+    frequency: FREQ,
+    center: { x: 0, y: 0, z: 34 },
+    velocity: { x: 0, y: 0, z: 0 },
+    spin: { x: 0, y: 0, z: 0 },
+    isStatic: true,
+    // tuned mass (≈120): g ≈ 40 u/s² at the surface, like the testball
+    density: 120 / ((4 / 3) * Math.PI * radiusForFrequency(FREQ) ** 3),
+  })
+  const { elements: previewElements } = sampleLodElements(full, 8)
+  const avgH = full.elements.reduce((a, e) => a + (e.h || 0), 0) / full.elements.length
+  const stub = {
+    ...full,
+    elements: null, // ← the stub: atoms live "in the database"
+    dbId: 999, // unresolvable here — hydration must fail GRACEFULLY
+    stubAvgHeight: avgH,
+    preview: { frequency: 8, elements: previewElements },
+  }
+  const little = createPlanet({
+    id: 'p-little',
+    name: 'Little',
+    preset: 'earthlike',
+    seed: 12,
+    frequency: 6,
+    center: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    spin: { x: 0, y: 0, z: 0 },
+    isStatic: true,
+    density: 0.02, // a pebble: Stubby dominates every local gravity question
+  })
+  return {
+    version: 1,
+    name: 'Stubworld',
+    gravity: 40,
+    planets: [stub, little], // STUB FIRST — the exact condition that crashed boot
+    crafts: [
+      createCraft({
+        id: 'c-stubworld-shuttle',
+        name: 'Shuttle',
+        kind: 'shuttle',
+        realism: 'arcade',
+        pose: { anchor: { bodyId: 'p-little', dir: [0, 0.7, 0.7], r: null } },
+      }),
+    ],
+  }
+}
+
 function loadWorld(spec) {
   if (spec === 'starter') return makeStarterWorld()
   if (spec === 'testball') return makeTestballWorld()
+  if (spec === 'stubworld') return makeStubWorld()
   let path = spec
   if (spec === 'sol-real') path = fileURLToPath(new URL('../../public/sol-real.json', import.meta.url))
   let raw
@@ -168,18 +235,21 @@ export async function bootWorld(opts = {}) {
 
   resetMotionState() // module state is process-global; start clean every boot
 
-  // store: fresh, deterministic starting point (Scene's own defaults); the
-  // flight tests flip the player explicitly (board/launch/eject)
+  // store: fresh, deterministic starting point. NO player yet — faithful to
+  // the app's boot ORDER: the Canvas (and the camera defaults applied below)
+  // exists before init() resolves and picks the player, so a motion session
+  // never mounts ahead of the editor camera setup.
+  const { player: playerOverride, ...storeRest } = store
   useStore.setState({
     world: normalized,
     ready: true,
     showLabels: false,
     selectedId: null,
     followSelected: false,
-    player: { kind: 'freeCam' },
+    player: null,
     selectedCraftId: null,
     playing: true,
-    ...store,
+    ...storeRest,
   })
 
   const sysR = (() => {
@@ -269,6 +339,15 @@ export async function bootWorld(opts = {}) {
       probe.controls.update()
     }
   }
+
+  // the boot payload "arrives": init() sets player: defaultPlayer(world), so
+  // a stub-first world boots the way the browser would (the `store` option
+  // still overrides the player). This must come AFTER the camera defaults:
+  // a foot session mounts the Walker, whose near-plane effect must not be
+  // clobbered by them.
+  await act(async () => {
+    useStore.setState({ player: playerOverride ?? defaultPlayer(normalized) })
+  })
 
   // ---- frame pump (worker round-trip per frame, sampled at the render point)
   let lastReplies = ops.frames

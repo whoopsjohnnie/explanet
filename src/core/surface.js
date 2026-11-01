@@ -192,9 +192,15 @@ export function cellAtDirection(hex, dir, hint) {
  * tuning sections above): when positive, the astronaut is a real human —
  * SURFACE_REAL meters converted through it (1 m = 1/scale units) — instead
  * of one tile tall.
- * @returns {{ hex, R: number, maxH: number, tile: number, real: number|null, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} }}
+ *
+ * Returns NULL for a DB stub (`elements: null`) — a surface query needs the
+ * real document grid, and the freq-16 `preview` sample is not it. Callers
+ * own hydration (landOnPlanet / launchCraft hydrate first; the Walker kicks
+ * it and waits).
+ * @returns {{ hex, R: number, maxH: number, tile: number, real: number|null, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} } | null}
  */
 export function makeSurface(planet, scale) {
+  if (!planet || !Array.isArray(planet.elements)) return null
   const hex = getHexSphere(planet.frequency)
   const R = planetRadius(planet)
   const hs = new Float64Array(planet.elements.length)

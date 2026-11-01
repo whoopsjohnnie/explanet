@@ -21,6 +21,12 @@
  *    altitude-driven, no button), then eject → on foot; and the EVA chain:
  *    eject mid-flight → adrift under real gravity → the fall ENDS on the
  *    surface → on foot (docs/flight.txt)
+ *  - the stub-boot crash (harness makeStubWorld, spec 'stubworld'): the
+ *    harness boots exactly like the app (player: defaultPlayer(world)), so
+ *    a stub-FIRST world must boot without makeSurface dying on
+ *    `planet.elements is null` — defaultPlayer skips the stub, a failed
+ *    hydration bails, and a foot session on an unresolvable stub falls
+ *    back to the free camera
  */
 
 import { test } from 'node:test'
@@ -181,5 +187,36 @@ test('flight (EVA): eject mid-flight → adrift → the fall ends on foot', { ti
   assert.equal(eva.state, null, 'the EVA state clears on landing')
   await w.frames(300) // spawn descent + settle
   assert.ok(walkReadout.grounded, 'the astronaut must be on the ground where the fall ended')
+  await w.close()
+})
+
+test('stubs: boot with a stub-first world (the elements-is-null crash)', { timeout: 240_000 }, async () => {
+  // The DB skeleton serves giants as stubs (elements: null). Boot used to
+  // drop the astronaut on the FIRST non-star body — a stub — and the
+  // Walker's makeSurface died on `planet.elements.length`. The harness
+  // boots exactly like the app's init() (player: defaultPlayer(world)),
+  // so booting this fixture IS the regression:
+  //  - defaultPlayer skips the stub and lands on the complete body
+  //  - landOnPlanet(stub) hydrates first and bails when the atoms can't come
+  //  - a foot session ON the stub (an EVA fall ends on the registry radius,
+  //    which a stub has) kicks hydration, waits, gives up to the free cam
+  const w = await bootWorld({ world: 'stubworld' })
+  const stub = w.world.planets.find((p) => p.id === 'p-stub')
+  assert.ok(stub.elements == null && stub.dbId != null, 'fixture sanity: the first body is a real stub')
+  assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-little' }, 'defaultPlayer must skip the stub')
+  await w.frames(60) // the walker spawns on the complete body — no crash
+
+  // explicit landing on the stub: no database to answer dbId 999 → bail
+  await w.walk('Stubby')
+  await w.frames(10)
+  assert.equal(w.player.bodyId, 'p-little', 'a failed stub hydration must not switch the session')
+
+  // a foot session ON the stub (what an EVA land produces): the Walker must
+  // kick the hydration, wait for atoms that never arrive, and give up
+  await w.set({ player: { kind: 'foot', bodyId: 'p-stub' } })
+  await w.frames(30)
+  assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-stub' }, 'waiting for the streaming atoms')
+  await w.frames(400) // ~300 frames of patience, then the free camera
+  assert.equal(w.player.kind, 'freeCam', 'unresolvable stub must fall back to the free camera')
   await w.close()
 })

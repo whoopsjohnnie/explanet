@@ -49,11 +49,18 @@ const hydrating = new Map() // planetId → Promise<boolean>
  * is to walk — you arrive on the ground, near your shuttle); else on foot
  * at the first landable body; else free-cam (an empty or star-only world).
  */
-function defaultPlayer(world) {
+export function defaultPlayer(world) {
+  const body = (id) => world.planets.find((p) => p.id === id)
+  // DB worlds arrive as skeletons: giants are STUBS (elements: null), and
+  // the walker cannot build its surface over one — so only a body that is
+  // already hydrated is a default landing site (file worlds are always
+  // complete, so this changes nothing there). All-stub worlds get the free
+  // camera; landing through the UI hydrates first.
   const craft = (world.crafts || []).find((c) => c.pose && c.pose.anchor)
+  const craftBody = craft && body(craft.pose.anchor.bodyId)
   const bodyId =
-    (craft && craft.pose.anchor.bodyId) ||
-    world.planets.find((p) => p.preset !== 'star')?.id
+    (craftBody && !isPlanetStub(craftBody) && craftBody.preset !== 'star' && craftBody.id) ||
+    world.planets.find((p) => p.preset !== 'star' && !isPlanetStub(p))?.id
   return bodyId ? { kind: 'foot', bodyId } : { kind: 'freeCam' }
 }
 
