@@ -22,6 +22,7 @@ async function snapshot() {
     if (done.some((ok) => !ok)) throw new Error('could not load every body from the database')
   }
   store.capturePositions()
+  store.captureCrafts() // live craft poses (flying or parked) into the document
   return serializeWorld(useStore.getState().world)
 }
 

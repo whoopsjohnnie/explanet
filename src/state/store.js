@@ -14,17 +14,48 @@
  */
 
 import { create } from 'zustand'
-import { createEmptyWorld, createPlanet, normalizeWorld, isPlanetStub } from '../core/worldSchema.js'
+import {
+  createEmptyWorld,
+  createPlanet,
+  createCraft,
+  normalizeWorld,
+  isPlanetStub,
+} from '../core/worldSchema.js'
 import { makeStarterWorld } from '../core/starter.js'
 import { registry, orbitalSpeed } from '../core/physics.js'
 import { planetMass, planetStats } from '../core/planetMath.js'
 import { getHexSphere, getNeighborhood } from '../core/hexsphere.js'
 import { fetchWorldDocument, fetchPlanetElements } from '../core/db.js'
 import { patchPackedCell } from '../core/atoms.js'
+import {
+  craftRuntime,
+  craftWorldPose,
+  dominantBody,
+  tileRadius,
+  eva,
+  launchCraftState,
+  ejectCraftState,
+  captureCraftPose,
+  pendingFoot,
+} from '../core/motion.js'
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 
 const hydrating = new Map() // planetId → Promise<boolean>
+
+/**
+ * Where the astronaut starts when a world is loaded: on foot at the first
+ * landable body that carries a parked craft (the default mode for an avatar
+ * is to walk — you arrive on the ground, near your shuttle); else on foot
+ * at the first landable body; else free-cam (an empty or star-only world).
+ */
+function defaultPlayer(world) {
+  const craft = (world.crafts || []).find((c) => c.pose && c.pose.anchor)
+  const bodyId =
+    (craft && craft.pose.anchor.bodyId) ||
+    world.planets.find((p) => p.preset !== 'star')?.id
+  return bodyId ? { kind: 'foot', bodyId } : { kind: 'freeCam' }
+}
 
 export const useStore = create((set, get) => ({
   // ---------------------------------------------------------------- data ---
@@ -44,9 +75,17 @@ export const useStore = create((set, get) => ({
   showLabels: true,
   followSelected: true,
   showAddDialog: false,
-  walkMode: null, // null | { planetId } — surface exploration session.
-  // Only the session identity lives in the store; the walker's live pose is
-  // mutable state in core/surface.js, same as the physics body registry.
+  // The ASTRONAUT's session (movement model: docs/flight.txt). Only the
+  // session identity lives in the store; every live pose (walker, crafts,
+  // the adrift astronaut) is mutable state in core/ — surface.js,
+  // motion.js — same contract as the physics body registry.
+  //   { kind: 'foot', bodyId }      on foot — walking (default at launch)
+  //   { kind: 'craft', craftId }    piloting a craft
+  //   { kind: 'eva' }               adrift in space (EVA)
+  //   { kind: 'freeCam' }           the editor camera — the old
+  //                                 OrbitControls mode, kept as a toggle
+  player: { kind: 'freeCam' },
+  selectedCraftId: null, // a craft selected in the scene/list (inspector)
 
   // -------------------------------------------------------------- startup --
   // The boot payload is the skeleton and NOTHING else: no body's atoms are
@@ -61,6 +100,7 @@ export const useStore = create((set, get) => ({
         world,
         ready: true,
         selectedId: world.planets[0]?.id ?? null,
+        player: defaultPlayer(world),
         fileName: doc.source || 'world database',
         statusMsg: `Loaded ${world.planets.length} bodies from ${doc.source || 'the world database'}`,
       })
@@ -71,6 +111,7 @@ export const useStore = create((set, get) => ({
         world,
         ready: true,
         selectedId: world.planets[0]?.id ?? null,
+        player: defaultPlayer(world),
         fileName: 'world.json',
         statusMsg: `World database unavailable (${err.message}) — built-in starter world instead`,
       })
@@ -125,9 +166,10 @@ export const useStore = create((set, get) => ({
       set({
         world,
         selectedId: world.planets[0]?.id ?? null,
+        player: defaultPlayer(world),
+        selectedCraftId: null,
         fileName: fileName || 'world.json',
         dirty: false,
-        walkMode: null,
         statusMsg: `Loaded ${world.planets.length} bodies from ${fileName || 'world.json'}`,
       })
     } catch (err) {
@@ -140,7 +182,8 @@ export const useStore = create((set, get) => ({
       world: createEmptyWorld('New World'),
       selectedId: null,
       dirty: true,
-      walkMode: null,
+      player: { kind: 'freeCam' },
+      selectedCraftId: null,
       statusMsg: 'New empty world — add a star to get started',
     }),
 
@@ -180,7 +223,9 @@ export const useStore = create((set, get) => ({
     set((s) => ({
       world: { ...s.world, planets: s.world.planets.filter((p) => p.id !== id) },
       selectedId: s.selectedId === id ? (s.world.planets.find((p) => p.id !== id)?.id ?? null) : s.selectedId,
-      walkMode: s.walkMode && s.walkMode.planetId === id ? null : s.walkMode,
+      // the astronaut can't stay on a body that no longer exists
+      player:
+        s.player?.kind === 'foot' && s.player.bodyId === id ? { kind: 'freeCam' } : s.player,
       dirty: true,
     })),
 
@@ -292,10 +337,12 @@ export const useStore = create((set, get) => ({
   // ----------------------------------------------------------------- ui ----
   select: (selectedId) => {
     if (selectedId === get().selectedId) return
-    set({ selectedId })
+    set({ selectedId, selectedCraftId: null })
     // selecting a body means looking at it — stream its atoms in
     get().hydratePlanet(selectedId)
   },
+  /** Select a craft (inspector shows its panel). */
+  selectCraft: (selectedCraftId) => set({ selectedCraftId }),
   setTool: (tool) => set({ tool }),
   setBrushType: (brushType) => set({ brushType, tool: brushType ? 'paint' : get().tool }),
   setBrushSize: (brushSize) => set({ brushSize }),
@@ -306,16 +353,21 @@ export const useStore = create((set, get) => ({
   setShowLabels: (showLabels) => set({ showLabels }),
   setShowAddDialog: (showAddDialog) => set({ showAddDialog }),
 
-  // ------------------------------------------------------- surface mode ---
+  // ------------------------------------------- astronaut / craft session ---
+  // The astronaut is always one of: on foot, in a craft, adrift (EVA) or at
+  // the free camera. Walking is triggered by LANDING (a craft's altitude
+  // reaching the surface, or an EVA fall ending) — never by a button; the
+  // buttons that used to drop you on a surface are gone (docs/flight.txt).
+  //
   /**
-   * Drop onto a planet and walk its surface. The Walker component spawns the
-   * kinematic walker above the ground (so you fall and land), takes over the
-   * camera and integrates the walk outside React state.
-   *
+   * Drop onto a planet and walk its surface (kept as the programmatic entry
+   * point — the headless harness and landings use it). The Walker component
+   * spawns the kinematic walker above the ground (so you fall and land),
+   * takes over the camera and integrates the walk outside React state.
    * Walking reads the height field cell by cell, so a stubbed body's atoms
    * are awaited first (one async beat from the database).
    */
-  landOnPlanet: async (planetId) => {
+  landOnPlanet: async (planetId, dir = null) => {
     let p = get().world.planets.find((pl) => pl.id === planetId)
     if (!p) return
     if (p.preset === 'star') {
@@ -328,13 +380,182 @@ export const useStore = create((set, get) => ({
       p = get().world.planets.find((pl) => pl.id === planetId)
       if (!ok || !p || isPlanetStub(p)) return // hydratePlanet reported the failure
     }
+    pendingFoot.bodyId = dir ? planetId : null
+    pendingFoot.dir = dir ? [...dir] : null
     set({
-      walkMode: { planetId },
+      player: { kind: 'foot', bodyId: planetId },
       selectedId: planetId,
       statusMsg: `Descending onto ${p.name} — WASD move · Space jump · Shift sprint · Esc lift off`,
     })
   },
 
-  exitWalkMode: () => set({ walkMode: null }),
+  /** The adrift astronaut's fall has ended on a surface (motion.stepEva) —
+   *  on foot there, at the exact direction the fall hit. */
+  evaLand: ({ bodyId, dir }) => {
+    const p = get().world.planets.find((pl) => pl.id === bodyId)
+    pendingFoot.bodyId = bodyId
+    pendingFoot.dir = [...dir]
+    set({
+      player: { kind: 'foot', bodyId },
+      statusMsg: p ? `You landed on ${p.name} — WASD walk · E board · Esc free-cam` : '',
+    })
+  },
+
+  /** Board a craft. From the free camera: any craft (the P1 rule). From on
+   *  foot: a craft parked on the body you're standing on. From adrift: use
+   *  E (boardNearestCraft — proximity). */
+  boardCraft: (craftId) => {
+    const s = get()
+    const craft = (s.world.crafts || []).find((c) => c.id === craftId)
+    if (!craft) return
+    if (s.player?.kind === 'foot') {
+      const rt = craftRuntime.get(craftId)
+      if (!rt || rt.state.mode !== 'park' || rt.state.bodyId !== s.player.bodyId) {
+        set({ statusMsg: 'No craft parked here to board' })
+        return
+      }
+    }
+    set({
+      player: { kind: 'craft', craftId },
+      selectedCraftId: craftId,
+      statusMsg: `Piloting ${craft.name} — W thrust · drag to aim · E eject · Esc free-cam`,
+    })
+  },
+
+  /** Eject the astronaut from the piloted craft: parked → on foot at its
+   *  anchor point; flying → adrift, inheriting its velocity. */
+  ejectCraft: () => {
+    const s = get()
+    if (s.player?.kind !== 'craft') return
+    const ev = ejectCraftState(s.player.craftId)
+    if (!ev) {
+      set({ player: { kind: 'freeCam' } })
+      return
+    }
+    if (ev.type === 'foot') {
+      pendingFoot.bodyId = ev.bodyId
+      pendingFoot.dir = [...ev.dir]
+      const p = s.world.planets.find((pl) => pl.id === ev.bodyId)
+      set({
+        player: { kind: 'foot', bodyId: ev.bodyId },
+        statusMsg: p ? `On foot on ${p.name} — WASD walk · E board · Esc free-cam` : '',
+      })
+    } else {
+      eva.state = { pos: { ...ev.pos }, vel: { ...ev.vel }, yaw: ev.yaw, pitch: ev.pitch }
+      set({
+        player: { kind: 'eva' },
+        statusMsg: 'Adrift — WASD/R/F jetpack · drag to look · E board · Esc free-cam',
+      })
+    }
+  },
+
+  /** E key: board a craft. On foot → the craft parked on this body. Adrift →
+   *  the nearest craft within reach (a generous ten host-body tiles). */
+  boardNearestCraft: () => {
+    const s = get()
+    const crafts = s.world.crafts || []
+    if (!crafts.length) return
+    if (s.player?.kind === 'foot') {
+      const c = crafts.find((q) => q.pose && q.pose.anchor?.bodyId === s.player.bodyId)
+      if (c) s.boardCraft(c.id)
+      else set({ statusMsg: 'No craft parked on this body' })
+      return
+    }
+    if (s.player?.kind !== 'eva' || !eva.state) return
+    const ev = eva.state
+    const dom = dominantBody(ev.pos, s.world.gravity)
+    const reach = dom ? 10 * tileRadius(dom.body.radius, dom.body.planet?.frequency || 1) : 10
+    let best = null
+    let bestD = Infinity
+    for (const c of crafts) {
+      const rt = craftRuntime.get(c.id)
+      if (!rt) continue
+      const pose = craftWorldPose(rt)
+      if (!pose) continue
+      const d = Math.hypot(ev.pos.x - pose.pos.x, ev.pos.y - pose.pos.y, ev.pos.z - pose.pos.z)
+      if (d < bestD) {
+        bestD = d
+        best = c
+      }
+    }
+    if (best && bestD <= reach) s.boardCraft(best.id)
+    else set({ statusMsg: 'No craft within reach' })
+  },
+
+  /** Launch the piloted craft off its pad (parked → space). A stubbed
+   *  anchor body is hydrated first — landing/launching a body streams it,
+   *  never the camera. */
+  launchCraft: async (craftId) => {
+    const s = get()
+    const craft = (s.world.crafts || []).find((c) => c.id === craftId)
+    if (!craft) return
+    const rt = craftRuntime.get(craftId)
+    if (!rt || rt.state.mode !== 'park') return
+    const body = s.world.planets.find((p) => p.id === rt.state.bodyId)
+    if (body && isPlanetStub(body)) {
+      set({ statusMsg: `Loading ${body.name} from the world database…` })
+      const ok = await get().hydratePlanet(body.id)
+      if (!ok) return
+    }
+    const st = launchCraftState(craftId)
+    if (st) set({ statusMsg: `${craft.name} is off the pad — W thrust · drag to aim` })
+  },
+
+  /** Add a craft (TopBar): a shuttle parked on the selected body (or the
+   *  first landable one), nose up. */
+  addCraft: (opts = {}) => {
+    const s = get()
+    const world = s.world
+    const anchor =
+      (s.selectedId && world.planets.find((p) => p.id === s.selectedId && p.preset !== 'star')) ||
+      world.planets.find((p) => p.preset !== 'star')
+    const pose = anchor
+      ? { anchor: { bodyId: anchor.id, dir: [0, 0.7, 0.7], r: null } }
+      : { space: { pos: [30, 0, 0], vel: [0, 0, 0], yaw: 0, pitch: 0 } }
+    const craft = createCraft({ ...opts, pose })
+    set({
+      world: { ...world, crafts: [...(world.crafts || []), craft] },
+      selectedCraftId: craft.id,
+      dirty: true,
+      statusMsg: `${craft.name} added — select it in the list to pilot`,
+    })
+    return craft.id
+  },
+
+  removeCraft: (craftId) =>
+    set((s) => ({
+      world: { ...s.world, crafts: (s.world.crafts || []).filter((c) => c.id !== craftId) },
+      selectedCraftId: s.selectedCraftId === craftId ? null : s.selectedCraftId,
+      player: s.player?.kind === 'craft' && s.player.craftId === craftId ? { kind: 'freeCam' } : s.player,
+      dirty: true,
+    })),
+
+  updateCraft: (craftId, patch) =>
+    set((s) => ({
+      world: {
+        ...s.world,
+        crafts: (s.world.crafts || []).map((c) => (c.id === craftId ? { ...c, ...patch } : c)),
+      },
+      dirty: true,
+    })),
+
+  /** Free camera — the editor's old OrbitControls mode (kept, toggled,
+   *  disabled by default: the astronaut's default is to walk). */
+  setFreeCam: () => set({ player: { kind: 'freeCam' } }),
+  /** Kept name for the harness/docs: leaving the surface returns to the
+   *  editor camera. */
+  exitWalkMode: () => set({ player: { kind: 'freeCam' } }),
+
+  /** Copy live craft poses back into the document (save path — a file
+   *  round-trips where every craft is, flying or parked). */
+  captureCrafts: () => {
+    const { world } = get()
+    if (!world.crafts?.length) return
+    for (const craft of world.crafts) {
+      const rt = craftRuntime.get(craft.id)
+      if (rt) captureCraftPose(rt)
+    }
+  },
+
   markSaved: (fileName) => set({ dirty: false, fileName: fileName ?? get().fileName }),
 }))
