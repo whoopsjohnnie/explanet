@@ -54,6 +54,21 @@
  *       },
  *       "elements": [ { "t": "grass", "h": 0.3, "c": "#57a05a" }, ... ]
  *     }
+ *   ],
+ *   "crafts": [                        // optional — the astronaut's vehicles
+ *     {                                // (movement model: docs/flight.txt;
+ *       "id": "c-ab12cd34",             //   live poses live in the runtime,
+ *       "name": "Shuttle",              //   core/motion.js craftRuntime)
+ *       "kind": "shuttle",              //   mover + tuning, core/craftTypes.js
+ *       "realism": "arcade",            //   "arcade" = plug-and-play
+ *       "pose": {                       //   "real"   = Newtonian
+ *         "anchor": {                   // PARKED on a surface (persisted):
+ *           "bodyId": "p-earth",         //   dir in the body-LOCAL frame
+ *           "dir": [0, 0.6, 0.8],        //   (rides spin/orbit for free),
+ *           "r": 21.4                    //   r = radius + terrain at that dir
+ *         }                             // (or, in flight: "space":
+ *       }                               //   { pos, vel, yaw, pitch } — the
+ *     }                                 //   live state, captured on save)
  *   ]
  * }
  *
@@ -78,8 +93,11 @@ import { cellCountForFrequency } from './hexsphere.js'
 import { generateElements, defaultElement } from './generators.js'
 import { TERRAIN_TYPES } from './terrain.js'
 import { DEFAULT_DENSITY, MAX_FREQUENCY } from './planetMath.js'
+import { CRAFT_KINDS } from './craftTypes.js'
 
 export const WORLD_VERSION = 1
+
+export { CRAFT_KINDS }
 
 export function createPlanet(opts = {}) {
   const frequency = clampInt(opts.frequency ?? 6, 1, MAX_FREQUENCY)
@@ -200,6 +218,72 @@ export function createEmptyWorld(name = 'Untitled World') {
   }
 }
 
+/**
+ * One craft (a vehicle the astronaut can be in). `pose` is either
+ * `anchor: {bodyId, dir, r}` (parked on a surface — dir body-LOCAL, r the
+ * radius+terrain at that direction; r may be null on fresh documents and is
+ * resolved to the surface on first sync) or `space: {pos, vel, yaw, pitch}`
+ * (in flight — the live state, captured into the file on save). See
+ * docs/flight.txt for the movement model and core/motion.js for the movers.
+ */
+export function createCraft(opts = {}) {
+  return {
+    id: opts.id || `c-${nanoid(8)}`,
+    name: typeof opts.name === 'string' && opts.name ? opts.name : 'Shuttle',
+    kind: CRAFT_KINDS.includes(opts.kind) ? opts.kind : 'shuttle',
+    realism: opts.realism === 'real' ? 'real' : 'arcade',
+    pose: opts.pose || null,
+  }
+}
+
+/** Validate/repair a craft list against a body list (the lenient contract:
+ *  heal, don't throw). Unknown bodies re-anchor on the first landable one;
+ *  unusable entries are dropped. */
+export function normalizeCrafts(raw, planets) {
+  if (!Array.isArray(raw)) return null
+  const ids = new Set(planets.map((p) => p.id))
+  const firstLandable = planets.find((p) => p.preset !== 'star')
+  const out = []
+  for (const c of raw) {
+    if (!c || typeof c !== 'object') continue
+    let pose = null
+    const a = c.pose && c.pose.anchor
+    if (a && ids.has(a.bodyId) && Array.isArray(a.dir) && a.dir.length === 3) {
+      const r = Number(a.r)
+      pose = {
+        anchor: {
+          bodyId: a.bodyId,
+          dir: [num(a.dir[0], 0), num(a.dir[1], 1), num(a.dir[2], 0)],
+          r: Number.isFinite(r) && r > 0 ? r : null,
+        },
+      }
+    } else {
+      const sp = c.pose && c.pose.space
+      if (sp && Array.isArray(sp.pos) && sp.pos.length === 3) {
+        const n = (v, i) => (Number.isFinite(Number(sp[v][i])) ? Number(sp[v][i]) : 0)
+        pose = {
+          space: {
+            pos: [n('pos', 0), n('pos', 1), n('pos', 2)],
+            vel: [n('vel', 0), n('vel', 1), n('vel', 2)],
+            yaw: Number.isFinite(Number(sp.yaw)) ? Number(sp.yaw) : 0,
+            pitch: Number.isFinite(Number(sp.pitch)) ? Number(sp.pitch) : 0,
+          },
+        }
+      }
+    }
+    if (!pose && firstLandable) pose = { anchor: { bodyId: firstLandable.id, dir: [0, 1, 0], r: null } }
+    if (!pose) continue
+    out.push({
+      id: typeof c.id === 'string' && c.id ? c.id : `c-${nanoid(8)}`,
+      name: typeof c.name === 'string' && c.name ? c.name : 'Shuttle',
+      kind: CRAFT_KINDS.includes(c.kind) ? c.kind : 'shuttle',
+      realism: c.realism === 'real' ? 'real' : 'arcade',
+      pose,
+    })
+  }
+  return out.length ? out : null
+}
+
 function vec3(v) {
   return { x: num(v?.x), y: num(v?.y), z: num(v?.z) }
 }
@@ -294,6 +378,8 @@ export function normalizeWorld(raw) {
     }
     world.planets.push(planet)
   }
+  const crafts = normalizeCrafts(raw.crafts, world.planets)
+  if (crafts) world.crafts = crafts
   return world
 }
 
@@ -305,7 +391,9 @@ export function isPlanetStub(planet) {
 /**
  * The document as it is saved to world.json: schema fields only. Database
  * internals (dbId, preview samples, stub stats) never leak into files.
- * `scale` (the true-scale annotation, meters per world unit) round-trips.
+ * `scale` (the true-scale annotation, meters per world unit) round-trips,
+ * and so do `crafts` (already schema-clean; the save path captures live
+ * flight poses into the document first — store.captureCrafts).
  */
 export function serializeWorld(world) {
   return {
@@ -313,6 +401,7 @@ export function serializeWorld(world) {
     name: world.name,
     gravity: world.gravity,
     ...(world.scale ? { scale: world.scale } : {}),
+    ...(Array.isArray(world.crafts) && world.crafts.length ? { crafts: world.crafts } : {}),
     planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, ...doc }) => doc),
   }
 }

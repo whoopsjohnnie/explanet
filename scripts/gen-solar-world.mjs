@@ -33,6 +33,7 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { generateElements } from '../src/core/generators.js'
+import { createCraft } from '../src/core/worldSchema.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import { orbitalSpeed } from '../src/core/physics.js'
 
@@ -181,7 +182,24 @@ for (const d of GENERATED) {
 
 // scale: physical scale (meters per world unit, 1 doc s = 1 real s) —
 // the surface walker is a real human (core/surface.js SURFACE_REAL)
-const world = { version: 1, name: 'Sol Trial', gravity: G, scale: 1000 / KM2U, planets }
+const world = {
+  version: 1,
+  name: 'Sol Trial',
+  gravity: G,
+  scale: 1000 / KM2U,
+  planets,
+  crafts: planets.some((p) => p.id === 'p-earth')
+    ? [
+        createCraft({
+          id: 'c-shuttle-earth',
+          name: 'Shuttle',
+          kind: 'shuttle',
+          realism: 'arcade',
+          pose: { anchor: { bodyId: 'p-earth', dir: [0, 0.7, 0.7], r: null } },
+        }),
+      ]
+    : [],
+}
 mkdirSync(new URL('../public', import.meta.url), { recursive: true })
 const out = new URL('../public/solar-trial.json', import.meta.url)
 writeFileSync(out, JSON.stringify(world))

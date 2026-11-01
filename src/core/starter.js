@@ -47,7 +47,7 @@
  * (re)generate public/world.json. Node-importable (no DOM access).
  */
 
-import { createEmptyWorld, createPlanet } from './worldSchema.js'
+import { createEmptyWorld, createPlanet, createCraft } from './worldSchema.js'
 import { atmosphereFor } from './atmospheres.js'
 import { generateElements } from './generators.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from './planetMath.js'
@@ -197,6 +197,19 @@ export function makeStarterWorld() {
     planet.velocity = { x: vel[0], y: vel[1], z: vel[2] }
     world.planets.push(planet)
   }
+
+  // The astronaut's craft: a shuttle parked on Earth. Launching places the
+  // astronaut on foot here by default (docs/flight.txt) — you arrive on the
+  // ground, next to the pad, and walk by default.
+  world.crafts = [
+    createCraft({
+      id: 'c-shuttle-earth',
+      name: 'Shuttle',
+      kind: 'shuttle',
+      realism: 'arcade',
+      pose: { anchor: { bodyId: 'p-earth', dir: [0, 0.7, 0.7], r: null } },
+    }),
+  ]
 
   return world
 }

@@ -31,6 +31,7 @@
 import { writeFileSync } from 'node:fs'
 import { readSeed } from './seed.mjs'
 import { generateElements } from '../src/core/generators.js'
+import { createCraft } from '../src/core/worldSchema.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import { keplerState } from '../src/core/kepler.js'
 import { PLANETS, DWARFS, RINGS, EXTRA_MOONS, MOON_PALETTES, NAMED_COLORS, TAXA } from './sol-real/features.js'
@@ -534,7 +535,31 @@ for (const c of orbitsData.comets) {
 // ---------------------------------------------------------------------------
 // physical scale: length of one world unit, in METERS (1 doc second = 1 real
 // second) — turns the surface walker into a real human (SURFACE_REAL)
-const world = { version: 1, name: 'Sol Real', gravity: G, scale: 1000 / KM2U, planets }
+// One shuttle per major landable body, parked on its surface (nose up).
+// The astronaut launches on foot at the first of these (docs/flight.txt).
+const SHUTTLE_BODIES = [
+  ['p-mercury', 'Mercury'],
+  ['p-venus', 'Venus'],
+  ['p-earth', 'Earth'],
+  ['m-earth-moon', 'Moon'],
+  ['p-mars', 'Mars'],
+]
+const world = {
+  version: 1,
+  name: 'Sol Real',
+  gravity: G,
+  scale: 1000 / KM2U,
+  planets,
+  crafts: SHUTTLE_BODIES.filter(([id]) => planets.some((p) => p.id === id)).map(([id, name]) =>
+    createCraft({
+      id: `c-shuttle-${id.slice(2)}`,
+      name: `${name} Shuttle`,
+      kind: 'shuttle',
+      realism: 'arcade',
+      pose: { anchor: { bodyId: id, dir: [0, 0.7, 0.7], r: null } },
+    })
+  ),
+}
 writeFileSync(new URL('../public/sol-real.json', import.meta.url), JSON.stringify(world))
 
 let storedAtoms = 0
