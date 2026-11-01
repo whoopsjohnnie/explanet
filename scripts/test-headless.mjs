@@ -15,6 +15,12 @@
  *  - the real-human walker (world.scale, meters per unit): SURFACE_REAL
  *    metrics, the human near plane, the 120 m spawn fall, and the weld on
  *    35 km terrain
+ *  - the astronaut flight chain on the synthetic 'testball' fixture
+ *    (harness makeTestballWorld — starless, so landings are reachable in
+ *    toy-scale gravity): board → launch → climb → brake → PARK (landing is
+ *    altitude-driven, no button), then eject → on foot; and the EVA chain:
+ *    eject mid-flight → adrift under real gravity → the fall ENDS on the
+ *    surface → on foot (docs/flight.txt)
  */
 
 import { test } from 'node:test'
@@ -22,6 +28,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { bootWorld, SOL_REAL_MAJOR } from './harness/index.mjs'
 import { walkReadout } from '../src/core/surface.js'
+import { craftRuntime, eva } from '../src/core/motion.js'
 
 const SOL_REAL_PRESENT = existsSync(new URL('../public/sol-real.json', import.meta.url))
 
@@ -96,4 +103,83 @@ test('surface (real mode): real-human walker welds on true-scale Earth (scale)',
   // starter weld measures ~0.0014 u/frame at |pos| ~ 200 u; at 4.2e6 u the
   // pre-fround'd registry (the float32 contract) must keep it the same order
   assert.ok(s.maxHexCameraU < 0.05, `per-frame view-space slide ${s.maxHexCameraU.toExponential(2)} u — weld broken`)
+})
+
+// ---------------------------------------------------------------------------
+// the astronaut flight chain (docs/flight.txt), on the 'testball' fixture
+// ---------------------------------------------------------------------------
+
+test('flight: launch → climb → brake → park on altitude → eject → on foot', { timeout: 240_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await w.frames(30) // runtime sync (parked r resolves against the terrain)
+  const id = w.craft('Shuttle').id
+  const rt = craftRuntime.get(id)
+  assert.ok(rt && rt.state.mode === 'park', 'shuttle must sync parked at boot')
+  assert.ok(Number.isFinite(rt.state.r) && rt.state.r > 1, `parked r must be resolved to the surface (got ${rt.state.r})`)
+
+  await w.board('Shuttle')
+  assert.deepEqual(w.player, { kind: 'craft', craftId: id })
+  await w.launch('Shuttle')
+  let st = craftRuntime.get(id).state
+  assert.equal(st.mode, 'space', 'launch must put the craft off the pad')
+  const d0 = Math.hypot(st.pos.x, st.pos.y, st.pos.z)
+  assert.ok(d0 > rt.state.r, `launch point (${d0}) must be outside the surface (${rt.state.r}) — the r=null → 0 bug`)
+
+  // climb: W thrusts radially out (launch attitude faces the sky)
+  w.fly({ fwd: 1 })
+  await w.frames(60)
+  st = craftRuntime.get(id).state
+  assert.ok(st.mode === 'space', 'still flying after the climb')
+  assert.ok(Math.hypot(st.pos.x, st.pos.y, st.pos.z) > d0 + 1, 'the climb must gain altitude')
+
+  // brake: S until the altitude → 0 landing parks it (no button, ever)
+  w.fly({ fwd: 0, back: 1 })
+  let parked = false
+  for (let i = 0; i < 60 * 120 && !parked; i++) {
+    await w.frames(1)
+    parked = craftRuntime.get(id).state.mode === 'park'
+  }
+  w.flyReset()
+  assert.ok(parked, 'braking to the surface must park the craft (altitude-driven landing)')
+  const park = craftRuntime.get(id).state
+  assert.equal(park.bodyId, 'p-testball')
+  assert.ok(Number.isFinite(park.r), 'parking must persist the resolved r into the doc')
+
+  // eject from parked → on foot at the pad (landing → walk, no button)
+  await w.eject()
+  assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-testball' })
+  await w.frames(300) // spawn descent + settle
+  assert.ok(walkReadout.grounded, 'the ejected astronaut must be on the ground')
+  await w.close()
+})
+
+test('flight (EVA): eject mid-flight → adrift → the fall ends on foot', { timeout: 240_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await w.frames(30)
+  const id = w.craft('Shuttle').id
+  await w.board('Shuttle')
+  await w.launch('Shuttle')
+  w.fly({ fwd: 1 })
+  await w.frames(60) // gain some air
+  const st = craftRuntime.get(id).state
+  assert.equal(st.mode, 'space')
+
+  // eject IN FLIGHT → adrift, inheriting the craft's velocity
+  await w.eject()
+  w.flyReset()
+  assert.deepEqual(w.player, { kind: 'eva' })
+  assert.ok(eva.state, 'the adrift astronaut must have a live state')
+  assert.equal(craftRuntime.get(id).state.mode, 'space', 'the empty craft keeps flying')
+
+  // no input: real gravity must bring the fall to an END on the surface
+  let landed = false
+  for (let i = 0; i < 60 * 60 && !landed; i++) {
+    await w.frames(1)
+    landed = w.player.kind === 'foot'
+  }
+  assert.ok(landed, 'the EVA fall must end on the surface (the dist3 object-vs-array bug)')
+  assert.equal(eva.state, null, 'the EVA state clears on landing')
+  await w.frames(300) // spawn descent + settle
+  assert.ok(walkReadout.grounded, 'the astronaut must be on the ground where the fall ended')
+  await w.close()
 })

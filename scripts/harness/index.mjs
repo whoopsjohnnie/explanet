@@ -18,6 +18,11 @@
  *   const t = w.track('Earth')               // anchor one hex vertex
  *   await w.frames(480, { jitter: true })    // RAF-jittered time
  *   t.stats() // { maxPxPerFrame, signFlips, maxHexCameraU, maxMeshEntryU, jumps, … }
+ *   await w.board('Shuttle')                 // astronaut: board a craft
+ *   await w.launch('Shuttle')                // …launch it off the pad
+ *   w.fly({ fwd: 1 })                        // drive the shared flight input
+ *   //    (what the cockpit keys do); w.player tracks { kind: 'foot' |
+ *   //    'craft' | 'eva' | 'freeCam' } — landing flips it back to 'foot'
  *   await w.close()
  *
  * Trackers answer the questions that matter for a rendered world:
@@ -47,12 +52,28 @@ const { OrbitControls } = await import('@react-three/drei')
 const { useStore } = await import('../../src/state/store.js')
 const { registry, stepGravity } = await import('../../src/core/physics.js')
 const { makeStarterWorld } = await import('../../src/core/starter.js')
-const { normalizeWorld } = await import('../../src/core/worldSchema.js')
-const { planetRadius } = await import('../../src/core/planetMath.js')
+const { normalizeWorld, createPlanet, createCraft } = await import('../../src/core/worldSchema.js')
+const { planetRadius, radiusForFrequency } = await import('../../src/core/planetMath.js')
 const { animateTerrainMaterials } = await import('../../src/three/materials.js')
 const Planet = (await import('../../src/components/Planet.jsx')).default
 const Walker = (await import('../../src/components/Walker.jsx')).default
 const CameraFollow = (await import('../../src/components/CameraFollow.jsx')).default
+const AmbientCrafts = (await import('../../src/components/Crafts.jsx')).default
+const CraftCockpit = (await import('../../src/components/CraftCockpit.jsx')).default
+const EvaCam = (await import('../../src/components/EvaCam.jsx')).default
+const { craftRuntime, eva, resetFlightInput, flightInput, pendingFoot } = await import(
+  '../../src/core/motion.js'
+)
+
+/** Reset the motion framework's module state between boots (it is process-
+ *  global: craftRuntime, the adrift astronaut, held keys, foot handoff). */
+function resetMotionState() {
+  craftRuntime.clear()
+  eva.state = null
+  resetFlightInput()
+  pendingFoot.bodyId = null
+  pendingFoot.dir = null
+}
 
 const h = React.createElement
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -62,8 +83,54 @@ export const SOL_REAL_MAJOR = [
   'Sun', 'Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune',
 ]
 
+/**
+ * Synthetic single-planet flight fixture (spec 'testball'), built in code so
+ * no world-data file is ever committed:
+ *  - NO star — a star's pull dominates every planet in the toy-scale worlds
+ *    (starter Earth: sun ≈ 1000× the planet at the surface), which makes
+ *    "the EVA fall ends on a planet" physically unreachable there; true-scale
+ *    worlds get it right but a real fall there takes minutes of sim time.
+ *  - one static, spinless freq-12 earthlike body of TUNED mass so local
+ *    gravity is strong: a few-unit EVA fall completes in ~1–3 s of frames.
+ *  - one arcade shuttle parked on it — the full P1 chain (board → launch →
+ *    fly → park → eject-on-foot; eject-flying → EVA → fall → land-on-foot)
+ *    is deterministic here.
+ */
+export function makeTestballWorld() {
+  const FREQ = 12
+  const planet = createPlanet({
+    id: 'p-testball',
+    name: 'Testball',
+    preset: 'earthlike',
+    seed: 7, // fixed: the fixture is deterministic
+    frequency: FREQ,
+    center: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    spin: { x: 0, y: 0, z: 0 },
+    isStatic: true,
+    // tuned mass (≈120): v_esc ≈ 30 u/s ≈ 2× arcade cruise, g ≈ 40 u/s²
+    density: 120 / ((4 / 3) * Math.PI * radiusForFrequency(FREQ) ** 3),
+  })
+  return {
+    version: 1,
+    name: 'Testball',
+    gravity: 40,
+    planets: [planet],
+    crafts: [
+      createCraft({
+        id: 'c-testball-shuttle',
+        name: 'Shuttle',
+        kind: 'shuttle',
+        realism: 'arcade',
+        pose: { anchor: { bodyId: 'p-testball', dir: [0, 0.7, 0.7], r: null } },
+      }),
+    ],
+  }
+}
+
 function loadWorld(spec) {
   if (spec === 'starter') return makeStarterWorld()
+  if (spec === 'testball') return makeTestballWorld()
   let path = spec
   if (spec === 'sol-real') path = fileURLToPath(new URL('../../public/sol-real.json', import.meta.url))
   let raw
@@ -99,14 +166,18 @@ export async function bootWorld(opts = {}) {
     planets: filter ? doc.planets.filter((p) => filter.includes(p.name)) : doc.planets,
   })
 
-  // store: fresh, deterministic starting point (Scene's own defaults)
+  resetMotionState() // module state is process-global; start clean every boot
+
+  // store: fresh, deterministic starting point (Scene's own defaults); the
+  // flight tests flip the player explicitly (board/launch/eject)
   useStore.setState({
     world: normalized,
     ready: true,
     showLabels: false,
     selectedId: null,
     followSelected: false,
-    walkMode: null,
+    player: { kind: 'freeCam' },
+    selectedCraftId: null,
     playing: true,
     ...store,
   })
@@ -148,7 +219,7 @@ export async function bootWorld(opts = {}) {
   function Tree() {
     const planets = useStore((s) => s.world.planets)
     const playing = useStore((s) => s.playing)
-    const walkMode = useStore((s) => s.walkMode)
+    const player = useStore((s) => s.player)
     return h(
       React.Fragment,
       null,
@@ -159,6 +230,9 @@ export async function bootWorld(opts = {}) {
         h(Probe),
         h(GravityRunner)
       ),
+      // Scene's mount order == useFrame order: the crafts step BEFORE the
+      // cameras (cockpit/EVA/walker) read them
+      h(AmbientCrafts),
       controls &&
         h(OrbitControls, {
           makeDefault: true,
@@ -166,10 +240,12 @@ export async function bootWorld(opts = {}) {
           dampingFactor: 0.09,
           minDistance: 1.5,
           maxDistance: Math.max(1600, sysR * 2.4),
-          enabled: !walkMode,
+          enabled: !player || player.kind === 'freeCam',
         }),
       follow && h(CameraFollow),
-      walkMode && h(Walker, { key: walkMode.planetId, planetId: walkMode.planetId }),
+      player?.kind === 'craft' && h(CraftCockpit, { key: player.craftId, craftId: player.craftId }),
+      player?.kind === 'eva' && h(EvaCam),
+      player?.kind === 'foot' && h(Walker, { key: player.bodyId, planetId: player.bodyId }),
       h(MaterialAnimator)
     )
   }
@@ -378,6 +454,42 @@ export async function bootWorld(opts = {}) {
     })
   }
 
+  // ---- the astronaut (docs/flight.txt): board / launch / eject / fly ------
+  function craft(nameOrId) {
+    const c = (normalized.crafts || []).find((q) => q.name === nameOrId || q.id === nameOrId)
+    if (!c) throw new Error(`no craft "${nameOrId}" in this world`)
+    return c
+  }
+
+  async function board(nameOrId) {
+    const c = craft(nameOrId)
+    await act(async () => {
+      useStore.getState().boardCraft(c.id)
+    })
+  }
+
+  async function launch(nameOrId) {
+    const c = craft(nameOrId)
+    await act(async () => {
+      await useStore.getState().launchCraft(c.id)
+    })
+  }
+
+  async function eject() {
+    await act(async () => {
+      useStore.getState().ejectCraft()
+    })
+  }
+
+  /** Drive the shared flight input directly (what the cockpit keys do). */
+  function fly(patch) {
+    Object.assign(flightInput, patch)
+  }
+
+  function flyReset() {
+    resetFlightInput()
+  }
+
   async function set(patch) {
     await act(async () => {
       useStore.setState(patch)
@@ -402,7 +514,14 @@ export async function bootWorld(opts = {}) {
       await inst.unmount()
     })
     await Promise.all(ops.workers.splice(0).map((wk) => wk.terminate()))
-    useStore.setState({ ready: false, walkMode: null, selectedId: null, followSelected: false })
+    resetMotionState()
+    useStore.setState({
+      ready: false,
+      player: { kind: 'freeCam' },
+      selectedId: null,
+      selectedCraftId: null,
+      followSelected: false,
+    })
   }
 
   if (settle > 0) await frames(settle)
@@ -422,10 +541,19 @@ export async function bootWorld(opts = {}) {
     get missedFrames() {
       return totalMissed
     },
+    get player() {
+      return useStore.getState().player
+    },
     planet,
+    craft,
     track,
     frames,
     walk,
+    board,
+    launch,
+    eject,
+    fly,
+    flyReset,
     set,
     cameraNear,
     close,
