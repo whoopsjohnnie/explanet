@@ -609,8 +609,8 @@ input[type='range'] {
   box-shadow: 0 0 0 1px rgba(130, 185, 255, 0.5) inset;
 }
 
-/* ---------------------------------------------------------- walk hud */
-.walk-hud {
+/* ---------------------------------------------------------- motion hud */
+.motion-hud {
   position: absolute;
   left: 50%;
   bottom: 16px;
@@ -629,33 +629,33 @@ input[type='range'] {
   user-select: none;
   animation: toast-in 0.25s ease-out;
 }
-.walk-hud-title {
+.motion-hud-title {
   display: flex;
   align-items: center;
   gap: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
 }
-.walk-hud-title .btn {
+.motion-hud-title .btn {
   font-size: 10.5px;
   padding: 3px 9px;
 }
-.walk-hud-stats {
+.motion-hud-stats {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text);
 }
-.walk-hud-air {
+.motion-hud-air {
   color: var(--accent-2);
 }
-.walk-hud-atmo {
+.motion-hud-atmo {
   margin-left: 10px;
   color: var(--text-dim);
 }
-.walk-hud-atmo.vacuum {
+.motion-hud-atmo.vacuum {
   color: var(--accent-2);
 }
-.walk-hud-keys {
+.motion-hud-keys {
   font-size: 10.5px;
   color: var(--text-dim);
   letter-spacing: 0.03em;

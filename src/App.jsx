@@ -9,8 +9,8 @@ import TopBar from './components/ui/TopBar.jsx'
 import PlanetList from './components/ui/PlanetList.jsx'
 import Inspector from './components/ui/Inspector.jsx'
 import Palette from './components/ui/Palette.jsx'
-import WalkHud from './components/ui/WalkHud.jsx'
 import AddPlanetDialog from './components/ui/AddPlanetDialog.jsx'
+import MotionHud from './components/ui/MotionHud.jsx'
 import { saveWorldUI, openWorldUI, initFileHandle } from './components/ui/actions.js'
 import { TERRAIN_KEYS } from './core/terrain.js'
 
@@ -19,7 +19,7 @@ export default function App() {
   const init = useStore((s) => s.init)
   const statusMsg = useStore((s) => s.statusMsg)
   const showAddDialog = useStore((s) => s.showAddDialog)
-  const walkMode = useStore((s) => s.walkMode)
+  const player = useStore((s) => s.player)
 
   useEffect(() => {
     init()
@@ -39,14 +39,20 @@ export default function App() {
       const tag = e.target?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       const s = useStore.getState()
-      if (s.walkMode) {
-        // surface mode owns the keyboard (movement is handled in Walker.jsx):
-        // Esc lifts off, Ctrl/Cmd+S still saves. Space is swallowed so a
-        // focused button can't be re-triggered by the jump key.
+      const kind = s.player?.kind
+      if (kind === 'foot' || kind === 'craft' || kind === 'eva') {
+        // The motion modes own the keyboard (movement keys are handled in
+        // Walker.jsx / CraftCockpit.jsx / EvaCam.jsx): the editor's tool keys
+        // are swallowed here so R/F (raise/lower) never fire mid-flight.
+        // Esc returns to the free camera, E boards/ejects, Ctrl/Cmd+S saves.
+        // Space is swallowed so a focused button can't re-trigger the jump.
         if (e.code === 'Space') e.preventDefault()
         else if (e.code === 'Escape') {
           e.preventDefault()
-          s.exitWalkMode()
+          s.setFreeCam()
+        } else if (e.code === 'KeyE') {
+          if (kind === 'craft') s.ejectCraft()
+          else s.boardNearestCraft()
         } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
           e.preventDefault()
           saveWorldUI(false)
@@ -108,8 +114,7 @@ export default function App() {
           <TopBar />
           <PlanetList />
           <Inspector />
-          {!walkMode && <Palette />}
-          {walkMode && <WalkHud />}
+          {!player || player.kind === 'freeCam' ? <Palette /> : <MotionHud />}
           {showAddDialog && <AddPlanetDialog />}
           {statusMsg && <div className="toast">{statusMsg}</div>}
         </>

@@ -6,6 +6,7 @@
 import { useStore } from '../../state/store.js'
 import { planetStats } from '../../core/planetMath.js'
 import { registry } from '../../core/physics.js'
+import { CRAFT_TYPES } from '../../core/craftTypes.js'
 import { saveWorldUI } from './actions.js'
 
 function Row({ label, children }) {
@@ -41,16 +42,93 @@ function Vec3Editor({ label, value, onChange, step = 0.5 }) {
   )
 }
 
+function CraftPanel({ craft }) {
+  const updateCraft = useStore((s) => s.updateCraft)
+  const removeCraft = useStore((s) => s.removeCraft)
+  const boardCraft = useStore((s) => s.boardCraft)
+  const ejectCraft = useStore((s) => s.ejectCraft)
+  const launchCraft = useStore((s) => s.launchCraft)
+  const player = useStore((s) => s.player)
+  const world = useStore((s) => s.world)
+  const inThis = player?.kind === 'craft' && player.craftId === craft.id
+  const t = CRAFT_TYPES[craft.kind] || CRAFT_TYPES.shuttle
+  const bodyName = (id) => world.planets.find((p) => p.id === id)?.name
+  const parkedOn = craft.pose?.anchor ? bodyName(craft.pose.anchor.bodyId) : null
+
+  return (
+    <div className="inspector-body">
+      <input
+        className="text-input"
+        value={craft.name}
+        onChange={(e) => updateCraft(craft.id, { name: e.target.value })}
+        spellCheck={false}
+      />
+      <div className="stat-grid">
+        <div className="stat">
+          <b>{t.icon} {t.label}</b>
+          <span>kind</span>
+        </div>
+        <div className="stat">
+          <b>{parkedOn ? `parked` : 'in space'}</b>
+          <span>{parkedOn ? `on ${parkedOn}` : 'flying'}</span>
+        </div>
+      </div>
+
+      <div className="field-row">
+        <span className="field-label">Realism</span>
+        <span className="field-value">
+          <select value={craft.realism} onChange={(e) => updateCraft(craft.id, { realism: e.target.value })}>
+            <option value="arcade">arcade — plug &amp; play</option>
+            <option value="real">real — Newtonian</option>
+          </select>
+        </span>
+      </div>
+      <div className="hint">
+        {craft.realism === 'real'
+          ? 'Newtonian: gravity, inertia, capture, slingshot. Speeds are physical — cruises are patient burns.'
+          : 'Arcade: no gravity, body-relative velocity eases to your input at tile-anchored speed. Plug & play.'}
+      </div>
+
+      <div className="surface-actions">
+        {inThis ? (
+          <>
+            {craft.pose?.anchor && (
+              <button className="btn btn-accent" onClick={(e) => (e.currentTarget.blur(), launchCraft(craft.id))}>
+                🚀 Launch
+              </button>
+            )}
+            <button className="btn" onClick={(e) => (e.currentTarget.blur(), ejectCraft())}>
+              🧑‍🚀 Eject
+            </button>
+          </>
+        ) : (
+          <button className="btn btn-accent" onClick={(e) => (e.currentTarget.blur(), boardCraft(craft.id))}>
+            🛸 Pilot
+          </button>
+        )}
+        <button
+          className="btn mini-btn--danger"
+          onClick={(e) => {
+            e.currentTarget.blur()
+            removeCraft(craft.id)
+          }}
+        >
+          ✕ Delete
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function Inspector() {
   const world = useStore((s) => s.world)
   const selectedId = useStore((s) => s.selectedId)
+  const selectedCraftId = useStore((s) => s.selectedCraftId)
   const updatePlanet = useStore((s) => s.updatePlanet)
   const setGravity = useStore((s) => s.setGravity)
   const capturePositions = useStore((s) => s.capturePositions)
-  const landOnPlanet = useStore((s) => s.landOnPlanet)
-  const exitWalkMode = useStore((s) => s.exitWalkMode)
-  const walkingHere = useStore((s) => s.walkMode?.planetId)
 
+  const craft = world.crafts?.find((c) => c.id === selectedCraftId)
   const planet = world.planets.find((p) => p.id === selectedId)
   const stats = planet ? planetStats(planet) : null
 
@@ -58,9 +136,27 @@ export default function Inspector() {
     <div className="panel panel-right">
       <div className="panel-title">Inspector</div>
 
-      {!planet && <div className="empty-hint">Select a body in the scene or the list.</div>}
+      {craft && (
+        <>
+          <div className="section-label">Craft</div>
+          <CraftPanel craft={craft} />
+          <div className="section-label">World</div>
+          <Row label={`Gravity G ${world.gravity.toFixed(0)}`}>
+            <input
+              type="range"
+              min="5"
+              max="200"
+              step="1"
+              value={world.gravity}
+              onChange={(e) => setGravity(parseFloat(e.target.value))}
+            />
+          </Row>
+        </>
+      )}
 
-      {planet && (
+      {!craft && !planet && <div className="empty-hint">Select a body or craft in the scene or the list.</div>}
+
+      {!craft && planet && (
         <div className="inspector-body">
           <input
             className="text-input"
@@ -100,23 +196,13 @@ export default function Inspector() {
             <div className="hint">⏳ Streaming this body's atoms from the world database…</div>
           )}
 
-          <div className="surface-actions">
-            {planet.preset === 'star' ? (
-              <div className="hint">Stars have no walkable surface.</div>
-            ) : (
-              <button
-                className={`btn ${walkingHere === planet.id ? 'btn-on' : 'btn-accent'}`}
-                onClick={(e) => {
-                  e.currentTarget.blur()
-                  if (walkingHere === planet.id) exitWalkMode()
-                  else landOnPlanet(planet.id)
-                }}
-                title="Drop onto this planet and walk its surface"
-              >
-                {walkingHere === planet.id ? '🚁 Lift off' : '🚀 Land on surface'}
-              </button>
-            )}
-          </div>
+          {planet.preset !== 'star' && (
+            <div className="hint">
+              {world.crafts?.some((c) => c.pose?.anchor?.bodyId === planet.id)
+                ? 'A craft is parked here — pilot it and land to walk (E to eject).'
+                : 'To walk here: launch a craft here and land it, then eject on the surface.'}
+            </div>
+          )}
 
           <div className="section-label">Physical</div>
           <Row label={`Density ${planet.density.toFixed(3)}`}>

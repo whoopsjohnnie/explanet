@@ -12,6 +12,7 @@ import { useMemo, useState } from 'react'
 import { useStore } from '../../state/store.js'
 import { planetStats } from '../../core/planetMath.js'
 import { TERRAIN_TYPES } from '../../core/terrain.js'
+import { CRAFT_TYPES } from '../../core/craftTypes.js'
 
 function dominantColor(planet) {
   const counts = new Map()
@@ -57,8 +58,11 @@ export default function PlanetList() {
   const select = useStore((s) => s.select)
   const removePlanet = useStore((s) => s.removePlanet)
   const duplicatePlanet = useStore((s) => s.duplicatePlanet)
-  const landOnPlanet = useStore((s) => s.landOnPlanet)
-  const walkingHere = useStore((s) => s.walkMode?.planetId)
+  const selectCraft = useStore((s) => s.selectCraft)
+  const boardCraft = useStore((s) => s.boardCraft)
+  const selectedCraftId = useStore((s) => s.selectedCraftId)
+  const crafts = useStore((s) => s.world.crafts) || []
+  const player = useStore((s) => s.player)
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState(() => new Set())
 
@@ -138,18 +142,6 @@ export default function PlanetList() {
           </div>
         </div>
         <div className="planet-item-actions">
-          {p.preset !== 'star' && (
-            <button
-              className={`mini-btn ${walkingHere === p.id ? 'mini-btn--on' : ''}`}
-              title="Land on surface"
-              onClick={(e) => {
-                e.stopPropagation()
-                landOnPlanet(p.id)
-              }}
-            >
-              🚀
-            </button>
-          )}
           <button
             className="mini-btn"
             title="Duplicate"
@@ -175,9 +167,54 @@ export default function PlanetList() {
     )
   }
 
+  const renderCraft = (c) => {
+    const t = CRAFT_TYPES[c.kind] || CRAFT_TYPES.shuttle
+    const parkedOn = c.pose?.anchor ? planets.find((p) => p.id === c.pose.anchor.bodyId)?.name : null
+    const piloting = player?.kind === 'craft' && player.craftId === c.id
+    return (
+      <div
+        key={c.id}
+        className={`planet-item ${c.id === selectedCraftId ? 'planet-item--active' : ''}`}
+        onClick={() => selectCraft(c.id)}
+      >
+        <span className="planet-dot" style={{ background: '#8fa3bf' }} />
+        <div className="planet-item-main">
+          <div className="planet-item-name">
+            {t.icon} {c.name}
+            {piloting && <span className="badge badge-star">piloting</span>}
+            <span className="badge">{c.realism}</span>
+          </div>
+          <div className="planet-item-stats">{parkedOn ? `parked on ${parkedOn}` : 'in space'}</div>
+        </div>
+        <div className="planet-item-actions">
+          <button
+            className={`mini-btn ${piloting ? 'mini-btn--on' : ''}`}
+            title="Pilot this craft"
+            onClick={(e) => {
+              e.stopPropagation()
+              boardCraft(c.id)
+            }}
+          >
+            🛸
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="panel panel-left">
       <div className="panel-title">World Bodies</div>
+      {crafts.length > 0 && !searching && (
+        <div className="planet-list">
+          <div className="planet-group-header">
+            <span className="planet-group-caret">▾</span>
+            Crafts
+            <span className="planet-group-count">{crafts.length}</span>
+          </div>
+          {crafts.map(renderCraft)}
+        </div>
+      )}
       {planets.length > 12 && (
         <input
           className="planet-search"

@@ -18,6 +18,9 @@ export default function TopBar() {
   const setShowAddDialog = useStore((s) => s.setShowAddDialog)
   const renameWorld = useStore((s) => s.renameWorld)
   const planetCount = useStore((s) => s.world.planets.length)
+  const player = useStore((s) => s.player)
+  const setFreeCam = useStore((s) => s.setFreeCam)
+  const addCraft = useStore((s) => s.addCraft)
 
   return (
     <div className="topbar">
@@ -58,8 +61,27 @@ export default function TopBar() {
       >
         🏷 Labels
       </button>
+      {/* The astronaut's default is to walk; this is the escape hatch back to
+          the editor's free orbit camera (the old mode, kept and toggled). */}
+      <button
+        className={`btn ${!player || player.kind === 'freeCam' ? 'btn-on' : ''}`}
+        onClick={setFreeCam}
+        title="The editor's free orbit camera"
+      >
+        🎥 Free cam
+      </button>
       <button className="btn btn-accent" onClick={() => setShowAddDialog(true)} title="Add a planet">
         + Add Planet
+      </button>
+      <button
+        className="btn"
+        onClick={(e) => {
+          e.currentTarget.blur()
+          addCraft()
+        }}
+        title="Add a craft — a shuttle parked on the selected body"
+      >
+        🚀 Add Craft
       </button>
 
       <div className="topbar-divider" />
