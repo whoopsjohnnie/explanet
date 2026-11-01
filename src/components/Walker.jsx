@@ -1,10 +1,11 @@
 /**
- * Walker.jsx — surface mode: land on a planet and walk around on it.
+ * Walker.jsx — on-foot mode: the astronaut walking a planet's surface.
  *
- * Mounted only while store.walkMode is set (keyed by planetId, so landing on
- * another planet remounts cleanly). The actual walking physics live in
- * core/surface.js (pure + headless-tested); this component does the frame
- * plumbing:
+ * Mounted only while store.player is { kind:'foot' } (keyed by bodyId, so
+ * landing on another planet remounts cleanly). Walking is how the astronaut
+ * ARRIVES (launch default, ejecting a parked craft, an EVA fall ending) —
+ * docs/flight.txt. The actual walking physics live in core/surface.js
+ * (pure + headless-tested); this component does the frame plumbing:
  *
  *  • integrate the walker in the PLANET-LOCAL frame, so it rides the planet's
  *    spin and orbit for free; world pose = planetPos + quat·(dir·r), read
@@ -45,6 +46,7 @@ import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
 import { planetMass } from '../core/planetMath.js'
 import { makeSurface, createWalker, stepWalker, surfaceGravity, walkReadout } from '../core/surface.js'
+import { pendingFoot } from '../core/motion.js'
 
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
 const PITCH_LIMIT = 1.45 // ±83° from the horizon; never flips past straight up/down
@@ -241,11 +243,11 @@ export default function Walker({ planetId }) {
   // --------------------------------------------------------------- frame --
   useFrame((_, delta) => {
     const st = useStore.getState()
-    if (!st.walkMode || st.walkMode.planetId !== planetId) return
+    if (!st.player || st.player.kind !== 'foot' || st.player.bodyId !== planetId) return
 
     const entry = registry.bodies.get(planetId)
     if (!entry || !surface || !planet) {
-      st.exitWalkMode()
+      st.setFreeCam()
       return
     }
 
@@ -254,12 +256,20 @@ export default function Walker({ planetId }) {
     tmp.qInv.copy(tmp.q).invert()
     tmp.planetPos.set(entry.pos.x, entry.pos.y, entry.pos.z)
 
-    // spawn: the face of the planet currently turned toward the camera
+    // spawn: prefer the handoff point (pendingFoot — where a parked craft
+    // was ejected or an EVA fall ended, body-LOCAL); otherwise the face of
+    // the planet currently turned toward the camera
     let s = stateRef.current
     if (!s) {
-      tmp.dirW.copy(camera.position).sub(tmp.planetPos)
-      if (tmp.planetPos.distanceToSquared(camera.position) < 1e-6) tmp.dirW.set(0, 1, 0)
-      tmp.dirW.normalize().applyQuaternion(tmp.qInv)
+      if (pendingFoot.bodyId === planetId && pendingFoot.dir) {
+        tmp.dirW.set(pendingFoot.dir[0], pendingFoot.dir[1], pendingFoot.dir[2])
+        pendingFoot.bodyId = null
+        pendingFoot.dir = null
+      } else {
+        tmp.dirW.copy(camera.position).sub(tmp.planetPos)
+        if (tmp.planetPos.distanceToSquared(camera.position) < 1e-6) tmp.dirW.set(0, 1, 0)
+        tmp.dirW.normalize().applyQuaternion(tmp.qInv)
+      }
       s = {
         walker: createWalker(surface, [tmp.dirW.x, tmp.dirW.y, tmp.dirW.z]),
         fwdL: new THREE.Vector3(),
