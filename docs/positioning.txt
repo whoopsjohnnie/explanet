@@ -1,0 +1,455 @@
+===============================================================================
+  ExPlanet — The Positioning Model
+  CANONICAL REFERENCE: system frame → body frames → latitude / longitude
+===============================================================================
+  Nov 2026 · the complete, single-home reference for where things ARE, in
+  which frame, and which frame is in charge. Companion to docs/movement.txt
+  (how things move) — this doc defines the frames their motion is expressed
+  in, the one-source-of-truth rule, and the latitude/longitude convention
+  for bodies. If a statement here and the code disagree, the code wins —
+  update this doc.
+
+  Code map
+    src/core/physics.js     the registry — system-frame truth (pos/vel/quat)
+    src/core/kepler.js      the frame definition (ecliptic ↔ engine), and the
+                            ephemeris-grade maps in both directions
+    src/core/motion.js      dominantBody + share; altitudeOf / heightAtDir
+                            (body-centered); latLonOf (body-fixed readout);
+                            the park ⇄ launch round-trip
+    src/core/surface.js     the walker's body-fixed live pose (dir, r)
+    src/core/worldSchema.js the document: spin (the axis), the parked anchor,
+                            stored elements
+    src/components/Planet.jsx  publishes the live pose; integrates the spin
+    scripts/gen-sol-real.mjs   J2000 elements + Horizons state vectors → the
+                            document (the ephemeris seed)
+    scripts/run_s0.sh          scores the engine against real ephemerides
+
+
+--------------------------------------------------------------------------------
+ 1. THE SPECTRUM — ONE PAGE
+--------------------------------------------------------------------------------
+  Position is always answered in ONE frame — never a blend. There are three:
+
+    SYSTEM FRAME              BODY-CENTERED                BODY-FIXED
+    the engine's ecliptic     origin at one body's live    co-rotating with one
+    frame; origin at the      position, axes = the         body's spin: dir + r
+    central star; the         system axes (NOT rotated);   → the hex cell under
+    registry's pos/vel live   the readout frame while      you → latitude and
+    here — the ONLY stored    over a body: rel position,   longitude. The
+    truth                     rel velocity, altitude       walker's home; the
+                                                          parked craft's home
+
+  Two rules make the rest fall out:
+
+    ONE REFERENCE BODY AT A TIME.   An entity is relative to exactly one
+    body (or to the system) — never "half relative to Earth, half to the
+    Moon". Which body, while in flight, is the DOMINANT body (argmax of the
+    softened pull, the continuous share from movement.txt §5 — no hysteresis,
+    no capture event). Which body, while parked or on foot, is the single
+    bodyId in the anchor / the walker's session.
+
+    THE FRAME IS A LENS, NOT A CONTAINER.   Physics never re-bases anything:
+    real-mode movers integrate absolute state in the system frame from
+    launch to park. Expressing that same state in the dominant body's frame
+    is a pure projection (relative position, relative velocity, altitude,
+    lat/lon) — it changes the readout, never the trajectory. The body frame
+    "takes over" only in the two states whose STORED pose is body-relative:
+    parked craft and astronaut on foot (§4).
+
+  The middle of the spectrum — "coming within a body's field, your
+  positioning becomes more and more tied to that body" — is exactly the
+  dominance share: low far out (the system readout is the honest one),
+  climbing as the pull grows (the body-relative readouts fade in with it,
+  already in the HUD), = 1 when you park or land (the body-fixed frame
+  becomes your stored home). The tie is continuous; the hand-off is the
+  movement model's own discrete transitions (the altitude checks, §4).
+
+
+--------------------------------------------------------------------------------
+ 2. THE SYSTEM FRAME — THE ONLY STORED TRUTH
+--------------------------------------------------------------------------------
+  The engine frame IS the J2000 ecliptic frame. It is defined once, in
+  kepler.js, and everything agrees with it:
+
+    ecliptic (X, Y, Znorth) → engine (x = X, y = Znorth, z = −Y)
+
+    +X  the ecliptic X axis of the J2000 element tables — the vernal
+        equinox direction
+    +Y  ecliptic north
+    +Z  −Y_ecl (so that prograde orbits run counterclockwise seen from +Y)
+    the orbital plane of the system is the engine's XZ plane
+
+  The real sky is pinned to this same frame (starsky.js: equatorial →
+  ecliptic → engine), so constellations and the galactic band hold their
+  true angles to the planetary orbits. Consequence: there is no sky-
+  rotation knob, and none should be added — rotating the frame would break
+  the ephemeris alignment this doc is about.
+
+  Origin: the central star's LIVE position. In every shipped world the star
+  is isStatic (pinned), so the world frame is heliocentric to begin with;
+  readouts subtract the star's live position so they stay correct if a
+  world ever moves it. A world with no star (the testball fixture) uses the
+  engine origin. The gravitational center (barycenter) is deliberately NOT
+  the frame's identity: in Sol it wanders by up to ~2 solar radii, it has
+  no fixed relation to the J2000 tables or the sky, and it adds motion
+  without adding information. It is derivable on demand (mass-weighted mean
+  of the live registry positions) — a one-liner if a readout ever wants it.
+
+  Free-space positioning — the ephemeris-grade readouts (both pure
+  functions of the live state, both display/data only):
+
+    (r, λ, β)   ecliptic radius / longitude / latitude around the central
+                star — the "latitude and longitude of free space", and the
+                form ephemerides themselves are reported in
+    osculating  cartesianToElements(pos − pos_B, vel − vel_B, mu_B, t) for
+    elements    the dominant body: the (a, e, i, Ω, ω, M) of the live
+                trajectory — the exact inverse of the map that built Sol
+                Real from published elements. Bound and non-degenerate only
+                (it returns null for escape states — a hyperbolic flyby has
+                no ellipse to report).
+
+  EPHEMERIDES (JPL Horizons / SPICE) — what they are FOR here:
+
+    Seed.      Document time t = 0 is J2000. Sol Real's initial state
+               vectors come from published J2000 osculating elements
+               (planets) and real JPL Horizons state vectors (comets / NEAs);
+               scripts/run_s0.sh scores the engine against both plus
+               published planet elements. The frame of §2 exists so that
+               seed is exact.
+    Readout.   Any live state can be reported in ephemeris terms at any
+               moment ((r, λ, β), osculating elements) — the maps above.
+    NOT the runtime oracle.    After t = 0 the simulation owns the truth:
+               the softened N-body law (ε² = 4), a finite N-body (Sol Real
+               is N-body for the Sun + 8 planets + 5 dwarf planets only),
+               and analytic ellipses for the rest. That is not JPL-grade
+               propagation and should not pretend to be — the ephemeris
+               fixed the frame and the initial conditions, and then the
+               registry is the truth. "Where is Mars really" is a question
+               about the seed, and run_s0.sh answers it.
+    No SPICE dependency.   SPICE's two jobs are ephemeris DATA (consumed at
+               generation time: the element tables, the Horizons vectors,
+               the BSC star catalog) and frame CONVENTIONS (encoded in
+               kepler.js / starsky.js — the same hierarchy SPICE uses:
+               inertial → body-centered → body-fixed). The packed documents
+               (stored elements, the spin axis, the star catalog) are the
+               in-game equivalents of SPK/CK data. Pulling in a SPICE
+               library would re-derive conventions this codebase already
+               carries.
+
+
+--------------------------------------------------------------------------------
+ 3. THE BODY FRAMES
+--------------------------------------------------------------------------------
+  Two frames per body, and they answer different questions:
+
+    BODY-CENTERED (non-rotating)
+      Origin at the body's live position (registry), axes parallel to the
+      system axes. The "orbit frame" — the one flight lives in while over
+      the body:
+        rel position   p − pos_B
+        rel velocity   v − vel_B      (what the HUD's rel-speed is)
+        altitude       d − (R + h), terrain-corrected via the hex cell
+                       under the line of sight (altitudeOf)
+      The landing checks (distance to the center — rotation-invariant),
+      the terrain-resolved anchor r, and the launch frame (body velocity +
+      ω×r + radial kick, assembled from the body-fixed pose) all key off
+      this frame.
+
+    BODY-FIXED (co-rotating)
+      The body's own frame — the grid, rotated by the body's live
+      quaternion. The one surfaces live in:
+        dir (unit, body-local) + r (distance from center)
+          → the hex cell under dir (Voronoi over the cell centers — the
+            walker's underfoot rule, no local maxima)
+          → latitude / longitude (§5)
+      The walker's live pose is (dir, r) in this frame; a parked craft's
+      anchor is (dir, r) in this frame. Storing anything here buys the
+      "rides spin and orbit for free" property: the world pose composes
+      from the registry (pos + quat·(dir·r)) and never needs updating.
+
+  WHOSE FRAME — positioning per entity class:
+
+    celestial body      truth = system frame (the registry pose; for
+                        scripted test particles the document's stored
+                        elements are the description and the registry pose
+                        is derived from them each frame). The body's OWN
+                        body-fixed frame is defined by its spin axis (§5)
+                        — that is where things on its surface live. A body
+                        not orbiting the center (a wanderer, a hand-placed
+                        pebble) is positioned in the very same system
+                        frame — orbiting the center is a property of the
+                        trajectory, not of the frame.
+    craft in flight     truth = system frame (pos + absolute vel for REAL
+                        crafts; the body-centered quantities are derived
+                        readouts — see the nuance on arcade below).
+    craft parked        truth (stored) = BODY-FIXED on exactly one body —
+                        the anchor {bodyId, dir, r}. The system pose is a
+                        derived projection until launch.
+    astronaut adrift    truth = system frame (EVA is always real-mode).
+    astronaut on foot   truth (live) = BODY-FIXED on exactly one body —
+                        the walker's (dir, r); the world pose is composed
+                        per frame.
+    the free camera     not an entity of the model — a world-frame
+                        viewpoint (the editor).
+
+  Nuance, said honestly once: an ARCADE craft stores a mixed-frame state —
+  its position in the system frame, its velocity RELATIVE to the dominant
+  body (by construction; that is what "held still = held over the ground"
+  means). Its home frame is the dominant body's moving frame; the system-
+  frame position is just where that state is recorded. It is the one stored
+  quantity in the game that is frame-dependent, and it is well-defined
+  because the dominant body re-derives identically at runtime.
+
+
+--------------------------------------------------------------------------------
+ 4. THE HOME FRAME — WHO IS IN CHARGE, AND THE GRADUAL HAND-OFF
+--------------------------------------------------------------------------------
+  The home frame is the frame an entity's AUTHORITATIVE pose lives in. The
+  rule, per state:
+
+    free space (dominance share low)      home = the SYSTEM frame
+    over a body (share high, alt > 0)     home = STILL the system frame —
+                                           in real mode nothing is re-based,
+                                           ever. The body-frame readouts
+                                           (rel pos, rel vel, altitude,
+                                           lat/lon) simply become the honest
+                                           description, and they fade in with
+                                           the share. "Positioning more and
+                                           more tied to that body" is this:
+                                           the readouts, the landing checks
+                                           and the eventual anchor all key
+                                           off that one body.
+    parked / on foot                      home = the BODY-FIXED frame of
+                                           exactly one body — the only states
+                                           whose stored pose is body-relative.
+
+  The hand-off is INHERITED from the movement model, not re-invented:
+
+    into the body   continuous — the dominance share climbs (no trigger)
+    down to it      the altitude check fires the park / land event — the
+                    only discrete frame switch, physics-fired, never a button
+    out of it       launch / eject invert it: the body-fixed pose is
+                    converted to a system-frame state (body velocity +
+                    spin surface velocity ω×r + radial kick, attitude
+                    radial) and the system frame resumes as the only truth
+
+  The round-trip is lossless in both directions: park converts system →
+  local (dir through the body's inverse quaternion, r terrain-resolved);
+  launch converts local → system; the walker composes and decomposes every
+  frame. Nothing is lost because nothing is ever copied into a second
+  truth — one of the two frames is always derived from the other plus the
+  body's live registry entry.
+
+  FORBIDDEN: blended coordinates. A position that is "40 % system frame,
+  60 % Moon frame" is a position in neither frame — it is a display
+  fiction, and the model has no use for it. The gradual part of the
+  spectrum is in the SHARE (and in what the readouts emphasize), never in
+  the coordinates.
+
+
+--------------------------------------------------------------------------------
+ 5. LATITUDE AND LONGITUDE — THE TWO QUESTIONS
+--------------------------------------------------------------------------------
+  Q: "Can we use latitude and longitude on all celestial bodies? Can we
+  define a north pole based on the spin axis of all of them?"
+  A: Yes to both. Lat/lon needs exactly two inputs per body — a rotation
+  axis and a reference meridian — and every ExPlanet body can supply both,
+  with one documented fallback.
+
+  WHY EVERY BODY HAS LAT/LON BY CONSTRUCTION
+    Lat/lon is (an axis, an equator ⊥ to it, a prime meridian) applied to a
+    reference sphere. Every body in this engine IS a reference sphere plus
+    radial relief — the hexsphere grid. So every surface point has a well-
+    defined direction, and therefore a (lat, lon) pair, on EVERY body:
+    rocky planets, gas giants (the hexsphere is their surface — the real-
+    world "1 bar pressure surface" question does not arise in-game), the
+    Sun, potato asteroids. Shape irregularity is relief against the sphere;
+    it never breaks the coordinates.
+
+  THE NORTH POLE — FROM THE SPIN AXIS
+    pole = normalize(planet.spin), in the body-LOCAL frame — the tip of the
+    angular-velocity vector, right-hand rule. This is exactly the IAU
+    convention, and it is constant in time: the axis is invariant under
+    its own rotation, so a given hex cell keeps its lat/lon for the life of
+    the world no matter how the body spins. Consequences:
+
+      Retrograde rotators need no special case. Sol Real carries the real
+      obliquities (Venus 177.36°, Uranus 97.77°, Pluto 122.53°): an
+      obliquity > 90° means the pole sits on the far side of the equator
+      and the sun moves the "wrong" way across the sky — which is just
+      what the coordinates say, and is correct.
+      Spinless bodies (|spin| < ε — the testball body, hand-placed
+      statics) have no physical pole; the convention takes over: the
+      fallback pole is local +Y (norm3's zero-vector fallback — already in
+      the code path, no new branch needed).
+      Tumbling bodies (real asteroids / comets in non-principal-axis
+      rotation) have no fixed axis at all; IAU handles this by publishing
+      an axis valid for an epoch. The document's spin field is exactly
+      that — a J2000 snapshot, constant. (Sol Real's small bodies carry
+      hash-derived stand-in spins anyway.)
+
+  THE PRIME MERIDIAN — THE OTHER INPUT
+    Earth's is Greenwich — a historical accident. Game bodies have no
+    Greenwich, so the convention stands in for it: the zero meridian is
+    the equatorial direction nearest body-local +X, and positive longitude
+    runs counterclockwise seen from the north pole (eastward for a
+    prograde rotator — the sun rises on the +lon side, as on Earth).
+    Optional, display-only, for real-chart fidelity: a per-body meridian
+    offset (a `lon0`, or a stored IAU reference direction) so Sol Real
+    readouts could match published charts. Not needed for the model to
+    work; listed in §8.
+
+  THE EXISTING CONTRACT (latLonOf, core/motion.js)
+    lat ∈ [−90, +90]   0 at the equator, +90 at the north pole
+    lon ∈ (−180, +180]  0 on the reference meridian, positive eastward
+    display data only — no physics reads it. Pinned by
+    scripts/test-motion.mjs (poles at ±90, equator at 0, reference
+    meridian on +X).
+
+  THREE ENCODINGS OF A SURFACE POINT (one point, mutually convertible)
+
+    (dir, r)      the CONTINUOUS pose — what the walker and the craft
+                  physics use; sub-cell precision
+    cell i        the DISCRETE address — the hex under dir (Voronoi over
+                  cell centers, the walker's underfoot rule); constant for
+                  the life of the world
+    (lat, lon)    the DERIVED readout — latLonOf(dir, pole); per-cell
+                  values are constant (the axis is static in the local
+                  frame), sub-cell values follow the continuous pose
+
+  The CELL is the unambiguous identity — it works exactly at the poles,
+  where longitude is degenerate (the same singularity Earth's maps have).
+  Lat/lon is the human- and interop-friendly encoding of the same point;
+  when they disagree at the pole, the cell wins.
+
+  REAL-WORLD CAVEATS (for the fidelity-minded — none of these change the
+  in-game model)
+
+    Geocentric vs geodetic latitude. The game's latitude is geocentric
+    (angle from the center — the only kind a sphere has). Map latitudes
+    are geodetic (normal to the reference ellipsoid); on Earth the two
+    differ by up to ~2.5° at mid-latitudes (0 at pole and equator). A
+    Sol Real readout of "42.5°N" is the geocentric truth of the game
+    sphere; a map would say ~45°N.
+    Gas giants in the real world. Real Jupiter/Saturn latitudes are
+    defined on the 1-bar surface, and Jupiter additionally carries cloud
+    systems I/II/III. The game's hexsphere surface is the surface; its
+    lat/lon is self-consistent truth, and mapping onto the real systems is
+    a chart-fidelity note, not a model problem.
+    The Sun. The IAU solar frame exists (equator ≈ the mean planetary
+    orbit plane, obliquity 7.25°, Carrington rotation for the meridian —
+    with the quirk that solar longitude increases WESTWARD). Sol Real's
+    Sun already carries the matching spin (25.38 d, 7.25°), so solar
+    lat/lon works (sunspots, solar terminator).
+    The reference. The IAU Working Group on Cartographic Coordinates and
+    Rotational Elements (de Pater et al. 2019, Icarus 526:103718)
+    maintains exactly this structure — pole, rotation formula, prime
+    meridian — for essentially every body with a determinable rotation.
+    The game's convention is a strict simplification of the same thing:
+    one snapshot axis, one convention meridian, no time formula.
+
+  KNOWN DISCREPANCY (Sol Real, data level, display only)
+    Retrograde bodies currently double-encode their retrograde spin:
+    features.js gives them a NEGATIVE sidereal day AND the IAU obliquity
+    (> 90°), and spinVec applies both — the tilt to the axis direction,
+    the sign to the rate. The two cancel: Venus, Uranus and Pluto spin
+    prograde with near-upright axes today, and their poles sit on the
+    WRONG side of the ecliptic relative to the IAU frame. The IAU-correct
+    encoding is a POSITIVE day with the obliquity > 90° carrying the
+    retrograde-ness in the pole direction. Until that is fixed, the
+    lat/lon readouts on those three bodies are mirrored relative to real
+    charts (the rotation you see is also mirrored). Fix = drop the three
+    minus signs in features.js and regenerate — no engine change, but it
+    does change the spin vectors (and hence the launch-kick direction) of
+    those bodies, so it is its own deliberate step, not a drive-by.
+
+
+--------------------------------------------------------------------------------
+ 6. WHAT EXISTS VS WHAT THIS DOC DEFINES
+--------------------------------------------------------------------------------
+  ALREADY BUILT (the model above is mostly a contract on existing code):
+    the registry as system-frame truth                core/physics.js
+    the frame definition + both ephemeris maps        core/kepler.js
+    dominantBody + the continuous share               core/motion.js
+    body-centered readouts (altitudeOf, rel vel)      core/motion.js
+    the body-fixed readout (latLonOf)                 core/motion.js
+    the walker's body-fixed pose (dir, r)             core/surface.js
+    the parked anchor (body-fixed, persisted)         core/worldSchema.js
+    the park ⇄ launch round-trip                      core/motion.js
+    the J2000/Horizons seed + scoring                  gen-sol-real.mjs,
+                                                       run_s0.sh
+  THIS DOC ADDS (definitions, not machinery):
+    the frame vocabulary + the home-frame rule (§1–4) — a contract on
+    behavior the code already honors
+    the free-space readout (r, λ, β) around the central star — a display
+    item for the HUD when wanted (the math is norm + atan2, nothing new)
+    the osculating-element readout of a live trajectory —
+    cartesianToElements is already there, this names its role
+    the lat/lon convention of §5 (pole = spin, meridian = +X, cell is the
+    identity, lat/lon is the derived readout)
+    the known-discrepancy note (§5) — a pointer for the fix
+
+
+--------------------------------------------------------------------------------
+ 7. INVARIANTS (do not break)
+--------------------------------------------------------------------------------
+  • The system frame is the ONLY stored runtime truth. Every body-frame
+    quantity is a pure function of (the live registry pose, the body's
+    document) — never stored alongside it, never fed back into it.
+  • One reference body per entity at a time. In flight it is the dominant
+    body (argmax share, continuous — no hysteresis, no capture event);
+    parked / on foot it is the single bodyId. No blended coordinates, no
+    dual references.
+  • The body-fixed stored poses (the anchor, the walker) round-trip
+    losslessly with the system frame — park ⇄ launch, compose ⇄ decompose.
+  • The lat/lon pole = normalize(spin), fallback local +Y; the reference
+    meridian is the equatorial direction nearest local +X; positive
+    longitude runs east (counterclockwise from the pole). Lat/lon is
+    DISPLAY ONLY — no physics reads it.
+  • The hex cell index is the discrete identity of a surface point;
+    lat/lon is a derived, pole-degenerate encoding. When they disagree at
+    the pole, the cell wins.
+  • The engine frame is the J2000 ecliptic (+Y north, +X vernal equinox,
+    +Z = −Y_ecl) — the sky, the element tables and the star catalog all
+    key on it. Never rotate it, never add a sky-rotation knob.
+  • The ephemeris is a SEED and a READOUT, not a runtime oracle: the live
+    registry is the truth after t = 0; (r, λ, β) and the osculating
+    elements are pure transforms of it.
+  • The frame's origin is the central star's live position (isStatic by
+    default — heliocentric). The barycenter is derivable on demand; it is
+    never the frame's identity.
+
+
+--------------------------------------------------------------------------------
+ 8. OPEN QUESTIONS (all display-level — none block the model)
+--------------------------------------------------------------------------------
+  • Real-chart fidelity for Sol Real: per-body (pole azimuth, lon0) so a
+    readout matches the IAU charts — a small optional `frame` document
+    field. Only worth doing if the navigation readouts ever ship.
+  • Where the free-space readout lives: (r, λ, β) and the osculating
+    elements on the MotionHud (a "nav" section), in which sessions —
+    adrift and in-craft certainly; on foot probably not.
+  • A barycentric toggle for the system readout. Probably never (it adds
+    motion without information) — listed for completeness.
+  • An in-app "where is X really" cross-check against the document's
+    stored elements (run_s0.sh as a panel). Probably later.
+
+
+--------------------------------------------------------------------------------
+ 9. FILE MAP
+--------------------------------------------------------------------------------
+  docs/positioning.txt    THIS FILE — the canonical positioning-model
+                          reference
+  docs/movement.txt       the canonical movement-model reference (the
+                          dominance share this doc keys on lives there)
+  docs/landing.txt        the on-foot deep-dive (the body-fixed walker pose)
+  docs/design.txt         the engine (architecture invariants)
+  src/core/physics.js     the registry — system-frame truth
+  src/core/kepler.js      the frame definition + ephemeris maps (both ways)
+  src/core/motion.js      dominantBody, altitudeOf, latLonOf, the
+                          park ⇄ launch round-trip
+  src/core/surface.js     the walker's body-fixed pose
+  src/core/worldSchema.js the document: spin, the anchor, stored elements
+  src/components/Planet.jsx  live pose publication + spin integration
+  scripts/gen-sol-real.mjs   the J2000/Horizons ephemeris seed
+  scripts/run_s0.sh          the engine-vs-ephemeris score

@@ -787,6 +787,9 @@
  18. FILE MAP
 --------------------------------------------------------------------------------
   docs/movement.txt     THIS FILE — the canonical movement-model reference
+  docs/positioning.txt  the canonical positioning-model reference (the
+                        frames this model moves through — §5's dominance
+                        share is its continuous input)
   docs/flight.txt       the P1 design doc (superseded for reference; kept
                         as the original design rationale, with a pointer)
   docs/landing.txt      on-foot deep-dive: the weld, the camera contract,
