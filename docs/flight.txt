@@ -2,7 +2,13 @@
   ExPlanet — The Movement Model
   Design behind "you are an astronaut; the world's vehicles move themselves"
 ================================================================================
-  Oct 2026 · the movement-model master doc. Companions: docs/landing.txt
+  The COMPLETE reference for the movement model (free space → body-relative
+  → on-planet, every number, the stub rules, the fixtures, the test map)
+  is now docs/movement.txt. This file remains the P1 design doc — the
+  original rationale, kept as-is.
+
+  Oct 2026 · the movement-model design doc. Companions: docs/movement.txt
+  (canonical reference) and docs/landing.txt
   (walking, the on-foot mover) and docs/design.txt (the engine). Code:
   src/core/motion.js (framework-free movers + runtime), src/core/craftTypes.js
   (mover tuning), src/state/store.js (session state machine),
