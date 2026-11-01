@@ -307,23 +307,32 @@
     src/core/starter.js      demo system; writes public/world.json (pure)
     src/core/physics.js      N-body step + live body registry (pure logic)
     src/core/surface.js      surface queries + kinematic walker (pure math)
+    src/core/motion.js       craft/astro movers + live craft runtime (pure)
+    src/core/craftTypes.js   craft kinds, mover tuning, EVA constants
     src/core/terrain.js      terrain registry + canvas textures (DOM-light)
     src/core/fileIO.js       File System Access + IndexedDB + fallbacks
-    src/state/store.js       zustand: document + editor state
+    src/state/store.js       zustand: document + editor + player session
     src/components/Scene.jsx    canvas, cannon world, camera follow
     src/components/Planet.jsx   body + meshes + painting per planet
-    src/components/Walker.jsx   surface mode: walk loop + first-person camera
-    src/components/ui/*.jsx     top bar, list, inspector, palette, walkhud, dialog
+    src/components/Walker.jsx   on-foot: walk loop + first-person camera
+    src/components/Crafts.jsx   craft rendering + the craft step loop
+    src/components/CraftCockpit.jsx  piloting: cockpit/chase + flight input
+    src/components/EvaCam.jsx   adrift (EVA): first person, real gravity
+    src/components/ui/*.jsx     top bar, list, inspector, palette,
+                                 motion hud, dialog
     scripts/*                  sample-world generator + headless tests
 
 --------------------------------------------------------------------------------
 12. SURFACE MODE — LANDING AND WALKING ON A PLANET
 --------------------------------------------------------------------------------
-  (Full design rationale expanded in docs/landing.txt.)
+  (Full design rationale expanded in docs/landing.txt; the walker is the
+  on-foot session of the movement model — docs/flight.txt.)
 
-  Goal: click a planet and descend onto it — fall to the ground, then walk
-  around bound to the surface (follow contours, step up ledges, jump), and
-  lift off again.
+  Goal: the astronaut is on foot by default — on boot at the first
+  landable body, or wherever a craft lands / an EVA fall ends (altitude →
+  0 decides; there are no land buttons). Walk bound to the surface (follow
+  contours, step up ledges, jump); the free camera (the old OrbitControls
+  mode) is a toggle, off by default.
 
   Why a kinematic walker, not a cannon body
   ------------------------------------------

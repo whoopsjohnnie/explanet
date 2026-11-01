@@ -1,0 +1,376 @@
+================================================================================
+  ExPlanet — The Movement Model
+  Design behind "you are an astronaut; the world's vehicles move themselves"
+================================================================================
+  Oct 2026 · the movement-model master doc. Companions: docs/landing.txt
+  (walking, the on-foot mover) and docs/design.txt (the engine). Code:
+  src/core/motion.js (framework-free movers + runtime), src/core/craftTypes.js
+  (mover tuning), src/state/store.js (session state machine),
+  src/components/Crafts.jsx (render + step loop), CraftCockpit.jsx,
+  EvaCam.jsx, ui/MotionHud.jsx. Tests: scripts/test-motion.mjs (unit) and
+  the flight chains in scripts/test-headless.mjs (rendered, on the
+  'testball' fixture).
+
+
+--------------------------------------------------------------------------------
+ 1. THE ENTITY MODEL
+--------------------------------------------------------------------------------
+  You are always the ASTRONAUT. The astronaut is in exactly one session:
+
+    on foot    walking a planet's surface (the walker, core/surface.js —
+               byte-identical to before this work; it is the 'walk' mover)
+    in a craft piloting a vehicle (the craft's mover steps its live state)
+    adrift     EVA in open space — real gravity pulls on the astronaut too,
+               and the jetpack always outweighs it
+    free cam   the old OrbitControls editor camera — now a TOGGLE, off by
+               default (TopBar 🎥, or Esc from any motion mode)
+
+  The store (state/store.js) holds ONLY the session identity:
+  `player: {kind, bodyId?/craftId?}`. It never holds a pose. Live poses live
+  in mutable module state, exactly like the physics registry:
+
+    craftRuntime  (motion.js)  craftId → {doc, world, size, state}
+    eva           (motion.js)  the adrift astronaut's {pos, vel, yaw, pitch}
+    walker        (surface.js) the on-foot pose, planet-local
+
+  Nothing 60 Hz routes through zustand. A session change (board / launch /
+  eject / land / Esc) is a store `set()` of `player`; the frame loops keep
+  running against the mutable state.
+
+  Crafts are WORLD OBJECTS. They live in `world.crafts[]` — persisted in
+  the world file exactly like bodies (normalizeCrafts heals, serializeWorld
+  passes them through, captureCrafts() snapshots live poses into the doc on
+  save). Each craft carries its own position, momentum and a MOVER picked
+  by `kind` — the movement model belongs to the craft, not to the player.
+
+
+--------------------------------------------------------------------------------
+ 2. CRAFTS: THE DOCUMENT
+--------------------------------------------------------------------------------
+  {
+    "id": "c-ab12cd34",
+    "name": "Shuttle",
+    "kind": "shuttle",            // mover identity (craftTypes.js)
+    "realism": "arcade",          // "arcade" | "real" (per craft, P1)
+    "pose": { ... }               // one of the two below
+  }
+
+  Two pose forms — the parked one persists, the flying one is a snapshot:
+
+    anchor: { bodyId, dir: [x,y,z], r }
+      PARKED on a surface. dir is in the body-LOCAL frame, so a parked craft
+      rides the body's spin and orbit for free (it composes from the body's
+      registry entry — the same quantized float32 stream the planet mesh
+      uses). r = body radius + terrain at that dir; null on a fresh file,
+      resolved against the terrain on first sync (a null r must NEVER read
+      as 0 — Number(null) === 0 would launch the craft from the center).
+
+    space: { pos, vel, yaw, pitch }
+      IN FLIGHT. The live state at save time (captureCraftPose). vel is
+      ABSOLUTE for real crafts, RELATIVE to the dominant body for arcade
+      ones (see §4).
+
+  Crafting a new craft (TopBar 🚀 Add Craft): a shuttle parked nose-up
+  (dir [0, 0.7, 0.7]) on the selected body, or the first landable one.
+
+
+--------------------------------------------------------------------------------
+ 3. THE MOVER CONTRACT (plugins)
+--------------------------------------------------------------------------------
+  A mover is a plugin over a mutable state object:
+
+    { enter?(state), step(state, input, dt), exit?(state) }
+
+  `input` is the shared `flightInput` while the astronaut pilots the craft,
+  and null when it's unattended (parked crafts ride analytically; flying
+  ones coast — arcade eases to a hover, real keeps orbiting).
+
+  Movers in P1:
+    • spaceflight (kind 'shuttle', stepCraft) — flies in space; may
+      LAND/PARK when its altitude over the dominant body reaches 0; never
+      drives on a surface.
+    • eva (the adrift astronaut, stepEva) — always Newtonian.
+    • walk (core/surface.js, byte-identical) — the on-foot mover.
+  P2: drive (rover) — the same contract; a rover drives + parks, the shuttle
+  lands + parks. The craftRuntime registry is where new movers plug in.
+
+  Tuning lives in craftTypes.js, per kind:
+    shuttle.sizeTiles   0.22          world size = 0.22 × host body's hex
+                                      tile radius (a game object, not a
+                                      real vehicle)
+    shuttle.arcade      speedTiles 24 (24 tiles/s — tile-anchored, so the
+                        ease 0.25     same speed feels right on any world),
+                        yaw/pitch rate, launchTiles 2, boost ×2
+    shuttle.real        thrust 6 m/s² (true-scale worlds) / 0.4 u/s² (game
+                        scale), launch kick, boost ×3, yaw/pitch rate
+    EVA_TUNING          thrust 1.8 m/s² / 0.12 u/s², boost ×3, hoverRatio
+                        1.6 (jetpack = max(thrust, 1.6 × local gravity) —
+                        it can hover on EVERY body), yaw/pitch rate
+
+  Attitude is two Euler angles: yaw ψ about world +Y (ecliptic north), then
+  pitch θ about the craft's right axis:
+    forward = (sinψ·cosθ, sinθ, cosψ·cosθ)
+    up      = (−sinψ·sinθ, cosθ, −cosψ·sinθ)
+    right   = (cosψ, 0, −sinψ)
+  Craft meshes are modeled nose +Z; the components build the basis matrix
+  (right, up, forward) and set the quaternion each frame.
+
+
+--------------------------------------------------------------------------------
+ 4. REALISM IS THE SCALE KNOB
+--------------------------------------------------------------------------------
+  Every craft carries `realism` — and it doubles as the scale escape hatch,
+  because the worlds come in two flavors:
+
+    GAME-SCALE (no world.scale)     masses are toy-calibrated (starter
+                                    Earth M ≈ 0.018 u³); "physical" gravity
+                                    in these units is meaningless to a
+                                    human.
+    TRUE-SCALE (world.scale > 0)    the document is calibrated so the
+                                    softened law reproduces REAL gravity
+                                    in engine units (Sol Real: 1 u ≈ 35 km,
+                                    Earth g ≈ 9.8 m/s² at the surface).
+
+  • REAL — Newtonian, plug-and-play at any scale. The craft integrates the
+    EXACT softened gravity law core/physics.js applies to the bodies
+    (a = G·M/(d² + ε²), ε² = 4 — nothing re-derived), plus thrust along
+    its attitude. Velocities are ABSOLUTE: the craft falls into a body's
+    influence, can orbit it, can slingshot around it, exactly like a body
+    would. On true-scale worlds the thrusts are in m/s² ÷ scale.
+    On game-scale worlds the toy gravity is simply what it is.
+  • ARCADE — non-Newtonian plug-and-play. No gravity at all. The
+    body-RELATIVE velocity eases onto the input target
+    (v += (v_target − v)·(1 − e^(−dt/ease))) at tile-anchored speed —
+    24 tiles/s reads as the same pace on a 0.4 u moon and a 21 u giant.
+    The world position rides the dominant body's velocity, so "held
+    still" means "held over the ground", and a parked craft never
+    drifts away from its pad.
+
+  The EVA astronaut is ALWAYS real-mode: gravity affects the astronaut
+  too (that's what makes a fall end on a surface), and the jetpack is
+  tuned to always outweigh it (§3 hoverRatio) — you can hover, you can
+  also just fall.
+
+  This is why realism is per-craft and not a world toggle: on the same
+  true-scale world you can fly a Newtonian shuttle that actually orbits,
+  or an arcade one that behaves like a game on top of it.
+
+
+--------------------------------------------------------------------------------
+ 5. THE DOMINANT BODY — A SOFT, CONTINUOUS METRIC
+--------------------------------------------------------------------------------
+  There is NO hard trigger like "you are now relative to the Moon".
+  dominantBody(p, G) returns the body with the largest softened pull at p,
+  plus its SHARE of the total pull (0..1):
+
+    share = pull(best) / Σ pull(all bodies)
+
+  The HUD (MotionHud) fades the body-relative readout in as the share
+  grows — falling into a body's influence, the altitude / lat-lon /
+  relative-speed lines become prominent; far out in deep space they fade
+  to the raw speed. The landing check, the park anchor, the launch frame
+  and the EVA "where do I land" all key off the same dominant body.
+
+  Body-relative quantities:
+    altitude  = distance − (R + terrain hex under the line of sight)
+                (terrain-corrected when elements are in hand, throttled
+                to every 6th frame in the readout)
+    relSpeed  = |craft vel − dominant body vel|
+                (for arcade crafts vel is already relative — relSpeed is
+                just |vel| there)
+    lat/lon   = body-LOCAL dir against the spin axis (latLonOf) — display
+                only, no physics reads it
+
+
+--------------------------------------------------------------------------------
+ 6. TRANSITIONS — NO BUTTONS, THE PHYSICS DECIDES
+--------------------------------------------------------------------------------
+  The old 🚀 "land on surface" buttons are gone. Sessions change when
+  something happens to the astronaut:
+
+    boot          →  on foot at the first landable body that carries a
+                     parked craft (else first landable, else free cam) —
+                     defaultPlayer(world). The astronaut starts on the
+                     ground, next to the shuttle. STUBS NEVER HOST THE
+                     WALKER: a DB skeleton's giants carry no atoms
+                     (elements: null) and makeSurface cannot build over
+                     one, so defaultPlayer only accepts an ALREADY-
+                     HYDRATED body — file worlds are always complete, so
+                     this changes nothing there; an all-stub world boots
+                     free cam.
+    board         →  from free cam: any craft (P1 rule). From on foot: a
+                     craft parked on the body you're standing on. From
+                     adrift (E key): the nearest craft within a generous
+                     ten host-body tiles (boardNearestCraft).
+    launch        →  a parked craft lifts off: position on its anchor
+                     point, velocity = body vel + spin surface velocity
+                     (ω × r) + a radial kick; attitude facing radially
+                     OUT so W thrusts away from the body (arcade: the
+                     relative kick is launchTiles × tile radius). The doc
+                     pose switches to `space` from here.
+    land/park     →  the craft's altitude over its dominant body reaches
+                     0 (flat check: d − R ≤ 0.002·R — cheap, no terrain) →
+                     parkCraft rewrites the doc pose to `anchor` (dir
+                     body-local, r terrain-resolved) and the live state
+                     to mode 'park'. Parking PERSISTS into the document —
+                     a saved world's shuttles are where you left them.
+    eject (E)     →  from a PARKED craft: on foot at the anchor point
+                     (pendingFoot handoff → the walker spawns there).
+                     From a FLYING craft: adrift, inheriting the craft's
+                     velocity (arcade rel-vel converted to absolute via
+                     the dominant body's vel).
+    EVA fall ends →  altitude over the dominant body ≤ 0.005·R → stepEva
+                     returns a land event, clears eva.state, and the store
+                     flips to ON FOOT at the landing dir (the landing →
+                     walk transition — this is how walking is triggered).
+    Esc           →  free cam, from any motion mode.
+
+  The landings are deliberately DIFFERENT thresholds: the craft parks at
+  0.2 % of the radius (it touches down), the astronaut's fall ends at
+  0.5 % (the jetpack can still fire to save him a hair above ground).
+
+  Hydration follows the usual rule: a launch off a STUB body hydrates it
+  first (the terrain is needed for the pad's r and the spin frame);
+  nothing here is ever camera-driven. One session can nonetheless START on
+  a stub — an EVA fall ends on the registry radius, which a stub HAS — so
+  the Walker on a stub kicks the hydration once and waits for the atoms;
+  if they never arrive (offline world) it gives up to the free camera after
+  ~5 s of frames. makeSurface itself returns null for a stub rather than
+  dying on `elements.length`.
+
+
+--------------------------------------------------------------------------------
+ 7. CAMERAS
+--------------------------------------------------------------------------------
+  • in a craft   CraftCockpit: FIRST-PERSON in the cockpit by default
+                   (camera at the craft's nose); C toggles CHASE (behind
+                   and above, looking at the ship). The dynamic near plane
+                   drops to the craft size so the cockpit isn't clipped.
+  • adrift       EvaCam: first person — the camera IS the astronaut
+                   (no avatar mesh), near plane down to 1e-5.
+  • on foot      the walker's eye camera (landing.txt).
+  • free cam     the editor: OrbitControls + CameraFollow are mounted ONLY
+                   in free-cam mode. In any motion mode the controls are
+                   disabled (the camera is owned by the session).
+
+  The body's sky stays mounted under all of it: WalkSky (walk) self-fades
+  by the sun-elevation curve; in flight the StarField backdrop is always
+  there.
+
+
+--------------------------------------------------------------------------------
+ 8. INPUT
+--------------------------------------------------------------------------------
+  The motion modes swallow the editor's tool keys (App.jsx gates them on
+  player.kind) so W/V/B/R/F can't repaint the world mid-flight.
+
+    COCKPIT (in a craft)
+      W / S        thrust forward / back (real: S also fights your speed;
+                   Space = retro-burn ×2)
+      A / D        strafe left / right
+      R / F        up / down
+      Shift        boost (×2 arcade, ×3 real)
+      arrows       yaw / pitch
+      hold+drag    aim (steers the attitude)
+      C            cockpit ⇄ chase
+      E            eject (parked → on foot; flying → adrift)
+      Esc          free cam
+
+    EVA (adrift)
+      W A S D      thrust along the view
+      R / F        up / down
+      Shift        boost
+      hold+drag    look
+      E            board the nearest craft (within reach)
+      Esc          free cam
+
+    ON FOOT
+      W A S D / arrows, Shift sprint, Space jump, hold+drag look —
+      exactly as in landing.txt. E boards a craft parked here, Esc frees
+      the camera.
+
+    HUD (MotionHud, polling at 120 ms)
+      on foot   altitude, speed, lat/lon, pressure (the old WalkHud)
+      craft     name + realism, PARK/Flying, dominant body + dominance
+                share, terrain altitude, body-relative speed, lat/lon
+      adrift    speed, dominant body, altitude above it
+
+
+--------------------------------------------------------------------------------
+ 9. SCALE, HONESTY AND THE TESTBED
+--------------------------------------------------------------------------------
+  Game-scale worlds are TOYS: the starter Sun's pull at Earth's surface is
+  ~1000× Earth's (M☉ = 6133 vs M⊕ = 0.018 at 282 u). In that calibration an
+  EVA fall can never end on a planet — the astronaut is always dominated by
+  the star. True-scale worlds have the real ratios, but a real fall there
+  takes minutes of sim frames. So the headless flight regressions run on a
+  SYNTHETIC FIXTURE, built in code by the harness (makeTestballWorld,
+  spec 'testball') — no world-data file is committed for it:
+
+    • NO star (that's the whole point: a planet can dominate)
+    • one static, spinless freq-12 earthlike body (seed 7, deterministic)
+    • tuned mass ≈ 120 (density = m / (4/3·π·R³)): g ≈ 40 u/s²,
+      v_esc ≈ 30 u/s ≈ 2× arcade cruise — falls finish in 1–3 s of frames
+    • one arcade shuttle parked on it, c-testball-shuttle
+
+  The pinned chains (scripts/test-headless.mjs):
+    board → launch → W climb → S brake → PARK (altitude-driven, no button)
+            → eject → ON FOOT, grounded
+    board → launch → eject mid-flight → ADRIFT → no input → the fall ENDS
+            on the surface → ON FOOT, grounded
+
+  Two bugs this work surfaced, both pinned by the chains above:
+    • dist3 indexed arrays (a[0]) while the landing checks pass {x,y,z}
+      OBJECTS — d was NaN, and NaN ≤ threshold is always false, so every
+      landing was silently disabled. (core/motion.js carries a comment
+      where the fix went in.)
+    • a parked craft's anchor r: null (fresh file) read as Number(null) ===
+      0 — finite — so the craft launched from the body's CENTER and
+      immediately re-parked. r must stay null until sync resolves it.
+
+
+--------------------------------------------------------------------------------
+ 10. PHASING
+--------------------------------------------------------------------------------
+  P1 (this)   spacecraft (arcade + real) + EVA + on-foot + free cam.
+  P2          the ROVER: a 'drive' mover on the same contract — it drives
+              + parks (it never flies), ground-locked to the surface like
+              the walker but a vehicle (speed, handling per craftTypes).
+  P3          crafts in the WORLD DATABASE: a `crafts` table (bodies stay
+              bodies) so DB worlds carry vehicles; the skeleton streams
+              them like bodies do. Until then DB worlds simply have no
+              crafts — the document field is optional, and normalizeWorld
+              heals files that lack it.
+  Later       more kinds on the same contract: aircraft (needs an
+              atmosphere), bouncy-ball, … a mover is {enter?, step, exit?}
+              and the world already knows how to persist, render and
+              pilot whatever it steps.
+
+
+--------------------------------------------------------------------------------
+ 11. INVARIANTS (do not break)
+--------------------------------------------------------------------------------
+  • Live poses in mutable module state (craftRuntime / eva / walker),
+    NEVER 60 Hz through zustand. The store holds the session identity.
+  • No cannon bodies for the astronaut or any craft — walkers and crafts
+    are kinematic/test-particle (stepGravity skips them; nothing collides
+    with them). Adding a rigid body would double the pose stream.
+  • The gravity the movers feel is the EXACT law physics.js applies
+    (ε² = 4, from constants.json). If orbitalSpeed() ever changes,
+    gravityAt/dominantBody must change with it.
+  • core/motion.js is FRAMEWORK-FREE (no three, no DOM at module load) —
+    that is what lets scripts/test-motion.mjs run it under node.
+  • Parked state PERSISTS into the document pose (captureCraftPose on
+    save; parkCraft on landing). Never store a live `space` pose in the
+    doc except as a save-time snapshot.
+  • Hydration is intent-driven (launch off a stub hydrates first) — never
+    camera-driven, never at boot.
+  • A STUB never hosts the walker: defaultPlayer skips bodies whose
+    elements are still null, and makeSurface returns null for them
+    (callers own hydration; the Walker kicks it and waits, falling back
+    to the free camera if the atoms never arrive). Booting a stub-first
+    world must not crash on `planet.elements is null` — pinned by the
+    harness 'stubworld' fixture.
+  • normalizeCrafts heals corrupt craft docs leniently (the loading
+    contract); serializeWorld strips nothing craft-related — crafts are
+    ordinary document data now.

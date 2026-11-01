@@ -3,23 +3,27 @@
   Design behind "descend onto a planet and walk around on it"
 ================================================================================
   Oct 2026 · deep-dive companion to docs/design.txt §12 (short version) and
-  README (usage). Code: src/core/surface.js (pure math),
-  src/components/Walker.jsx (frame loop), src/components/ui/WalkHud.jsx.
+  README (usage). The walking mover is one of the movement model's sessions
+  (docs/flight.txt). Code: src/core/surface.js (pure math),
+  src/components/Walker.jsx (frame loop), src/components/ui/MotionHud.jsx.
 
 
 --------------------------------------------------------------------------------
  1. WHAT IT DOES
 --------------------------------------------------------------------------------
-  Press 🚀 (PlanetList row) or "Land on surface" (Inspector) on any non-star
-  world. You drop — in FIRST PERSON, from the astronaut's eyes — above the
-  face of the planet currently turned toward you and FALL onto the terrain
-  and land. From there you walk the surface with WASD (view-relative),
-  sprint with Shift, jump with Space — always bound to the hex terrain:
-  contour-following, stepping up low ledges, blocked (and sliding) by tall
-  tile walls, falling off cliffs under local gravity. Hold & drag to look
-  around. Esc lifts off and hands the camera back to the editor. The walk
-  keeps working while the planet orbits and spins, and even while the global
-  sim is paused.
+  You are an astronaut, and walking is your DEFAULT session (design:
+  docs/flight.txt). At boot you are on foot at the first landable body
+  (next to its parked shuttle, if it has one); a craft landing, an eject
+  from a parked craft, or an EVA fall that ends on a surface puts you on
+  foot there — there are no "land" buttons, the altitude decides. (The old
+  🚀 buttons in PlanetList/Inspector are gone; the free camera is the 🎥
+  toggle, Esc from any session.) Once on the ground you walk with WASD
+  (view-relative), sprint with Shift, jump with Space — always bound to
+  the hex terrain: contour-following, stepping up low ledges, blocked (and
+  sliding) by tall tile walls, falling off cliffs under local gravity.
+  Hold & drag to look around. Esc hands the camera back to the free cam.
+  The walk keeps working while the planet orbits and spins, and even while
+  the global sim is paused.
 
 
 --------------------------------------------------------------------------------
@@ -75,8 +79,9 @@
   * It stays testable: the entire model is pure math that runs in node.
 
   This follows the project's architectural rule: live 60 Hz physics lives
-  OUTSIDE React state (store.js holds only the walkMode session identity
-  { planetId }; the walker object itself is module-mutable state).
+  OUTSIDE React state (store.js holds only the player session identity —
+  { kind: 'foot', bodyId }; the walker object itself is module-mutable
+  state).
 
 
 --------------------------------------------------------------------------------
@@ -206,12 +211,12 @@
     pointer (capture); pixel deltas accumulate and are consumed once per
     frame by the view rotation — frame-rate independent, works with mouse
     and touch. Right-drag looks too (contextmenu is suppressed).
-  * App.jsx's global shortcut handler short-circuits while walkMode is set:
-    Space is swallowed (a previously focused button must not be re-clicked
-    by the jump key), Esc exits surface mode, Ctrl/Cmd+S still saves.
-  * The palette (brushes) is hidden while walking; a WalkHud strip shows the
-    world name, grounded/falling state, live altitude & vertical speed,
-    the key legend, and a Lift off button.
+  * App.jsx's global shortcut handler short-circuits while the player is in
+    a motion session (foot/craft/eva — see flight.txt): the editor's tool
+    keys can't repaint the world mid-flight, and Ctrl/Cmd+S still saves.
+  * The palette (brushes) is hidden while in any motion session; the
+    MotionHud strip (foot variant) shows the world name, grounded/falling
+    state, live altitude & vertical speed, and the key legend.
   * Live HUD numbers come from a tiny mutable telemetry object
     (surface.js walkReadout) that the frame loop writes at 60 Hz and the
     HUD POLLS at ~8 Hz — 60 Hz data never becomes React state.
@@ -219,10 +224,11 @@
     body QUATERNION, which is what makes the local↔world composition (and
     therefore walking on a spinning planet) possible.
   * Session lifecycle: store.landOnPlanet refuses star presets ("you'd
-    vaporize"); walkMode is cleared when a new world loads or is created,
-    and when the walked planet is deleted; the frame loop self-exits if the
-    planet's registry entry vanishes. Landing on a different planet remounts
-    the Walker via key={planetId}.
+    vaporize"); the player session is reset to a fresh default (on foot at
+    the first landable body) when a new world loads or is created, and the
+    walked planet's deletion flips the session to free cam; the frame loop
+    self-exits (setFreeCam) if the planet's registry entry vanishes. A
+    different landing body remounts the Walker via key={bodyId}.
   * The surface query is memoized on the planet document identity — the
     same copy-on-write contract as the geometry rebuild memo: edit terrain
     while walking (via a second control, e.g. keyboard during a pause) and

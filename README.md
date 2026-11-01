@@ -46,12 +46,17 @@ template next to it is what gets committed.
 - **N-body gravity** — the cannon-es world runs with zero global gravity;
   every frame all bodies attract pairwise with
   `F = G·m₁·m₂ / (d² + ε²)`. Planets orbit, moons wobble, collisions bounce.
-- **Land on a planet** — press 🚀 (PlanetList / Inspector) to descend onto any
-  non-star world: you fall onto the surface and can then walk it —
-  following the hex contours, stepping up ledges, blocked (and sliding)
-  along cliffs, jumping, sprinting. All of it in first person: the camera
-  sits at the astronaut's eyes through the fall, the walk and every jump,
-  riding the planet's spin and orbit. Hold & drag to look around.
+- **You are the astronaut** — on foot by default (walking is your default
+  session), in a craft, or adrift in space. There are no "land" buttons: a
+  craft **parks when its altitude reaches zero**, an eject from a parked
+  craft puts you on foot at the pad, and an EVA fall **ends on the surface**
+  — landing triggers walking (design: `docs/flight.txt`).
+- **Fly a shuttle** — board a parked craft (🛸 on its row in the body list,
+  or its Inspector panel), launch it off the pad, and fly: `arcade` crafts
+  are plug-and-play (no gravity, tile-anchored speed, held-still = held
+  over the ground), `real` crafts are Newtonian (the same softened gravity
+  the planets feel — they orbit and slingshot). Cockpit first person, `C`
+  for chase, `E` ejects, `Esc` the free camera.
 - **world.json import/export** — Open, Save (Ctrl+S) and drag-&-drop. Bodies
   whose atoms still live only in the database are streamed in before a save,
   so exported files are always complete (database-internal fields never leak
@@ -80,19 +85,66 @@ template next to it is what gets committed.
 | `L` | Toggle labels |
 | `Ctrl/Cmd + S` | Save world.json |
 
-### Surface mode (landed on a planet)
+### On foot (walking)
 
-Press 🚀 in the body list (or **Land on surface** in the Inspector) to drop
-onto a planet. While landed:
+Walking is your **default session** — you boot on foot at the first
+landable body, and you get there again by landing: a shuttle touching down,
+an eject from a parked craft, or an EVA fall that ends on the surface
+(there are no "land" buttons — the altitude decides). While on foot:
 
 | Key | Action |
 | --- | --- |
 | `W A S D` / arrows | Walk along the surface (camera-relative) |
 | `Shift` | Sprint |
 | `Space` | Jump |
+| `E` | Board a craft parked on this body |
 | Left-drag / scroll | Look around / zoom (camera follows the walker) |
-| `Esc` | Lift off — back to the editor camera |
+| `Esc` | Free camera — back to the editor orbit |
 | `Ctrl/Cmd + S` | Save (still works while walking) |
+
+### In a craft (flight)
+
+Board a parked craft (🛸 on its row, or the Inspector panel), then **Launch
+it**. The craft flies in its own realism mode: **arcade** is non-Newtonian
+plug-and-play (no gravity; body-relative velocity eases to a tile-anchored
+cruise; "held still" means held over the ground), **real** is Newtonian —
+the exact softened gravity the planets feel, with physical thrust, so it
+falls into a body's influence, orbits and slingshots. When your altitude
+over the body under you reaches zero the craft **parks itself** (and the
+parked pose is saved into the world file).
+
+| Key | Action |
+| --- | --- |
+| `W` / `S` | Thrust forward / back |
+| `A` / `D` | Strafe left / right |
+| `R` / `F` | Up / down |
+| `Shift` | Boost |
+| `Space` | Retro-burn |
+| Arrows | Yaw / pitch |
+| Hold + drag | Aim (steer the attitude) |
+| `C` | Cockpit (first person) ⇄ chase camera |
+| `E` | Eject — parked → on foot at the pad; flying → adrift (EVA) |
+| `Esc` | Free camera |
+
+The HUD shows the dominant body and how much of the total gravity it is
+(a soft share, no hard "you are now relative to the Moon" trigger),
+terrain altitude, body-relative speed and lat/lon.
+
+### Adrift (EVA)
+
+Ejecting from a **flying** craft leaves you adrift — the camera *is* the
+astronaut, and **real gravity pulls on you too** (the jetpack always
+outweighs it, so you can hover — or just let go and fall; a fall that ends
+on a surface puts you on foot there).
+
+| Key | Action |
+| --- | --- |
+| `W A S D` | Thrust along the view |
+| `R` / `F` | Up / down |
+| `Shift` | Boost |
+| Hold + drag | Look |
+| `E` | Board the nearest craft in reach |
+| `Esc` | Free camera |
 
 The walker scales with the world: on ordinary (game-scale) worlds the
 astronaut is one hex-tile tall, so a 0.4 u moon and a 21 u giant feel
@@ -152,6 +204,22 @@ air read as "has air" from orbit. The real-world catalog lives in
         { "t": "water", "h": 0, "c": "#1f6fc0" }
       ]
     }
+  ],
+  "crafts": [                           // optional — the astronaut's vehicles
+    {                                   // (movement model: docs/flight.txt)
+      "id": "c-ab12cd34",
+      "name": "Shuttle",
+      "kind": "shuttle",
+      "realism": "arcade",              // "arcade" = plug-and-play,
+                                        // "real" = Newtonian
+      "pose": {                         // parked on a surface (persisted):
+        "anchor": {                     //   dir in the body-LOCAL frame
+          "bodyId": "p-ab12cd34",       //   (rides spin/orbit for free)
+          "dir": [0, 0.6, 0.8],
+          "r": 21.4                     //   r = radius + terrain at that dir
+        }                               // (or, in flight: "space":
+      }                                 //   { pos, vel, yaw, pitch } — the
+    }                                   //   live state, captured on save)
   ]
 }
 ```
@@ -225,7 +293,9 @@ src/
     starter.js          demo system (also writes public/world.json)
     physics.js          N-body gravity step + live body registry
     kepler.js           scripted-orbit propagation + Cartesian state → elements fit
-    surface.js          surface queries + kinematic walker (land & walk mode)
+    surface.js          surface queries + kinematic walker (the on-foot mover)
+    motion.js           craft/astro movers + live craft runtime (flight.txt)
+    craftTypes.js       craft kinds, mover tuning, EVA constants
     lod.js              render LOD chains + sampled preview grids
     terrain.js          terrain registry + procedural canvas textures
     db.js               world-database client (skeleton + streamed atoms)
@@ -236,9 +306,13 @@ src/
     Scene.jsx           R3F canvas, cannon <Physics>, camera follow
     Planet.jsx          one planet = sphere body + per-terrain meshes + painting
     AtmosphereGlow.jsx  orbit-view atmosphere: additive limb shell on the dayside
-    Walker.jsx          surface mode: walk integration, first-person eye camera
+    Walker.jsx          on foot: walk integration, first-person eye camera
+    Crafts.jsx          craft rendering + the craft step loop
+    CraftCockpit.jsx    piloting: cockpit/chase camera + flight input
+    EvaCam.jsx          adrift (EVA): first person, real gravity
     WalkSky.jsx         walk-mode sky from the atmosphere descriptor
-    ui/                 TopBar, PlanetList, Inspector, Palette, WalkHud, AddPlanetDialog
+    ui/                 TopBar, PlanetList, Inspector, Palette, MotionHud,
+                        AddPlanetDialog
 server/
   db.mjs                pg pool + skeleton/body queries + LRU + preview sampling
   api.mjs               /api endpoints (shared by the Vite dev middleware + serve)
@@ -253,6 +327,10 @@ scripts/
   test-hexsphere.mjs    grid correctness (12 pentagons, symmetry, equal areas)
   test-geometry.mjs     generators + geometry + schema/stub round-trips
   test-surface.mjs      walker math (cell lookup, landing, walking, walls, jumps)
+  test-starfield.mjs    real-sky geometry (catalog, projection, dust band)
+  test-motion.mjs       craft/astro mover math (basis, gravity, park/launch,
+                        EVA fall, dominance)
+  harness/              headless render harness (npm run test:headless)
 ```
 
 ## Tests
@@ -264,10 +342,16 @@ npm test
 verifies: cell counts (`10n²+2`), exactly 12 pentagons, symmetric adjacency,
 near-equal cell areas (total = 4π, spread < 1%), all generators produce
 valid elements, geometry batches are finite and fully pickable, corrupt
-world files heal, and the surface walker's math (Voronoi under-foot lookup
+world files heal, the surface walker's math (Voronoi under-foot lookup
 matches brute force, falls terminate on the surface, walking never dips
 through terrain, tall tiles block and slide, jumps arc to the target height,
-and the integrator is deterministic + fuzz-safe).
+and the integrator is deterministic + fuzz-safe), and the craft/astro
+movers (attitude basis, the softened gravity field, arcade easing vs real
+Newtonian steps, altitude-driven parking, launch/eject handoffs, the EVA
+fall ending on foot, the dominance share). `npm run test:headless` runs
+the same app in memory and pins the full flight chains on a synthetic
+starless world — launch → climb → brake → park → on foot, and eject
+mid-flight → adrift → the fall ends on foot.
 
 `scripts/run_s0.sh` scores `core/kepler.js`'s inverse map — the Cartesian
 state → orbital-elements fit — on every scripted body of the Sol Real
