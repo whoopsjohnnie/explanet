@@ -129,10 +129,14 @@ export default function Scene() {
       <CameraFollow />
       {player?.kind === 'craft' && <CraftCockpit key={player.craftId} craftId={player.craftId} />}
       {player?.kind === 'eva' && <EvaCam />}
-      {player?.kind === 'foot' && <Walker key={player.bodyId} planetId={player.bodyId} />}
+      {player?.kind === 'foot' && <Walker key={`walker-${player.bodyId}`} planetId={player.bodyId} />}
       {/* the sky rides along: mounted after Walker so its useFrame reads the
-          camera pose the walker just wrote; renders only with an atmosphere */}
-      {player?.kind === 'foot' && <WalkSky key={player.bodyId} planetId={player.bodyId} />}
+          camera pose the walker just wrote; renders only with an atmosphere.
+          Keys are namespaced — Walker and WalkSky are siblings in this
+          children array, and a shared key makes React reconciliation
+          destroy/recreate the walker on every re-render (a fresh 120 m
+          spawn mid-walk). */}
+      {player?.kind === 'foot' && <WalkSky key={`walksky-${player.bodyId}`} planetId={player.bodyId} />}
       <MaterialAnimator />
     </Canvas>
   )
