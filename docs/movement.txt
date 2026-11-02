@@ -15,9 +15,10 @@
     src/core/motion.js       the movers + live craft/EVA runtime (framework-free)
     src/core/craftTypes.js   the craft catalog + EVA tuning (the only place
                              craft-model numbers live)
-    src/core/surface.js      the walker (the on-foot mover, byte-identical
-                             to before this work; tile path pinned by
-                             scripts/test-surface.mjs)
+    src/core/surface.js      the walker (the on-foot mover — the walking
+                             path byte-identical, pinned by
+                             scripts/test-surface.mjs) + walkerLocation,
+                             the on-foot LOCATION channel (§8)
     src/state/store.js       the session state machine (player), defaultPlayer,
                              craft CRUD, captureCrafts
     src/components/Crafts.jsx          every craft rendered + stepped
@@ -92,6 +93,10 @@
     craftRuntime  (motion.js)   craftId → { doc, world, size, state }
     eva           (motion.js)   the adrift astronaut { pos, vel, yaw, pitch }
     walker        (Walker.jsx)  the on-foot pose, planet-LOCAL (dir + r)
+    walkerLocation(surface.js)  the on-foot LOCATION — the body-fixed pose
+                                (dir, r, the underfoot cell) + derived
+                                lat/lon, OWNED by the walker (§8); bodyId
+                                null off-foot
 
   A session change (board / launch / eject / land / Esc) is a store set() of
   `player`; the frame loops keep running against the mutable state.
@@ -370,6 +375,19 @@
   spin and orbit for free, and Walker.jsx composes the world pose from the
   live registry (planetPos + quat·(dir·r)) every frame.
 
+  The on-foot LOCATION is a property of the walker (docs/positioning.txt
+  §3): the body-fixed pose (dir, r, the underfoot cell) plus the derived
+  geocentric lat/lon, published through walkerLocation (core/surface.js) —
+  owned by the walker, NOT the HUD. The walker recomputes it only when it
+  MOVES relative to its body (its dir changed); a stationary astronaut
+  keeps its exact coordinates while the body spins and orbits, because the
+  co-rotating frame is unchanged by that motion, so nothing is recomputed.
+  lat/lon is the body-local dir against the spin pole — the body's
+  world-frame spin spun back by its inverse quaternion (a spinless body uses
+  the convention pole, local +Y) — via the same latLonOf the craft readout
+  uses; it is display-only. What changes each frame is the WORLD pose
+  (registry pos + quat·(dir·r)) — and that is derived, never stored.
+
   Mechanics (stepWalker, core/surface.js — pure, headless-tested):
     • underfoot cell = nearest cell center (Voronoi funnel over hex
       adjacency from the last known cell — the quasi-regular grid has no
@@ -576,7 +594,9 @@
 
     on foot   walkReadout (surface.js): grounded/falling, altitude,
               vertical speed, sprint, surface pressure (atmosphere
-              descriptor) or "no air"
+              descriptor) or "no air"; + walkerLocation (surface.js):
+              geocentric lat/lon in the body-fixed frame (§8) — the HUD
+              READS it, the walker OWNS it
     craft     motionReadout (motion.js): name + realism, PARK/Flying,
               "over <body> · NN%" — the dominance SHARE (§5) — terrain
               altitude, body-relative speed, lat/lon (fading in with the
@@ -707,6 +727,12 @@
 --------------------------------------------------------------------------------
   • Live poses in mutable module state (craftRuntime / eva / walker) —
     NEVER 60 Hz through zustand. The store holds the session identity.
+  • An entity's LOCATION is owned by the OBJECT, never computed in the view
+    (docs/positioning.txt §3): the on-foot location lives in walkerLocation
+    (surface.js), written by the walker only when it moves relative to its
+    body; the HUD and every other reader just read it. A stationary
+    astronaut keeps its exact coordinates while the body spins and orbits —
+    the co-rotating frame is unchanged by that motion.
   • No cannon bodies for the astronaut or any craft — walkers, crafts and
     the EVA astronaut are kinematic / test particles (stepGravity skips
     api-less registry entries — that IS the test-particle semantics).
@@ -762,7 +788,10 @@
   npm run test:headless (rendered pipeline, 7 tests):
     1 pipeline: starter world orbits clean under RAF jitter — registry ≡
       rendered mesh (the float32 contract the parked-craft pose rides).
-    2 surface: the walker welds to terrain while standing still.
+    2 surface: the walker welds to terrain while standing still — its
+      body-fixed pose (and thus its walkerLocation) is constant while the
+      body spins/orbits (the "location is a property of the object"
+      invariant, §16).
     3 follow: locks terrain at Sol-Real scale (the float32 sawtooth
       regression) — skipped without public/sol-real.json.
     4 surface (real mode): the real-human walker on true-scale Earth —
@@ -800,7 +829,8 @@
   src/core/craftTypes.js  CRAFT_TYPES + EVA_TUNING — the only place
                         craft-model numbers live
   src/core/surface.js   makeSurface (tile/real metrics), stepWalker,
-                        surfaceGravity, walkReadout, the height-field math
+                        surfaceGravity, walkReadout, walkerLocation (the
+                        on-foot LOCATION channel, §8), the height-field math
   src/state/store.js    player session machine, defaultPlayer, board /
                         launch / eject / boardNearest, evaLand / landOn-
                         Planet, craft CRUD, captureCrafts

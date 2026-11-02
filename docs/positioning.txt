@@ -16,7 +16,10 @@
     src/core/motion.js      dominantBody + share; altitudeOf / heightAtDir
                             (body-centered); latLonOf (body-fixed readout);
                             the park ⇄ launch round-trip
-    src/core/surface.js     the walker's body-fixed live pose (dir, r)
+    src/core/surface.js     the walker's body-fixed live pose (dir, r) +
+                            walkerLocation — the published on-foot LOCATION
+                            (the body-fixed pose + derived lat/lon the HUD
+                            reads; owned by the walker, updated only on move)
     src/core/worldSchema.js the document: spin (the axis), the parked anchor,
                             stored elements
     src/components/Planet.jsx  publishes the live pose; integrates the spin
@@ -200,6 +203,39 @@
   quantity in the game that is frame-dependent, and it is well-defined
   because the dominant body re-derives identically at runtime.
 
+  THE LOCATION IS A PROPERTY OF THE OBJECT — the model's one answer to
+  "where is X". Every entity carries its position expressed in the frame of
+  its reference body, stored on the object ITSELF. It is not a readout the
+  view layer computes on demand; it is state the object owns. Three rules:
+
+    OWNED, NOT COMPUTED-IN-THE-VIEW.   The location lives on the object's
+    own model; the HUD and every other consumer READ it, the object WRITES
+    it. The on-foot instance is walkerLocation (core/surface.js, §6): the
+    body-fixed pose (dir, r, the underfoot cell) plus the derived lat/lon.
+    A parked craft's anchor is the very same thing, persisted in the
+    document — the pattern already holds for both stored states.
+
+    UPDATED ONLY ON RELATIVE MOVEMENT.   Recomputed when — and only when —
+    the object moves RELATIVE to its reference body. A stationary object
+    (an astronaut standing, a craft on the pad) never recomputes: a
+    body-fixed (dir, r) is expressed in the co-rotating frame, which the
+    body's own spin and orbit leave invariant, so the coordinates are
+    literally unchanged while the body turns under the feet. What changes
+    each frame is the WORLD pose (registry pos + quat·(dir·r)) — and that
+    is derived, never stored. (The walker pins its cached lat/lon and
+    re-derives it only when its dir has moved.)
+
+    ONE REFERENCE BODY, NEVER A BLEND.   The location is always "in the
+    frame of" exactly one body (or the system): the single bodyId when on
+    foot / parked, the dominant body in flight (§1, §4).
+
+  This is what lets the world answer "where is X" for every object — the
+  astronaut, other players, crafts, bodies — at all times: each carries its
+  location, and it is only as fresh as the last thing that moved it. The
+  on-foot location is built; the same contract is the design target for the
+  flying craft (derived from its dominant body) and for the bodies
+  themselves (their registry pose is already their system-frame location).
+
 
 --------------------------------------------------------------------------------
  4. THE HOME FRAME — WHO IS IN CHARGE, AND THE GRADUAL HAND-OFF
@@ -374,6 +410,8 @@
     body-centered readouts (altitudeOf, rel vel)      core/motion.js
     the body-fixed readout (latLonOf)                 core/motion.js
     the walker's body-fixed pose (dir, r)             core/surface.js
+    the on-foot LOCATION channel (pose + lat/lon)     core/surface.js
+                                                        (walkerLocation)
     the parked anchor (body-fixed, persisted)         core/worldSchema.js
     the park ⇄ launch round-trip                      core/motion.js
     the J2000/Horizons seed + scoring                  gen-sol-real.mjs,
