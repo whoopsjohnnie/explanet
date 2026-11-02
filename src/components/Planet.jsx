@@ -255,7 +255,16 @@ function usePlanetPick(planet, renderPlanet) {
     const up = () => {
       painting.current = false
       lastCell.current = -1
-      if (controls) controls.enabled = true
+      if (controls) {
+        // Re-enable orbiting only for the editor: in a motion session the
+        // `enabled` prop keeps the controls false, and this handler fires on
+        // EVERY pointerup (a look-drag release included). Unconditional here,
+        // it outlived the drag and let the NEXT pointerdown start a real
+        // OrbitControls rotation — around target (0,0,0), on a sphere the
+        // size of the body's orbit — of the camera the walker owns.
+        const kind = useStore.getState().player?.kind
+        if (!kind || kind === 'freeCam') controls.enabled = true
+      }
     }
     window.addEventListener('pointerup', up)
     return () => window.removeEventListener('pointerup', up)
