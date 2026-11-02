@@ -45,9 +45,16 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
 import { registry } from '../core/physics.js'
 import { planetMass } from '../core/planetMath.js'
-import { makeSurface, createWalker, stepWalker, surfaceGravity, walkReadout } from '../core/surface.js'
+import {
+  makeSurface,
+  createWalker,
+  stepWalker,
+  surfaceGravity,
+  walkReadout,
+  walkerLocation,
+} from '../core/surface.js'
 import { isPlanetStub } from '../core/worldSchema.js'
-import { pendingFoot } from '../core/motion.js'
+import { pendingFoot, latLonOf } from '../core/motion.js'
 
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
 const PITCH_LIMIT = 1.45 // ±83° from the horizon; never flips past straight up/down
@@ -116,6 +123,7 @@ export default function Walker({ planetId }) {
       wish: new THREE.Vector3(),
       wishArr: [0, 0, 0],
       d: new THREE.Vector3(),
+      pole: new THREE.Vector3(), // the body's spin axis in the co-rotating frame
     }),
     []
   )
@@ -230,6 +238,7 @@ export default function Walker({ planetId }) {
       walkReadout.alt = 0
       walkReadout.vel = 0
       walkReadout.grounded = false
+      walkerLocation.bodyId = null // no longer on foot: the location is gone
       const entry = registry.bodies.get(planetId)
       const orbit = controlsRef.current
       if (orbit && entry) {
@@ -300,6 +309,12 @@ export default function Walker({ planetId }) {
         fwdL: new THREE.Vector3(),
         lastFwd: new THREE.Vector3(0, 0, -1),
         placed: false,
+        // the walker's own body-fixed location readout: cached lat/lon,
+        // recomputed only when the walker moves (a stationary astronaut keeps
+        // its coordinates while the body spins and orbits)
+        loc: null,
+        lat: 0,
+        lon: 0,
       }
       stateRef.current = s
     }
@@ -419,6 +434,31 @@ export default function Walker({ planetId }) {
     walkReadout.vel = w.radialVel
     walkReadout.grounded = w.grounded
     walkReadout.sprint = k.sprint && (fwdIn !== 0 || strafeIn !== 0)
+
+    // ---- the astronaut's LOCATION (owned by the walker, not the HUD) -------
+    // Body-fixed frame (docs/positioning.txt §3): dir + r on the body we
+    // stand on. The derived lat/lon is recomputed ONLY when the walker moved
+    // (its dir changed) — a stationary astronaut keeps its exact coordinates
+    // while the body spins and orbits, because the co-rotating frame is
+    // unchanged by that motion, so NOTHING below the `moved` guard runs.
+    // The pole is the body's spin axis in the local frame: the world-frame
+    // spin spun back by the body's inverse quaternion.
+    const moved = !s.loc || s.loc[0] !== w.dir[0] || s.loc[1] !== w.dir[1] || s.loc[2] !== w.dir[2]
+    if (moved) {
+      const spin = planet.spin
+      if (spin && (spin.x || spin.y || spin.z)) tmp.pole.set(spin.x, spin.y, spin.z).applyQuaternion(tmp.qInv)
+      else tmp.pole.set(0, 1, 0) // spinless body: the convention pole (local +Y)
+      const ll = latLonOf(w.dir, [tmp.pole.x, tmp.pole.y, tmp.pole.z])
+      s.loc = [w.dir[0], w.dir[1], w.dir[2]]
+      s.lat = ll.lat
+      s.lon = ll.lon
+    }
+    walkerLocation.bodyId = planetId
+    walkerLocation.dir = [w.dir[0], w.dir[1], w.dir[2]]
+    walkerLocation.r = w.r
+    walkerLocation.cell = w.cell
+    walkerLocation.lat = s.lat
+    walkerLocation.lon = s.lon
   })
 
   // first-person: you don't see your own body — no avatar to render

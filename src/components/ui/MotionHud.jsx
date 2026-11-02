@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from 'react'
 import { useStore } from '../../state/store.js'
-import { walkReadout } from '../../core/surface.js'
+import { walkReadout, walkerLocation } from '../../core/surface.js'
 import { motionReadout } from '../../core/motion.js'
 
 export default function MotionHud() {
@@ -57,6 +57,7 @@ export default function MotionHud() {
   // ------------------------------------------------------------ on foot ---
   if (player.kind === 'foot') {
     const r = walkReadout
+    const L = walkerLocation // the body-relative location, owned by the walker
     const airborne = !r.grounded
     const atmo = planet?.atmosphere
     const fmtAtm = (p) =>
@@ -83,6 +84,13 @@ export default function MotionHud() {
           </button>
         </div>
         <div className="motion-hud-stats">
+          <span
+            className="motion-hud-atmo"
+            title="Your position on this body — geocentric latitude/longitude in its body-fixed frame (constant while you stand still, even as it spins and orbits)"
+          >
+            {Math.abs(L.lat).toFixed(1)}°{L.lat >= 0 ? 'N' : 'S'} {Math.abs(L.lon).toFixed(1)}°
+            {L.lon >= 0 ? 'E' : 'W'}
+          </span>
           <span className={airborne ? 'motion-hud-air' : ''}>
             {airborne ? 'falling' : 'grounded'} · alt {fmt(toM(r.alt))}
             {real ? ' m' : ''} · ↕ {fmt(toM(r.vel))}

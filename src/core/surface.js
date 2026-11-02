@@ -116,6 +116,31 @@ export const SURFACE_REAL = {
 export const walkReadout = { alt: 0, vel: 0, grounded: false, sprint: false }
 
 /**
+ * The ASTRONAUT-ON-FOOT's LOCATION — a property of the walker itself (the
+ * avatar model), expressed in the frame of the body they stand on
+ * (docs/positioning.txt §3 "BODY-FIXED", §5 lat/lon). It is NOT a HUD
+ * concern: the walker OWNS these numbers and updates them only when it MOVES
+ * relative to its body. While the astronaut stands still — even as the body
+ * spins and orbits — the body-fixed location is unchanged (it co-rotates with
+ * the body), so nothing is recomputed. The HUD and every other reader just
+ * read it; the same pattern is meant to hold for crafts and bodies.
+ *
+ *   bodyId  the reference body the astronaut is standing on (null off-foot)
+ *   dir     body-local unit direction — the continuous pose (§5)
+ *   r       distance from the body's center (units)
+ *   cell    the underfoot hex cell — the discrete identity (§5)
+ *   lat/lon the derived human readout (geocentric; display only)
+ */
+export const walkerLocation = {
+  bodyId: null,
+  dir: [0, 1, 0],
+  r: 0,
+  cell: -1,
+  lat: 0,
+  lon: 0,
+}
+
+/**
  * Downward acceleration at radius r around a body of mass `mass` under the
  * world's softened gravity law (matches stepGravity / orbitalSpeed).
  *
