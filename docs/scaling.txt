@@ -128,10 +128,10 @@
     of millions" holds; import is a batch job, not a UX path.
   * Picking. Analytic ray->heightfield march (surface.js intersectHeight-
     field); cost is LOD-independent and cell-count-independent. No change.
-  * Walking. Surface mode integrates r(dir) = R + h(cell(dir)) against the
-    heightfield; it needs a lookup, not a mesh. A 500k world walks fine —
-    and note this means ground-level detail has ZERO mesh requirement (see
-    the mesh budget, §4).
+  * Walking. Surface mode integrates r(dir) = the rendered fan radius
+    (fanRadiusAt — the min of the cell's fan planes); it needs a lookup,
+    not a mesh. A 500k world walks fine — and note this means ground-level
+    detail has ZERO mesh requirement (see the mesh budget, §4).
   * N-body cost. Pairwise physics depends on BODY count, not cell counts.
   * LOD machinery. Chain from 224 is [224,112,56,28,14,7,4]; sampling cost
     (sampleLodElements) is proportional to the COARSE grid, so fine levels

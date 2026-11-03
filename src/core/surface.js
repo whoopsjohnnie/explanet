@@ -4,11 +4,18 @@
  * Pure, framework-free kinematics for walking on a planet's surface.
  *
  * The walker is deliberately NOT a cannon body: planet colliders are
- * heightless spheres at the base radius R, while the actual surface is
- * r(dir) = R + h(cell(dir)) — the star-shaped top surface of the hex
- * elements. A rigid-body avatar would sink into mountains and skate on the
- * rotating collider. Instead surface mode integrates a tiny walker of its
- * own against that height field, in the PLANET-LOCAL frame: the walker rides
+ * heightless spheres at the base radius R, while the actual surface is the
+ * RENDERED top surface — the chord-triangle fans of the hex elements
+ * (core/geometry.js). Walking the rendered surface (not the per-cell sphere
+ * R + h(cell)) is what welds the astronaut to the ground as drawn: flat
+ * chord fans sag below the sphere by up to a hex apothem squared over 8R
+ * (~100 m on a true-scale 35 km grid), and an avatar on the invisible sphere
+ * would float a hundred metres above the ground under its feet. The same
+ * rule makes the walker follow terrain edits and any deformation of the
+ * elements live, because the surface is re-derived from them every step.
+ * A rigid-body avatar would sink into mountains and skate on the rotating
+ * collider anyway. Instead surface mode integrates a tiny walker of its own
+ * against that height field, in the PLANET-LOCAL frame: the walker rides
  * the planet's spin and orbit for free, and the renderer composes the world
  * pose as planetPos + quat·(dir·r) from the live body registry.
  *
@@ -210,6 +217,99 @@ export function cellAtDirection(hex, dir, hint) {
   return best
 }
 
+// ---------------------------------------------------------------------------
+// The rendered top surface — chord-fan planes (the walked height field)
+// ---------------------------------------------------------------------------
+// The surface the walker rides is the surface the renderer draws: each cell's
+// top is a triangle fan of CHORDS (center + corners, all vertices at radius
+// R + h), so the fan lies in flat planes that sag below the sphere. Each fan
+// triangle (C, E_k, E_{k+1}) defines one plane; since every vertex sits at
+// radius rho = R + h, the plane's ORIENTATION depends only on the grid
+// (cached once per frequency) while its distance from the center scales with
+// rho — paint/shake updates of h cost nothing but the rescale.
+//
+// For a unit direction dir inside the cell, the fan's radius along dir is the
+// LOWER ENVELOPE of the fan's planes:
+//     r(dir) = min_k  rho·(n_k·c) / (n_k·dir)
+// which equals the exact triangle intersection to machine precision for every
+// direction in the cell (verified across all cells, freqs 1–24) — and at the
+// exact cell-edge directions, where a single cell's triangles only meet in a
+// line, the min still returns the shared edge's radius. It is also
+// allocation-free (~6 dot products + divisions), keeping the 60 Hz walker and
+// the ~1000-sample pick sweep cheap.
+const fanTables = new Map() // frequency → { normals: Float64Array, centerCos: Float64Array }
+
+function fanTable(frequency) {
+  let t = fanTables.get(frequency)
+  if (t) return t
+  const hex = getHexSphere(frequency)
+  const n = hex.cellCount
+  const normals = new Float64Array(n * 6 * 3)
+  const centerCos = new Float64Array(n * 6)
+  for (let i = 0; i < n; i++) {
+    const sn = hex.sides[i]
+    const cx = hex.centers[i * 3]
+    const cy = hex.centers[i * 3 + 1]
+    const cz = hex.centers[i * 3 + 2]
+    for (let k = 0; k < sn; k++) {
+      const k3 = (i * 6 + k) * 3
+      const k1 = (i * 6 + (k + 1) % sn) * 3
+      // chord-triangle edges (E_k − C, E_{k+1} − C): direction-independent of rho
+      const ax = hex.corners[k3] - cx
+      const ay = hex.corners[k3 + 1] - cy
+      const az = hex.corners[k3 + 2] - cz
+      const bx = hex.corners[k1] - cx
+      const by = hex.corners[k1 + 1] - cy
+      const bz = hex.corners[k1 + 2] - cz
+      let nx = ay * bz - az * by
+      let ny = az * bx - ax * bz
+      let nz = ax * by - ay * bx
+      const l = Math.hypot(nx, ny, nz) || 1
+      nx /= l
+      ny /= l
+      nz /= l
+      // orient so the center vertex (and the body center's side) is positive
+      let nc = nx * cx + ny * cy + nz * cz
+      const o = (i * 6 + k) * 3
+      if (nc < 0) {
+        nx = -nx
+        ny = -ny
+        nz = -nz
+        nc = -nc
+      }
+      normals[o] = nx
+      normals[o + 1] = ny
+      normals[o + 2] = nz
+      centerCos[i * 6 + k] = nc // plane distance = rho · (n_k·c)
+    }
+  }
+  t = { normals, centerCos }
+  fanTables.set(frequency, t)
+  return t
+}
+
+/**
+ * Radius of the RENDERED top surface (the cell's chord-fan planes) along a
+ * body-LOCAL unit direction `dir` inside cell `cell`, whose current vertex
+ * radius is `rho` = R + h(cell). Falls back to `rho` if no plane faces dir
+ * (degenerate guard — unreachable for a dir inside the cell).
+ */
+export function fanRadiusAt(hex, cell, rho, dir) {
+  const t = fanTable(hex.frequency)
+  const sn = hex.sides[cell]
+  const o0 = cell * 6
+  let best = Infinity
+  for (let k = 0; k < sn; k++) {
+    const o = (o0 + k) * 3
+    const nd = t.normals[o] * dir[0] + t.normals[o + 1] * dir[1] + t.normals[o + 2] * dir[2]
+    if (nd > 0) {
+      const r = (rho * t.centerCos[o0 + k]) / nd
+      if (r < best) best = r
+    }
+  }
+  return best === Infinity ? rho : best
+}
+
 /**
  * Build a surface query over a snapshot of a planet document. Rebuild when
  * `planet.elements` identity changes — the same copy-on-write contract as
@@ -224,6 +324,12 @@ export function cellAtDirection(hex, dir, hint) {
  * real document grid, and the freq-16 `preview` sample is not it. Callers
  * own hydration (landOnPlanet / launchCraft hydrate first; the Walker kicks
  * it and waits).
+ * `heightAt(dir).radius` is the RENDERED surface radius along dir — the
+ * chord fan of the cell underfoot (see above), continuous inside a cell and
+ * jumping by the relief step across cell edges, exactly like the drawn mesh.
+ * `h` remains the cell's per-element relief (the quantity the step/wall
+ * logic compares — the in-cell fan sag must not read as terrain).
+ *
  * @returns {{ hex, R: number, maxH: number, tile: number, real: number|null, metrics: object, heightAt: (dir:number[], hint?:number) => {cell:number,h:number,radius:number} } | null}
  */
 export function makeSurface(planet, scale) {
@@ -257,7 +363,9 @@ export function makeSurface(planet, scale) {
   const heightAt = (dir, hint) => {
     const cell = cellAtDirection(hex, dir, hint)
     const h = hs[cell]
-    return { cell, h, radius: R + h }
+    // the RENDERED surface: the cell's chord fan at dir (== R + h at the
+    // cell's own center, sagging toward its edges — the mesh underfoot)
+    return { cell, h, radius: fanRadiusAt(hex, cell, R + h, dir) }
   }
   return { hex, R, maxH, hs, tile, real, metrics, heightAt }
 }
@@ -313,8 +421,9 @@ export function aheadDirection(dir, tangent, angle) {
 /**
  * Ray → heightfield intersection in the planet-LOCAL frame: origin and dir
  * are number[3] arrays (dir any nonzero length; normalized here), no
- * triangle mesh involved. The signed penetration function
- *   f(t) = |origin + t·dir| − (R + h(direction of that point))
+ * triangle mesh involved — the surface is the rendered chord fans, queried
+ * analytically (fanRadiusAt). The signed penetration function
+ *   f(t) = |origin + t·dir| − (fan radius at the direction of that point)
  * is negative inside the planet; the hit is its first zero, found by
  * marching the enclosing sphere's chord and bisecting. This handles relief
  * WALLS (jumps between cell heights) exactly, which sphere-column fixed
@@ -352,7 +461,7 @@ export function intersectHeightfield(surface, origin, dir) {
     dirS[1] = py / len
     dirS[2] = pz / len
     hint = cellAtDirection(hex, dirS, hint)
-    return len - (R + hs[hint])
+    return len - fanRadiusAt(hex, hint, R + hs[hint], dirS)
   }
 
   // Bisect f between an outside sample (lo) and an inside one (hi).
@@ -364,14 +473,15 @@ export function intersectHeightfield(surface, origin, dir) {
     }
     evalAt(hi) // leaves the cell under `hi` in `hint`
     const h = hs[hint]
-    const radius = R + h
     // f(t) jumps where the ray crosses a boundary between cells of unequal
     // height, and the bisection can land exactly on such a jump: the point at
-    // `hi` may then sit above the radius of the cell the funnel reports.
-    // Snap it radially onto that cell's surface so a hit never floats, while
-    // `distance` keeps the ray parameter of the entry itself.
+    // `hi` may then sit above the surface of the cell the funnel reports.
+    // Snap it radially onto that cell's RENDERED surface (its chord fan at
+    // the hit direction) so a hit never floats, while `distance` keeps the
+    // ray parameter of the entry itself.
     const point = [origin[0] + d[0] * hi, origin[1] + d[1] * hi, origin[2] + d[2] * hi]
     const len = Math.sqrt(point[0] * point[0] + point[1] * point[1] + point[2] * point[2])
+    const radius = len > 0 ? fanRadiusAt(hex, hint, R + h, [point[0] / len, point[1] / len, point[2] / len]) : R + h
     if (len > 0) {
       const s = radius / len
       point[0] *= s

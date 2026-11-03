@@ -151,8 +151,8 @@
       the body:
         rel position   p − pos_B
         rel velocity   v − vel_B      (what the HUD's rel-speed is)
-        altitude       d − (R + h), terrain-corrected via the hex cell
-                       under the line of sight (altitudeOf)
+        altitude       d − ρ(dir), terrain-corrected via the rendered fan
+                       radius at the line of sight (altitudeOf)
       The landing checks (distance to the center — rotation-invariant),
       the terrain-resolved anchor r, and the launch frame (body velocity +
       ω×r + radial kick, assembled from the body-fixed pose) all key off

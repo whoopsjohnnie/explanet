@@ -41,8 +41,8 @@
   the astronaut moves BETWEEN them without ever pressing a "mode" button:
 
     FREE SPACE            BODY-RELATIVE                ON-PLANET
-    absolute velocity,    one body's pull dominates;   welded to a hex
-    no preferred body,    altitude / rel-speed /       height field;
+    absolute velocity,    one body's pull dominates;   welded to the
+    no preferred body,    altitude / rel-speed /       rendered hex fan;
     the raw field rules   lat-lon become meaningful;   tile or real-human
     (or none, in arcade)  the craft falls in;         scale; the surface
                                                               decides when
@@ -241,11 +241,12 @@
 
   Body-relative quantities (all computed against the dominant body):
 
-    altitude = d − (R + h)   terrain-corrected — the hex cell under the
-               line of sight's height h when elements are in hand, flat
-               sphere otherwise (altitudeOf); the HUD refreshes the
-               terrain-corrected number every 6th frame (a cell search),
-               the cheap flat number the rest
+    altitude = d − ρ(dir)   terrain-corrected — the RENDERED surface
+               radius at the look direction (the hex cell's chord fan —
+               the very surface the walker rides) when elements are in
+               hand, flat sphere otherwise (altitudeOf); the HUD
+               refreshes the terrain-corrected number every 6th frame (a
+               cell search), the cheap flat number the rest
     relSpeed = |vel − domVel|   for real crafts (vel is absolute); for
                arcade crafts vel is already relative — relSpeed is |vel|
     lat/lon  = latLonOf(dirLocal, spinPole) — body-LOCAL direction against
@@ -368,12 +369,16 @@
   Walking is a SESSION, entered only by arriving: boot (§9), ejecting a
   parked craft, or an EVA fall ending. The walker is deliberately NOT a
   cannon body — planet colliders are heightless spheres at R while the
-  surface is the star-shaped height field r(dir) = R + h(cell); a rigid
-  body would sink into mountains and skate on the rotating collider.
-  Instead the walker integrates against that height field in the
+  surface is the RENDERED one: the chord-triangle fans of the hex elements
+  (fanRadiusAt — the lower envelope of a cell's fan planes, flat within a
+  cell, sagging below the per-cell sphere R+h by up to apothem²/8R); a
+  rigid body would sink into mountains and skate on the rotating collider.
+  Instead the walker integrates against the rendered surface itself in the
   PLANET-LOCAL frame (position = unit direction + radius), so it rides
-  spin and orbit for free, and Walker.jsx composes the world pose from the
-  live registry (planetPos + quat·(dir·r)) every frame.
+  spin and orbit for free, follows irregular relief and any live ground
+  deformation (the surface is re-derived from the elements every step),
+  and Walker.jsx composes the world pose from the live registry
+  (planetPos + quat·(dir·r)) every frame.
 
   The on-foot LOCATION is a property of the walker (docs/positioning.txt
   §3): the body-fixed pose (dir, r, the underfoot cell) plus the derived

@@ -34,9 +34,11 @@
 
   * Collider vs surface mismatch. Planet bodies are SPHERES at the base
     radius R (see Planet.jsx). The rendered surface is the star-shaped roof
-    of the hex elements: r(dir) = R + h(cell(dir)), a few tiles of relief
-    (per-world scale). A physical capsule would sink into every mountain, stand on
-    invisible air over valleys, and tumble off the invisible sphere.
+    of the hex elements: the chord-triangle fans, each flat and sagging
+    below the per-cell sphere R+h by up to apothem²/8R (a few tiles of
+    relief, per-world scale). A physical capsule would sink into every
+    mountain, stand on invisible air over valleys, and tumble off the
+    invisible sphere.
     A trimesh collider rebuilt on every terrain edit would be expensive,
     and cannon's worker round-trip makes rebuilds visibly janky.
 
@@ -47,8 +49,8 @@
 
   Also required by the brief: movement must follow surface CONTOURS exactly.
   Exactness is easy the moment you stop simulating a body and instead treat
-  "standing on this planet" as what it really is for a star-shaped height
-  field: a radius that is a FUNCTION of direction.
+  "standing on this planet" as what it really is on the rendered surface:
+  a radius that is a FUNCTION of direction (the chord fan underfoot).
 
 
 --------------------------------------------------------------------------------
@@ -232,7 +234,8 @@
   * The surface query is memoized on the planet document identity — the
     same copy-on-write contract as the geometry rebuild memo: edit terrain
     while walking (via a second control, e.g. keyboard during a pause) and
-    the walker is instantly on the new height field.
+    the walker is instantly on the new rendered surface — the mesh rebuilds
+    on the same identity change, so feet and geometry move together.
 
 
 --------------------------------------------------------------------------------

@@ -338,16 +338,25 @@
   ------------------------------------------
   A rigid body would be the obvious choice, but it breaks here for two
   reasons. (1) Planet colliders are SPHERES at radius R, while the real
-  surface is r(dir) = R + h(cell(dir)) — the star-shaped roof of the hex
-  tiles. A physical capsule would sink into every mountain and stand on
-  invisible air over valleys; rebuilding a trimesh collider from the height
-  field on every terrain edit would be expensive and janky. (2) The planet
+  surface is the RENDERED one — the chord-triangle fans of the hex tiles
+  (each top is a flat fan, sagging below the per-cell sphere R+h by up to
+  apothem²/8R). A physical capsule would sink into every mountain and stand
+  on invisible air over valleys; rebuilding a trimesh collider from the
+  fans on every terrain edit would be expensive and janky. (2) The planet
   itself is a fast-moving, spinning cannon body; friction against a moving
   sphere drags and ejects small bodies — standing on it physically is
   numerically miserable.
   So surface mode integrates its OWN walker in core/surface.js against the
-  actual hex height field. This is cheap, exact to the rendered geometry,
-  and (like everything in core/) unit-testable without a browser.
+  rendered surface itself: fanRadiusAt(dir) is the lower envelope of the
+  cell's fan planes, exact to the drawn mesh by construction, and re-derived
+  from the elements on every step — so the walker follows irregular relief
+  and any live ground deformation (shaking) for free. Walking the per-cell
+  sphere R+h instead would leave a 1.6 m human floating ~100 m over the
+  sagged mid-ground on a true-scale 35 km grid, and the walk view would read
+  as looking at the ground from way up in the sky. The query is cheap (a few
+  dot products + divisions — plane orientations are cached per frequency,
+  only the distance rescales with h), and (like everything in core/)
+  unit-testable without a browser.
 
   The local-frame trick
   ----------------------
@@ -371,8 +380,9 @@
     computed by greedy funnel walk over the hex adjacency graph from the
     previous cell — a few steps per frame, no local maxima because the
     geodesic dual is quasi-regular; tests verify against brute force.
-  * Walking rotates dir along the tangent plane; surface contour is exact
-    by construction (r always tracks R+h).
+  * Walking rotates dir along the tangent plane; the surface contour is the
+    RENDERED chord fan underfoot, exact by construction (r tracks the fan
+    radius — flat within a cell, stepping by the relief delta at edges).
   * Tile step-up <= stepUp is climbed, drops <= stepDownSnap keep you
     grounded, bigger drops become real falls, taller neighbors are walls —
     blocked dead-on, slid along at an angle.

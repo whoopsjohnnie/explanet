@@ -50,7 +50,7 @@ import { C } from './constants.js'
 import { registry } from './physics.js'
 import { planetRadius } from './planetMath.js'
 import { getHexSphere } from './hexsphere.js'
-import { cellAtDirection } from './surface.js'
+import { cellAtDirection, fanRadiusAt } from './surface.js'
 import { CRAFT_TYPES, EVA_TUNING } from './craftTypes.js'
 
 export { CRAFT_TYPES, EVA_TUNING }
@@ -179,10 +179,11 @@ export function tileRadius(radius, frequency) {
 }
 
 /**
- * Altitude of world position p above a body's SURFACE — terrain-corrected
- * (nearest hex cell's h) when the body's elements are in hand, flat-sphere
- * otherwise. The landing trigger uses the cheap flat distance; the HUD and
- * the park radius use this.
+ * Altitude of world position p above a body's RENDERED SURFACE — terrain-
+ * corrected (the chord fan of the nearest hex cell — the very surface the
+ * walker rides and the mesh draws) when the body's elements are in hand,
+ * flat-sphere otherwise. The landing trigger uses the cheap flat distance;
+ * the HUD and the park radius use this.
  */
 export function altitudeOf(p, body, planet) {
   const dx = p.x - body.pos.x
@@ -193,15 +194,24 @@ export function altitudeOf(p, body, planet) {
   const dir = norm3([dx, dy, dz])
   const hex = getHexSphere(planet.frequency)
   const cell = cellAtDirection(hex, dir)
-  return d - (body.radius + ((planet.elements[cell] && planet.elements[cell].h) || 0))
+  const h = (planet.elements[cell] && planet.elements[cell].h) || 0
+  return d - fanRadiusAt(hex, cell, body.radius + h, dir)
 }
 
-/** Height h (units) of the hex cell under a body-LOCAL direction. */
+/**
+ * Height (units) of the body's RENDERED surface above its base radius — the
+ * chord fan of the hex cell under a body-LOCAL direction (any length;
+ * normalized here). Callers add it to the body's base radius to get the
+ * surface radius along that direction; it is the same surface the walker
+ * rides (core/surface.js fanRadiusAt).
+ */
 export function heightAtDir(planet, dirLocal) {
   if (!planet || !planet.elements) return 0
   const hex = getHexSphere(planet.frequency)
   const cell = cellAtDirection(hex, dirLocal)
-  return (planet.elements[cell] && planet.elements[cell].h) || 0
+  const h = (planet.elements[cell] && planet.elements[cell].h) || 0
+  const R = planetRadius(planet)
+  return fanRadiusAt(hex, cell, R + h, norm3(dirLocal)) - R
 }
 
 /**

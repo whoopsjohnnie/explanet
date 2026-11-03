@@ -479,8 +479,18 @@ const landable = world.planets.find((p) => p.preset !== 'star')
         const q2 = add3(o, scale3(d, march + step * 8))
         solid = s.heightAt(nrm(q2), -1).radius - Math.hypot(q2[0], q2[1], q2[2]) > step
       }
-      if (march == null) ok = false // pick found what a finer march says misses
-      else if (hit == null) {
+      if (march == null) {
+        // The pick's bisection leaves its hit inside the surface (f(hi) ≤ 0
+        // by construction). If the coarse march above still missed it, the
+        // penetration is a sub-step sliver — a ray grazing a fan kink or
+        // relief wall (the documented case). Verify the hit penetrates at
+        // its own point: a true sliver is a legitimate miss for the march;
+        // a non-penetrating "hit" is a real bug.
+        const p = hit.point
+        const pl = Math.hypot(p[0], p[1], p[2])
+        if (pl - s.heightAt(nrm(p), hit.cell).radius > 1e-6 * Math.max(1, pl)) ok = false
+        else misses++
+      } else if (hit == null) {
         if (solid) ok = false // skipped a real penetration
       } else {
         const pLen = Math.hypot(hit.point[0], hit.point[1], hit.point[2])
