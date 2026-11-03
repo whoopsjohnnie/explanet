@@ -32,6 +32,13 @@ import {
 
 const NO_RAYCAST = () => null
 
+// The unit shuttle model's nose-to-tail length, in MODEL units (the geometry
+// below spans z = −0.3 … 1.045). `rt.size` is the shuttle's length in WORLD
+// units (sizeMeters / world.scale), so the mesh scales the model by
+// `rt.size / SHUTTLE_MODEL_LENGTH` to render it at its true meter size. Keep
+// this in sync with the model geometry in CraftMesh.
+const SHUTTLE_MODEL_LENGTH = 1.345
+
 function CraftMesh({ craft }) {
   const ref = useRef()
   const piloting = useStore((s) => !!s.player && s.player.kind !== 'freeCam')
@@ -50,11 +57,12 @@ function CraftMesh({ craft }) {
     tmp.rgt.crossVectors(tmp.up, tmp.fwd) // right = up × forward
     tmp.m.makeBasis(tmp.rgt, tmp.up, tmp.fwd)
     o.quaternion.setFromRotationMatrix(tmp.m)
-    o.scale.setScalar(rt.size)
+    o.scale.setScalar(rt.size / SHUTTLE_MODEL_LENGTH)
   })
 
-  // a parked shuttle, unit-sized (≈1 tile fraction of the host body):
-  // fuselage + nose along +Z, delta wings, a belly light
+  // a unit shuttle (SHUTTLE_MODEL_LENGTH model units nose-to-tail), scaled to
+  // its true meter size by rt.size (sizeMeters / world.scale): fuselage +
+  // nose along +Z, delta wings, a belly light
   return (
     <group
       ref={ref}

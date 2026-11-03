@@ -54,6 +54,7 @@ function makeWorld(crafts, extra = {}) {
     version: 1,
     name: 't',
     gravity: 40,
+    scale: 100, // every world carries a scale (meters per unit); craft size resolves from it
     planets: [
       {
         id: 'b1',

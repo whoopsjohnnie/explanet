@@ -79,7 +79,7 @@ export default function TopBar() {
           e.currentTarget.blur()
           addCraft()
         }}
-        title="Add a craft — a shuttle parked on the selected body"
+        title="Add a craft — parked in front of you (on foot), or on the selected body"
       >
         🚀 Add Craft
       </button>

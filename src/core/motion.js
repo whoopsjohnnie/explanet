@@ -227,7 +227,7 @@ export function latLonOf(dir, pole) {
 // craftId → {
 //   doc:     the craft document object (world.crafts[i]),
 //   world:   the current world document (G, scale),
-//   size:    world-unit size (sizeTiles × host body's tile),
+//   size:    the craft's length in world units (sizeMeters / world.scale),
 //   state:   { mode:'park', bodyId, dir: number[3] (body-local), r }
 //         |  { mode:'space', pos, vel: {x,y,z}, yaw, pitch }
 // }
@@ -264,8 +264,9 @@ function stateFromPose(craft, world) {
  * Reconcile craftRuntime with a world document. Called by the scene
  * (AmbientCrafts) whenever the document identity changes: fresh crafts get
  * a live state from their document pose, gone crafts are dropped, sizes
- * resolve from the host body's tile, and a parked craft whose `r` was never
- * stored (null on a fresh file) lands on the terrain.
+ * resolve from the world's scale (sizeMeters → world units), and a parked
+ * craft whose `r` was never stored (null on a fresh file) lands on the
+ * terrain.
  */
 export function syncCraftRuntime(world) {
   const crafts = Array.isArray(world.crafts) ? world.crafts : []
@@ -281,15 +282,15 @@ export function syncCraftRuntime(world) {
     rt.doc = craft
     rt.world = world
 
-    // size: a game object — sizeTiles × the host body's hex-tile radius
-    const anchorBody =
-      craft.pose && craft.pose.anchor ? world.planets.find((q) => q.id === craft.pose.anchor.bodyId) : null
-    const host = anchorBody ?? world.planets.find((q) => q.preset !== 'star')
-    if (host) {
+    // size: the craft's physical length in world units — sizeMeters converted
+    // through the world's scale (1 m = 1/scale units), a fixed real-world size
+    // like the real-human astronaut (surface.js SURFACE_REAL). Every world
+    // carries a positive scale (worlds.scale NOT NULL), so this always resolves;
+    // the fallback guards a malformed document.
+    {
       const type = CRAFT_TYPES[craft.kind] || CRAFT_TYPES.shuttle
-      rt.size = type.sizeTiles * tileRadius(planetRadius(host), host.frequency)
-    } else if (!rt.size) {
-      rt.size = 0.5
+      const scale = Number.isFinite(world.scale) && world.scale > 0 ? world.scale : null
+      rt.size = scale ? type.sizeMeters / scale : 0.5
     }
 
     // a parked craft whose anchor body vanished (body deleted) re-anchors
@@ -363,6 +364,11 @@ export function captureCraftPose(rt) {
 // ---------------------------------------------------------------------------
 
 const LAND_EPS = 0.002 // fraction of the body radius: at or under this, land
+const LAUNCH_LIFT = 0.005 // fraction of the body radius to launch from — a few
+                          // landing-bands above the pad, so the craft starts
+                          // OUTSIDE the landing band (never re-parks on its
+                          // first frame). Body-scale by design: a meter-sized
+                          // craft is tiny next to the band it must clear.
 
 function parkCraft(rt, id, body) {
   const st = rt.state
@@ -497,10 +503,14 @@ export function launchCraftState(craftId) {
   const rvec = [dirW[0] * st.r, dirW[1] * st.r, dirW[2] * st.r]
   const vspin = cross3([spin.x, spin.y, spin.z], rvec)
   const kick = world.scale ? type.real.kickMps2 / world.scale : type.real.kickUps2
+  // lift the launch point LAUNCH_LIFT·radius above the pad — body-scale, so a
+  // meter-sized craft still clears the landing band on every body (the old
+  // rt.size·2 offset was tied to the tile and is far too small for a 30 m hull)
+  const lift = LAUNCH_LIFT * entry.radius
   const pos = {
-    x: entry.pos.x + dirW[0] * (st.r + rt.size * 2),
-    y: entry.pos.y + dirW[1] * (st.r + rt.size * 2),
-    z: entry.pos.z + dirW[2] * (st.r + rt.size * 2),
+    x: entry.pos.x + dirW[0] * (st.r + lift),
+    y: entry.pos.y + dirW[1] * (st.r + lift),
+    z: entry.pos.z + dirW[2] * (st.r + lift),
   }
   const vel = {
     x: entry.vel.x + vspin[0] + dirW[0] * kick,

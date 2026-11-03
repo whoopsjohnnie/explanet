@@ -129,6 +129,7 @@ export const walkReadout = { alt: 0, vel: 0, grounded: false, sprint: false }
  *   dir     body-local unit direction — the continuous pose (§5)
  *   r       distance from the body's center (units)
  *   cell    the underfoot hex cell — the discrete identity (§5)
+ *   fwd     body-local view heading — where the astronaut is looking
  *   lat/lon the derived human readout (geocentric; display only)
  */
 export const walkerLocation = {
@@ -136,6 +137,7 @@ export const walkerLocation = {
   dir: [0, 1, 0],
   r: 0,
   cell: -1,
+  fwd: [0, 0, 1],
   lat: 0,
   lon: 0,
 }
@@ -258,6 +260,54 @@ export function makeSurface(planet, scale) {
     return { cell, h, radius: R + h }
   }
   return { hex, R, maxH, hs, tile, real, metrics, heightAt }
+}
+
+/**
+ * Body-fixed direction `angle` radians ahead of `dir`, along the ground in the
+ * direction of `tangent` (the view heading; projected onto the plane ⊥ to dir).
+ * The geometry half of Add Craft's placement: the caller decides the arc angle
+ * (a few of the craft's own lengths, meters converted through the world's
+ * scale — see store.js addCraft), so a meter-sized hull parks the same NUMBER
+ * OF ITS OWN LENGTHS ahead on every world.
+ *
+ * @param {number[]} dir     body-fixed unit direction of the astronaut
+ * @param {number[]} tangent body-fixed view heading (any length; projected)
+ * @param {number} angle     arc angle in radians along the ground ahead
+ * @returns {number[]} new body-fixed unit direction
+ */
+export function aheadDirection(dir, tangent, angle) {
+  // the ground ahead: the heading projected onto the plane ⊥ to dir
+  const dd = dot(tangent, dir)
+  let tx = tangent[0] - dd * dir[0]
+  let ty = tangent[1] - dd * dir[1]
+  let tz = tangent[2] - dd * dir[2]
+  if (tx * tx + ty * ty + tz * tz < 1e-12) {
+    // looking straight up/down: a deterministic horizontal fallback (dir × ref)
+    const rx = Math.abs(dir[1]) < 0.9 ? 0 : 1
+    const ry = Math.abs(dir[1]) < 0.9 ? 1 : 0
+    tx = -dir[2] * ry
+    ty = dir[2] * rx
+    tz = dir[0] * ry - dir[1] * rx
+  }
+  const tl = Math.hypot(tx, ty, tz) || 1
+  tx /= tl
+  ty /= tl
+  tz /= tl
+  // rotate dir about the axis (dir × tangent) by the arc angle
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  let ax = dir[1] * tz - dir[2] * ty
+  let ay = dir[2] * tx - dir[0] * tz
+  let az = dir[0] * ty - dir[1] * tx
+  const al = Math.hypot(ax, ay, az) || 1
+  ax /= al
+  ay /= al
+  az /= al
+  // Rodrigues with dir·axis = 0:  dir·cos + (axis × dir)·sin
+  const cx = ay * dir[2] - az * dir[1]
+  const cy = az * dir[0] - ax * dir[2]
+  const cz = ax * dir[1] - ay * dir[0]
+  return norm3([dir[0] * c + cx * s, dir[1] * c + cy * s, dir[2] * c + cz * s])
 }
 
 /**

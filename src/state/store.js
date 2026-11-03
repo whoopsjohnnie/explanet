@@ -23,7 +23,7 @@ import {
 } from '../core/worldSchema.js'
 import { makeStarterWorld } from '../core/starter.js'
 import { registry, orbitalSpeed } from '../core/physics.js'
-import { planetMass, planetStats } from '../core/planetMath.js'
+import { planetMass, planetStats, planetRadius } from '../core/planetMath.js'
 import { getHexSphere, getNeighborhood } from '../core/hexsphere.js'
 import { fetchWorldDocument, fetchPlanetElements } from '../core/db.js'
 import { patchPackedCell } from '../core/atoms.js'
@@ -38,6 +38,12 @@ import {
   captureCraftPose,
   pendingFoot,
 } from '../core/motion.js'
+import { walkerLocation, aheadDirection } from '../core/surface.js'
+import { CRAFT_TYPES } from '../core/craftTypes.js'
+
+// Add Craft (on foot): how many of the shuttle's OWN lengths it parks ahead —
+// "a short walk in front of you," in meters via the world's scale.
+const AHEAD_HULL_LENGTHS = 3
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 
@@ -508,23 +514,44 @@ export const useStore = create((set, get) => ({
     if (st) set({ statusMsg: `${craft.name} is off the pad — W thrust · drag to aim` })
   },
 
-  /** Add a craft (TopBar): a shuttle parked on the selected body (or the
-   *  first landable one), nose up. */
+  /** Add a craft (TopBar): on foot, a shuttle parked a short walk in FRONT of
+   *  the astronaut, in the direction they're looking (their location, owned
+   *  by the walker — docs/positioning.txt §3); otherwise, on the selected
+   *  body (or the first landable one), nose up. */
   addCraft: (opts = {}) => {
     const s = get()
     const world = s.world
+    const footBody = s.player?.kind === 'foot' ? s.player.bodyId : null
+    const onFoot = footBody && world.planets.find((p) => p.id === footBody && p.preset !== 'star')
     const anchor =
+      onFoot ||
       (s.selectedId && world.planets.find((p) => p.id === s.selectedId && p.preset !== 'star')) ||
       world.planets.find((p) => p.preset !== 'star')
-    const pose = anchor
-      ? { anchor: { bodyId: anchor.id, dir: [0, 0.7, 0.7], r: null } }
-      : { space: { pos: [30, 0, 0], vel: [0, 0, 0], yaw: 0, pitch: 0 } }
+    let pose
+    if (anchor) {
+      // on foot: park a few of the shuttle's OWN lengths ahead, down the look
+      // direction — hull-lengths × the hull's meter size, converted through the
+      // world's scale to an arc angle (a meter-sized hull stays "a short walk
+      // in front of you" on every world).
+      let dir = [0, 0.7, 0.7]
+      if (onFoot) {
+        const kind = opts.kind && CRAFT_TYPES[opts.kind] ? opts.kind : 'shuttle'
+        const rMeters = planetRadius(anchor) * world.scale
+        const arc = (AHEAD_HULL_LENGTHS * CRAFT_TYPES[kind].sizeMeters) / rMeters
+        dir = aheadDirection(walkerLocation.dir, walkerLocation.fwd, arc)
+      }
+      pose = { anchor: { bodyId: anchor.id, dir, r: null } }
+    } else {
+      pose = { space: { pos: [30, 0, 0], vel: [0, 0, 0], yaw: 0, pitch: 0 } }
+    }
     const craft = createCraft({ ...opts, pose })
     set({
       world: { ...world, crafts: [...(world.crafts || []), craft] },
       selectedCraftId: craft.id,
       dirty: true,
-      statusMsg: `${craft.name} added — select it in the list to pilot`,
+      statusMsg: onFoot
+        ? `${craft.name} added — parked in front of you`
+        : `${craft.name} added — select it in the list to pilot`,
     })
     return craft.id
   },

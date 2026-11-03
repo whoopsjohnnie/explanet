@@ -32,9 +32,12 @@ export const CRAFT_TYPES = {
   shuttle: {
     label: 'Shuttle',
     icon: '🚀',
-    // size in host-body hex-tile units: a game object, visible at any scale
-    // (≈ 4.8 km on the Moon at true scale, ≈ 0.05 u on the starter world)
-    sizeTiles: 0.22,
+    // The shuttle's physical length, in METERS — a fixed real-world size,
+    // converted to world units through the world's scale (1 m = 1/scale units)
+    // exactly like the real-human astronaut (surface.js SURFACE_REAL). There is
+    // no "game vs real" split: on a compact world a 30 m shuttle is big, on a
+    // true-scale one it is (honestly) tiny.
+    sizeMeters: 30,
     arcade: {
       speedTiles: 24, // top speed, tiles per doc second (body-relative)
       ease: 0.25, // seconds for velocity to settle onto the target

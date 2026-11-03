@@ -457,6 +457,7 @@ export default function Walker({ planetId }) {
     walkerLocation.dir = [w.dir[0], w.dir[1], w.dir[2]]
     walkerLocation.r = w.r
     walkerLocation.cell = w.cell
+    walkerLocation.fwd = [s.fwdL.x, s.fwdL.y, s.fwdL.z]
     walkerLocation.lat = s.lat
     walkerLocation.lon = s.lon
   })
