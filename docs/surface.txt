@@ -1,0 +1,344 @@
+================================================================================
+  Surface Model — The Rendered Surface
+  The surface a body has IS the surface the renderer draws
+================================================================================
+  Nov 2026 · companion to design.txt / movement.txt / landing.txt / positioning.txt.
+  This document is the canonical reference for WHAT the surface is and WHY
+  everything that touches it (the walker, the picker, every craft) agrees with
+  the pixels. It explains the model that replaced the old "per-cell sphere"
+  walk surface, and it states the invariants that keep it true as the ground
+  moves.
+
+
+--------------------------------------------------------------------------------
+1. THE CENTRAL PRINCIPLE
+--------------------------------------------------------------------------------
+  The canonical surface of a body is the RENDERED top surface — the
+  chord-triangle fans of its hex elements. Nothing that walks, picks, parks,
+  lands, launches, or reports altitude may resolve a body's surface to
+  anything else.
+
+  There is exactly ONE surface, and it is the one on screen:
+    * the walker's feet ride it,
+    * the camera's eye sits one body-height above it,
+    * a raycast (picking) stops on it,
+    * a craft's altitude, its park anchor, and its launch pad are measured
+      from it,
+    * the HUD's altitude number is read off it.
+
+  The invariant that makes this possible: the drawn fan and the walked
+  surface are DERIVED FROM THE SAME NUMBERS. geometry.js draws each cell's
+  top as a triangle fan of (center + corners), every vertex at radius
+  R + h(cell) with INSET = 0 (so adjacent tops share their edge exactly —
+  the surface is seamless). fanRadiusAt() (core/surface.js) queries that same
+  fan analytically. They are the same object, so they cannot disagree. If the
+  ground is painted, deformed, or shaken, both the mesh and the surface
+  re-derive from the new elements — in the same frame — so the feet and the
+  pixels move together (see §7).
+
+  The one surface is STAR-SHAPED: every ray from the body's center meets it
+  exactly once. Consequences that the rest of the engine leans on:
+    * every direction has a unique surface radius — "the ground under dir"
+      is well-defined, so a walk view's horizon is honest (you see the ground
+      that is actually there, at the distance it actually is);
+    * every fall terminates — a body-relative "altitude → 0" always has an
+      answer, which is what makes "a craft lands when its altitude hits 0"
+      and "an EVA fall ends on foot" physical statements rather than UI ones;
+    * picking is a single signed function of the ray parameter — no trimesh,
+      no spatial structures, no per-triangle lookups.
+
+
+--------------------------------------------------------------------------------
+2. WHY NOT A SPHERE — THE BUG THIS MODEL REPLACES
+--------------------------------------------------------------------------------
+  The obvious stand-in for "the surface" is a per-cell sphere: r(dir) =
+  R + h(cell(dir)) — the radius of the flat top, extruded to a full sphere
+  around each hex. It is wrong in a way that is invisible up close and
+  catastrophic for the walk view:
+
+  A hex top is a flat CHORD fan, not a spherical cap. The fan's center sits
+  at R + h, but its corners and edges are CHORDS — they lie INSIDE the
+  sphere of radius R + h. A flat fan sags below that sphere by, at worst,
+  apothem²/8R (the sag of a flat chord face under a sphere of the same
+  radius). On a true-scale 35 km hex grid that is ~100 m; measured at the
+  Ceres walker spot (R = 471 km, apothem ≈ 20 km) it was 137.6 m.
+
+  While the walker rode the sphere, the 1.6 m astronaut's feet sat on
+  R + h — and the GROUND UNDER ITS FEET (the drawn fan) was ~100–140 m
+  BELOW that. The astronaut floated a hundred times its own height over the
+  ground it was standing on. Because the eye was high, the walk view read as
+  "looking at the ground from way up in the sky": the mottled ground a couple
+  of degrees below the horizon was 2–3 km distant, while a 90 m craft shared
+  the sphere's view height and so also read as far off. The horizon, the
+  parallax, and the sense of scale were all corrupted by the same split —
+  the eye on one surface, the ground on another.
+
+  Fixing it at the source (walk the fan) removed the split entirely: the eye
+  is on the fan, so the ground the astronaut sees IS the ground it stands on,
+  at the true distance. No micro-detail disc, no horizon fade — those were
+  bandages for a surface that should not have been there. The lesson is the
+  model: ONE surface, and it is the rendered one.
+
+
+--------------------------------------------------------------------------------
+3. THE FAN MODEL — fanRadiusAt
+--------------------------------------------------------------------------------
+  The walked surface is the fan. For a body-LOCAL unit direction dir that
+  falls in cell c (c = nearest cell center — the Voronoi lookup), the surface
+  radius along dir is the LOWER ENVELOPE of the cell's fan-triangle planes:
+
+      r(dir) = min_k  rho · (n_k · c) / (n_k · dir)          (1)
+
+  where rho = R + h(c) is the cell's current vertex radius, c is the cell's
+  center direction, and n_k is the unit normal of fan-triangle k (the triangle
+  C–E_k–E_{k+1}). Each fan triangle is a flat plane; the fan is their lower
+  envelope, so (1) returns the exact point where dir meets the drawn fan.
+
+  Three properties make (1) the right tool:
+
+  EXACT. (1) equals the exact Möller–Trumbore ray/triangle intersection of
+  dir against the real fan, to machine precision (6.6e-16) for every
+  direction in the cell, across all cells, frequencies 1–24 (including the
+  twelve pentagons). And at the exact cell-EDGE directions — where a single
+  cell's triangles only meet in a shared line and a naive triangle test
+  degenerates — the min still returns the shared edge's radius. The envelope
+  is MORE robust than per-triangle intersection at the one place intersection
+  is weakest.
+
+  CHEAP. (1) is allocation-free: ~6 dot products and divisions per query.
+  That matters because it runs at 60 Hz in the walker AND inside
+  intersectHeightfield, which calls the surface ~1000 times per pointer event
+  (every pointer move AND every wheel tick raycasts). A mesh raycast or a
+  heap-allocating formula here would show up in the frame time.
+
+  FREE TO DEFORM. The plane ORIENTATION n_k depends only on the grid (the
+  chord directions E_k − C, E_{k+1} − C), which depend only on `frequency` —
+  never on h. So the normals + (n_k · c) are computed ONCE per frequency and
+  cached (fanTables: frequency → { normals, centerCos }). Only the plane's
+  DISTANCE from the center scales with rho = R + h. A paint stroke, a
+  deformation, or a simulated earthquake changes h — it costs nothing but the
+  multiply in (1). This is the entire reason "the walker moves with the
+  shaking ground" is true by construction rather than by extra code (§7).
+
+
+--------------------------------------------------------------------------------
+4. THE TWO QUANTITIES — do not conflate them
+--------------------------------------------------------------------------------
+  The surface model keeps two different numbers straight, and mixing them is
+  the bug this section exists to prevent:
+
+  h(cell) — the per-element RELIEF. The stored height of one hex, in world
+  units. This is the quantity the step/wall logic compares: a neighbor whose
+  h differs by more than stepUp is a WALL (the move is blocked and slides
+  along it); a drop of more than stepDownSnap is a real FALL; a smaller step
+  is climbed or snapped down. h is the terrain the walker NAVIGATES.
+
+  fan radius = fanRadiusAt(dir) — the POSITION radius the walker and every
+  craft ride. It is CONTINUOUS inside a cell (flat, sagging from R + h at the
+  cell's center down toward its edges) and JUMPS by the relief delta across a
+  cell edge. It is the terrain the walker STANDS on.
+
+  The rule: step/wall logic compares h, never the in-cell fan sag. The sag
+  within a single cell is a fraction of a tile — far below stepUp and
+  stepDownSnap — so it must not read as a step or a fall. Only the RELIEF
+  delta at a shared edge is terrain. Conversely, position and altitude always
+  use the fan radius, never R + h. Equal-h neighbors are continuous (they
+  share a chord); different-h neighbors step by exactly the h difference —
+  which is exactly what the drawn mesh does.
+
+
+--------------------------------------------------------------------------------
+5. EVERYONE USES THE SAME SURFACE
+--------------------------------------------------------------------------------
+  The single surface is shared by every consumer, through a small number of
+  functions that are the ONLY places a body's surface is resolved:
+
+  WALKER (core/surface.js)
+    heightAt(dir).radius = fanRadiusAt(...) — the feet ride the fan; the
+    camera sits at feet + metrics.eye along the local radial. The step/wall
+    logic compares per-cell h. The walk view's ground is the fan.
+
+  PICKING (core/surface.js intersectHeightfield)
+    The analytic ray→surface march evaluates the signed penetration
+      f(t) = |origin + t·dir| − fanRadiusAt(direction of that point)
+    and finds its first zero. A hit snaps radially onto the hit cell's fan so
+    it never floats. This is what makes a paint stroke land on the drawn
+    tile, at the drawn height — and it is LOD-independent and
+    cell-count-independent (the cost does not grow with 500k cells).
+
+  CRAFT — ALTITUDE (core/motion.js altitudeOf)
+    Altitude of a world position above a body's RENDERED surface:
+    d − fanRadiusAt(...) when the body's elements are in hand, flat-sphere
+    otherwise. This is the HUD's terrain-corrected altitude (refreshed every
+    6th frame — a cell search — the cheap flat number the rest). It is what a
+    pilot SEES as "how high am I over the ground" — over the mountains, not
+    over the invisible sphere.
+
+  CRAFT — PARK / LAUNCH (core/motion.js heightAtDir, parkCraft,
+  launchCraftState)
+    A parked craft's anchor radius is r = body.radius + heightAtDir(dir) —
+    the rendered fan under its dir. Launch lifts from that fan-resolved pad
+    by LAUNCH_LIFT·R. So a craft parks ON the drawn ground (a mountain top or
+    a valley floor) and launches from it — not on the sphere.
+
+  THE CHEAP TRIGGER vs THE RESOLVED POSITION (the subtle, important split)
+    The per-frame LANDING TRIGGER is deliberately the FLAT sphere:
+      d − body.radius <= LAND_EPS · body.radius      (LAND_EPS = 0.002)
+    and the EVA fall ends at d − body.radius <= 0.005 · body.radius. These
+    are cheap (no cell lookup) and robust: a craft descending toward a valley
+    is not gated by a nearby ridge's fan, and "you are basically at the
+    surface" is a clean, terrain-independent signal. But the MOMENT the
+    trigger fires, the position RESOLVES to the rendered fan (parkCraft, and
+    the walker on foot). The pattern, stated once: the sphere is only the
+    cheap "close enough" tripwire; the fan is where everything actually
+    LANDS, STANDS, and is MEASURED from. Never let a resolved or persisted
+    position fall back to the sphere — that is the §2 bug returning.
+
+
+--------------------------------------------------------------------------------
+6. DYNAMIC SURFACES — the ground is expected to change
+--------------------------------------------------------------------------------
+  The model is built on the expectation that a body's surface is DYNAMIC: it
+  is painted, deformed, or shaken at runtime, and the walker and every craft
+  must track it while they traverse it or avoid it. This is not an edge case
+  to be patched — it is the operating assumption, and the model makes it
+  costless:
+
+  * The surface is RE-DERIVED from planet.elements on every query. heightAt
+    and fanRadiusAt read the current hs array; there is no cached surface
+    radius that can go stale. If h changes, the very next read sees it.
+
+  * The surface memo and the mesh rebuild on the SAME identity change. The
+    walked surface (makeSurface) and the drawn geometry are both memoized on
+    `planet.elements` (and `frequency`) identity — the copy-on-write contract
+    shared with everything else. A terrain edit replaces the elements array;
+    the memo rebuilds the surface AND the mesh in the same frame. Feet and
+    pixels move together. There is no window in which the mesh shows one
+    surface and the walker rides another.
+
+  * Deforming h is free; reshaping the grid is not. Because the fan plane
+    orientations are cached per frequency (§3), a change to h (paint,
+    deformation, an earthquake that raises or lowers tiles) costs nothing but
+    the rho rescale in (1). Only a change to `frequency` (a different grid)
+    rebuilds the fanTables cache. Shaking — thousands of tiles' h changing
+    per frame — is exactly the cheap case.
+
+  * The flyer tracks a moving surface the same way. A craft's altitude
+    (altitudeOf) and a parked craft's anchor (heightAtDir) read the current
+    elements every frame, so a craft parked on a shaking ridge rides it, and
+    a craft in descent sees the true, current altitude over the terrain it is
+    about to meet. "Navigating the rendered surface as it traverses, or
+    avoids, a body" is the same fanRadiusAt the walker uses — there is no
+    separate surface for flight.
+
+  The consequence worth stating plainly: because the walked surface and the
+  drawn surface are the same derivation of the same elements, you cannot
+  paint the ground under a standing astronaut and have them keep standing on
+  the old ground. They move with it. That is the requirement, and it holds
+  without any extra synchronization code.
+
+
+--------------------------------------------------------------------------------
+7. THE BODY-LOCAL FRAME — and the measurement gotcha
+--------------------------------------------------------------------------------
+  The surface is queried in the body's LOCAL frame: a direction dir + a
+  radius r, with the world pose composed as planetPos + quat·(dir·r) from the
+  live registry. The walker and a parked craft store their pose this way, so
+  they ride the body's spin and orbit for free — a standing astronaut's
+  body-local pose is unchanged even as the planet spins and flies.
+
+  MEASUREMENT GOTCHA (bought the hard way). Live body positions in the
+  registry are FLOAT32. At Sol-Real distances (|pos| ~ 4.2e6 units) the
+  float32 quantum is ~0.25 units ≈ 9 km. So any measurement of "how high is
+  the eye above the ground" taken in WORLD space against a registry position
+  is dominated by that 9 km quantum and is meaningless at meter scale. To
+  verify the weld (or measure eye height) you MUST work in the body-LOCAL
+  frame: transform the camera through the registry's inverse quaternion
+  against the SAME quantized center the camera was composed from, and read the
+  local radius. probe-walk-fan.mjs does exactly this, and it is the only way
+  the "feet 0.0000 m above the fan" result is real. Do not "simplify" a
+  surface measurement into world space — it will silently read as a 9 km
+  error and the weld will look broken when it is not.
+
+
+--------------------------------------------------------------------------------
+8. WHY THIS IS CHEAP ENOUGH
+--------------------------------------------------------------------------------
+  The surface model's whole design pressure is: it must be exact AND cheap,
+  because it runs in the two hottest paths in the app.
+
+  * fanRadiusAt is ~6 dot products + divisions, no allocation, no grid
+    rebuild (fanTables cached per frequency).
+  * The 60 Hz walker calls it once per step; the pick sweep calls it ~1000×
+    per pointer event. A 5000-pick benchmark on a 492-cell world runs in ~12 ms.
+  * intersectHeightfield is a signed-function march on a sphere chord —
+    LOD-independent and cell-count-independent. Picking a 500k-cell giant
+    costs the same as a 92-cell moon.
+  * The per-frame craft landing trigger is the flat sphere (one distance),
+    not a cell lookup — the cell search only happens when the trigger fires
+    (park) or for the HUD's every-6th-frame terrain altitude.
+
+  The trade, stated honestly: exactness to the rendered mesh is what buys the
+  honest walk view (§2). The cost of that exactness is a handful of dot
+  products — which is why the model is min-of-planes (1) instead of a mesh
+  raycast. Do not "upgrade" the surface query to a trimesh or a per-triangle
+  structure to save a dot product; the fan envelope is the cheap exact answer.
+
+
+--------------------------------------------------------------------------------
+9. VERIFICATION & GUARDS
+--------------------------------------------------------------------------------
+  The model is pinned in several places; a regression in any of them is a
+  real bug, not a tolerance to loosen:
+
+  * min-of-planes == exact triangle intersection (6.6e-16, all cells, freqs
+    1–24). Verified directly against Möller–Trumbore on the real grid. If
+    (1) stops matching the triangle hit, the fan formula is wrong.
+  * scripts/test-surface.mjs — walker weld, step/wall, falls, and the
+    analytic-pick vs brute-force-march agreement. The march-agreement test
+    verifies sub-step slivers: a fan KINK (the slope discontinuity where two
+    flat fan planes meet at a cell edge) can create a grazing penetration
+    thinner than the march step; a reported hit is then checked to actually
+    penetrate at its own point, and a confirmed sliver counts as a documented
+    miss (a non-penetrating "hit" is still a failure). Do not weaken this.
+  * scripts/probe-walk-fan.mjs — the regression probe for THIS model, on
+    true-scale Ceres in the body-local frame (§7): feet welded to the fan
+    (machine precision), eye a real 1.6 m human above the fan, parked craft
+    anchored on the fan. Exits non-zero if the weld breaks. Needs
+    sol-real.json (node scripts/gen-sol-real.mjs).
+  * scripts/test-headless.mjs — the rendered pipeline: the real-human walker
+    welds to 35 km terrain, and both flight→walk chains (launch→park→eject→
+    on foot) terminate on the surface. These run the real tree + workers.
+
+  The measured baseline on Sol Real Ceres (the original bug scenario):
+    feet above rendered fan   0.00e+0 m   (welded, machine precision)
+    eye above rendered fan    1.600 m     (a real human)
+    old walking sphere sag    137.6 m     (the astronaut now stands ON it)
+    parked craft over ground  -6.25e-11 m (on the drawn ground)
+
+
+--------------------------------------------------------------------------------
+10. INVARIANTS — DO NOT
+--------------------------------------------------------------------------------
+  * Never resolve a body's surface (position, altitude, pick, park, launch)
+    to the per-cell sphere R + h. The sphere is only the cheap landing
+    tripwire; every resolved/persisted position is the rendered fan. This is
+    the §2 bug.
+  * Never introduce a SECOND surface. There is one surface and it is the
+    rendered one. A walk surface, a flight surface, a pick surface that differ
+    from the mesh will desynchronize and the walk view will lie again.
+  * Never cache a surface RADIUS. Cache only the grid-derived plane
+    orientations (per frequency). The radius must be re-derived from the
+    current h on every query, or a dynamic surface will not be tracked (§6).
+  * Never let step/wall logic compare the in-cell fan sag — compare per-cell
+    h only, or the sag reads as phantom steps and falls (§4).
+  * Never measure a surface weld in world space at giant-body distances —
+    float32 center quantization swamps it. Body-local frame, always (§7).
+  * Never route the surface query through a trimesh or per-triangle lookup —
+    the analytic fan envelope is the cheap exact answer (§8).
+  * Keep core/surface.js and core/motion.js framework-free (no three, no DOM
+    at module load) — that is what lets the node tests and the headless
+    harness exercise the surface directly.
+  * Keep the surface memo and the geometry memo on the SAME identity
+    (planet.elements + frequency) so a dynamic surface moves the feet and the
+    pixels in the same frame (§6).
