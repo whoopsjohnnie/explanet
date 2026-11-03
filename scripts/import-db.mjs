@@ -48,6 +48,16 @@ if (!world || !Array.isArray(world.planets)) {
   console.error(`${src}: not a world document`)
   process.exit(1)
 }
+// scale (meters per world unit) is REQUIRED: every world must declare how
+// long a meter is here (avatars and objects are sized in real meters through
+// it). A scale-less document is rejected — it can't be walked or filled with
+// objects. Set "scale" in the document before importing.
+if (!(Number.isFinite(Number(world.scale)) && Number(world.scale) > 0)) {
+  console.error(
+    `${src}: world has no scale (meters per world unit) — every world needs one; add "scale" to the document (e.g. 35181.6 for a ~35 km/unit world, 386059 for the atom default)`
+  )
+  process.exit(1)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: SQL literals and COPY text-format escaping
@@ -118,7 +128,7 @@ ${bodyRows}
 WITH w AS (
   INSERT INTO worlds (name, gravity, doc_version, scale)
   VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)},
-    ${Number.isFinite(Number(world.scale)) && Number(world.scale) > 0 ? num(world.scale) : 'NULL'})
+    ${num(world.scale)})
   RETURNING id
 )
 INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, atmosphere, scripts, parent_body_id)

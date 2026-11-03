@@ -163,6 +163,7 @@ test('craft documents: lenient normalize + serialize round-trip', () => {
     version: 1,
     name: 't',
     gravity: 40,
+    scale: 100, // a world document always carries a scale (meters per unit)
     planets: [
       {
         id: 'p1',

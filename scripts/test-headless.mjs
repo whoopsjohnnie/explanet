@@ -154,7 +154,7 @@ test('flight: launch → climb → brake → park on altitude → eject → on f
   // eject from parked → on foot at the pad (landing → walk, no button)
   await w.eject()
   assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-testball' })
-  await w.frames(300) // spawn descent + settle
+  await w.frames(1200) // real-human spawn: a fixed 120 m fall (~8 s at the 15 m/s terminal)
   assert.ok(walkReadout.grounded, 'the ejected astronaut must be on the ground')
   await w.close()
 })
@@ -185,7 +185,7 @@ test('flight (EVA): eject mid-flight → adrift → the fall ends on foot', { ti
   }
   assert.ok(landed, 'the EVA fall must end on the surface (the dist3 object-vs-array bug)')
   assert.equal(eva.state, null, 'the EVA state clears on landing')
-  await w.frames(300) // spawn descent + settle
+  await w.frames(1200) // real-human spawn: a fixed 120 m fall (~8 s at the 15 m/s terminal)
   assert.ok(walkReadout.grounded, 'the astronaut must be on the ground where the fall ended')
   await w.close()
 })

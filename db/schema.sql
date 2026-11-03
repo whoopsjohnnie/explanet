@@ -7,8 +7,8 @@
 --   world.json                    this schema
 --   ────────────────────────────  ───────────────────────────────────────────
 --   { name, gravity,              worlds   (scale = length of one world
---     scale, version }                       unit, in meters; NULL = game
---                                            scale)
+--     scale, version }                       unit, in meters; REQUIRED —
+--                                            every world declares it)
 --   planets[]                     bodies        (stars AND planets — the
 --                                                document's `preset` says
 --                                                which; no separate table)
@@ -81,12 +81,14 @@ CREATE TABLE worlds (
   -- solar-system / physics settings (document top level)
   gravity       double precision NOT NULL DEFAULT 40 CHECK (gravity >= 0),
 
-  -- length of one world unit for this world, in METERS (migration 007).
-  -- NULL = game scale (the surface walker is one hex-tile tall); positive =
-  -- a true-scale world (1 unit is that many meters, and 1 document second =
-  -- 1 real second) — the walker is a real human in meters (world.scale;
+  -- length of one world unit for this world, in METERS (migration 007,
+  -- made REQUIRED by migration 008). Every world declares how long a meter
+  -- is, so avatars and objects are sized in real meters through it — there
+  -- is no "game vs real" split (a compact world just has a small scale).
+  -- Positive: 1 unit is that many meters (and 1 document second = 1 real
+  -- second); the surface walker is a real human in meters (world.scale;
   -- core/surface.js SURFACE_REAL). Distinct from bodies.scale (size factor).
-  scale         double precision CHECK (scale IS NULL OR scale > 0),
+  scale         double precision NOT NULL CHECK (scale > 0),
 
   -- document bookkeeping
   doc_version   integer      NOT NULL DEFAULT 1,   -- mirrors "version" in world.json

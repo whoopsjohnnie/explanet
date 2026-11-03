@@ -39,6 +39,18 @@ export function radiusForFrequency(f) {
 }
 
 /**
+ * The absolute size of one world unit in the reference atom calibration: one
+ * hex covers one area unit on every planet, and JUPITER (69911 km) exactly
+ * fills the largest legal grid (frequency MAX_FREQUENCY). That pins one world
+ * unit at ≈ 386 km. This is the default `scale` (meters per world unit) for a
+ * world that carries none of its own (worldSchema.js createEmptyWorld) and
+ * the honest scale of the built-in starter world (core/starter.js). A world's
+ * OWN scale (Sol Real / Sol Trial ≈ 35181.6, Earth-anchored) overrides it.
+ */
+export const JUPITER_RADIUS_KM = 69911
+export const ATOM_M_PER_UNIT = (JUPITER_RADIUS_KM * 1000) / radiusForFrequency(MAX_FREQUENCY)
+
+/**
  * Frequency of the atom grid whose natural radius is nearest to R — the
  * inverse of radiusForFrequency, exact on the ladder (round-trips for every
  * 1 ≤ f ≤ MAX_FREQUENCY) and clamped to the legal frequency range. The

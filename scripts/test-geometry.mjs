@@ -173,9 +173,20 @@ check(
     norm.planets.every((p, i) => p.elements.length === raw.planets[i].elements.length)
 )
 
-// corrupt-file healing
-const broken = normalizeWorld({ planets: [{ frequency: 3 }, { frequency: 'garbage', elements: [{ t: 'nope', h: 'x' }] }] })
+// corrupt-file healing (a world always carries a scale — the scale field
+// itself is required, so these test documents set one)
+const broken = normalizeWorld({ scale: 100, planets: [{ frequency: 3 }, { frequency: 'garbage', elements: [{ t: 'nope', h: 'x' }] }] })
 check('corrupt worlds are healed with defaults', broken.planets.length === 2 && broken.planets[0].elements.length === 92)
+
+// a world WITHOUT a scale is rejected (not healed): it can't be walked or
+// filled with objects
+let scalelessRejected = false
+try {
+  normalizeWorld({ name: 'X', planets: [{ frequency: 3, elements: [{ t: 'grass', h: 0 }] }] })
+} catch {
+  scalelessRejected = true
+}
+check('a scale-less world is rejected (scale is required)', scalelessRejected)
 
 // ---------------------------------------------------------------------------
 // DB streaming model: skeleton planets with elements == null (stubs)
@@ -184,6 +195,7 @@ const stubDoc = {
   version: 1,
   name: 'Skeleton',
   gravity: 40,
+  scale: 1000,
   planets: [
     {
       dbId: 24, id: 'p-jup', name: 'Jupiter', preset: 'rocky', seed: 5, frequency: 203,

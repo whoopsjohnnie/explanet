@@ -509,10 +509,10 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     version: w[0].doc_version || 1,
     name: w[0].name,
     gravity: w[0].gravity,
-    // physical scale (migration 007): length of one world unit, in METERS —
-    // the surface walker becomes a real human (core/surface.js SURFACE_REAL).
-    // Absent for game-scale worlds, exactly like the document field.
-    ...(w[0].scale != null ? { scale: w[0].scale } : {}),
+    // physical scale (migration 007, REQUIRED by 008): length of one world
+    // unit, in METERS. Every world carries it, so the surface walker is a
+    // real human in meters (core/surface.js SURFACE_REAL).
+    scale: w[0].scale,
     source: `db:${DATABASE}@${HOST} · ${w[0].name}`,
     planets,
   }

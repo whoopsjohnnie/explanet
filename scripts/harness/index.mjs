@@ -53,7 +53,7 @@ const { useStore, defaultPlayer } = await import('../../src/state/store.js')
 const { registry, stepGravity } = await import('../../src/core/physics.js')
 const { makeStarterWorld } = await import('../../src/core/starter.js')
 const { normalizeWorld, createPlanet, createCraft } = await import('../../src/core/worldSchema.js')
-const { planetRadius, radiusForFrequency } = await import('../../src/core/planetMath.js')
+const { planetRadius, radiusForFrequency, ATOM_M_PER_UNIT } = await import('../../src/core/planetMath.js')
 const { sampleLodElements } = await import('../../src/core/lod.js')
 const { animateTerrainMaterials } = await import('../../src/three/materials.js')
 const Planet = (await import('../../src/components/Planet.jsx')).default
@@ -116,6 +116,10 @@ export function makeTestballWorld() {
     version: 1,
     name: 'Testball',
     gravity: 40,
+    // every world carries a scale (meters per unit): the fixture uses the
+    // atom default, so the on-foot walker is a real human and the flight/EVA
+    // chains (raw softened law + arcade shuttle) run unchanged
+    scale: ATOM_M_PER_UNIT,
     planets: [planet],
     crafts: [
       createCraft({
@@ -181,6 +185,7 @@ export function makeStubWorld() {
     version: 1,
     name: 'Stubworld',
     gravity: 40,
+    scale: ATOM_M_PER_UNIT, // every world carries a scale (meters per unit)
     planets: [stub, little], // STUB FIRST — the exact condition that crashed boot
     crafts: [
       createCraft({

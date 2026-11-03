@@ -50,7 +50,7 @@
 import { createEmptyWorld, createPlanet, createCraft } from './worldSchema.js'
 import { atmosphereFor } from './atmospheres.js'
 import { generateElements } from './generators.js'
-import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from './planetMath.js'
+import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY, JUPITER_RADIUS_KM } from './planetMath.js'
 import { orbitalSpeed } from './physics.js'
 
 const HOME_SCALE = 35 // u/AU of the original compact demo — the floor
@@ -121,14 +121,19 @@ const PLANET_DATA = [
 const AU = unitsPerAU(Math.max(...PLANET_DATA.map((d) => d.a)))
 
 // Real radii in km, anchored so Jupiter exactly fills the largest legal
-// atom grid — this fixes the universal size of one hex:
-const KM2U = radiusForFrequency(MAX_FREQUENCY) / 69911
+// atom grid — this fixes the universal size of one hex (one world unit ≈
+// 386 km, i.e. world.scale = 1000/KM2U = ATOM_M_PER_UNIT):
+const KM2U = radiusForFrequency(MAX_FREQUENCY) / JUPITER_RADIUS_KM
 
 // Relief reference: generator heights are tuned for an Earth-sized world,
 // so h scales with the atom radius (Earth keeps its exact generator relief).
 const RELIEF_REF = radiusForFrequency(frequencyForRadius(6371.0 * KM2U))
 
 export function makeStarterWorld() {
+  // True-scale miniature: createEmptyWorld gives it the honest atom scale
+  // (world.scale = ATOM_M_PER_UNIT ≈ 386 km/unit — the same anchor as the
+  // planet frequencies above), so the surface walker is a real 1.6 m human
+  // here exactly as on Sol Real / Sol Trial.
   const world = createEmptyWorld('Sol System')
   const G = world.gravity
 
