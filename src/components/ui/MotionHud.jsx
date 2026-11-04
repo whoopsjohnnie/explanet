@@ -112,15 +112,16 @@ export default function MotionHud() {
   // ------------------------------------------------------ in a craft -----
   if (player.kind === 'craft') {
     const r = motionReadout
+    const isDrive = craft?.kind === 'drive'
     const parked = r.mode === 'park'
     return (
       <div className="motion-hud">
         <div className="motion-hud-title">
           <span>
-            {craft ? `${craft.name} · ${craft.realism}` : 'Craft'}
-            {parked ? ' · parked' : ' · flying'}
+            {isDrive ? `🚙 ${craft?.name ?? 'Rover'} · driving` : craft ? `${craft.name} · ${craft.realism}` : 'Craft'}
+            {!isDrive && (parked ? ' · parked' : ' · flying')}
           </span>
-          {parked && (
+          {!isDrive && parked && (
             <button className="btn btn-accent" onClick={(e) => (e.currentTarget.blur(), launchCraft(player.craftId))} title="Launch off the pad">
               🚀 Launch
             </button>
@@ -130,27 +131,45 @@ export default function MotionHud() {
           </button>
         </div>
         <div className="motion-hud-stats">
-          {!parked && r.bodyName && (
-            <span title="Share of the total gravitational pull this body exerts on the craft — the soft body-relative transition">
-              over {r.bodyName} · {(r.dominance * 100).toFixed(0)}%
-            </span>
-          )}
-          <span>
-            alt {fmt(toM(r.altitude))}
-            {real ? ' m' : ''} · {fmt(toM(r.relSpeed))}
-            {real ? ' m/s' : ' u/s'}
-          </span>
-          {r.lat != null && (
-            <span className="motion-hud-atmo">
-              {Math.abs(r.lat).toFixed(1)}°{r.lat >= 0 ? 'N' : 'S'} {Math.abs(r.lon).toFixed(1)}°
-              {r.lon >= 0 ? 'E' : 'W'}
-            </span>
+          {isDrive ? (
+            <>
+              {r.bodyName && <span>on {r.bodyName}</span>}
+              <span title="Ground speed — tile-anchored game pace (a multiple of the body's hex-tile size)">{fmt(toM(r.relSpeed))}
+                {real ? ' m/s' : ' u/s'}</span>
+              {r.lat != null && (
+                <span className="motion-hud-atmo">
+                  {Math.abs(r.lat).toFixed(1)}°{r.lat >= 0 ? 'N' : 'S'} {Math.abs(r.lon).toFixed(1)}°
+                  {r.lon >= 0 ? 'E' : 'W'}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {!parked && r.bodyName && (
+                <span title="Share of the total gravitational pull this body exerts on the craft — the soft body-relative transition">
+                  over {r.bodyName} · {(r.dominance * 100).toFixed(0)}%
+                </span>
+              )}
+              <span>
+                alt {fmt(toM(r.altitude))}
+                {real ? ' m' : ''} · {fmt(toM(r.relSpeed))}
+                {real ? ' m/s' : ' u/s'}
+              </span>
+              {r.lat != null && (
+                <span className="motion-hud-atmo">
+                  {Math.abs(r.lat).toFixed(1)}°{r.lat >= 0 ? 'N' : 'S'} {Math.abs(r.lon).toFixed(1)}°
+                  {r.lon >= 0 ? 'E' : 'W'}
+                </span>
+              )}
+            </>
           )}
         </div>
         <div className="motion-hud-keys">
-          {parked
-            ? '🚀 Launch (above) · Eject · Esc free-cam'
-            : 'W thrust · S brake · A/D strafe · R/F up·down · Shift boost · Space retro · drag aim · C chase · E eject'}
+          {isDrive
+            ? 'W throttle · S brake · A/D steer · Shift boost · C chase · E eject · Esc free-cam'
+            : parked
+              ? '🚀 Launch (above) · Eject · Esc free-cam'
+              : 'W thrust · S brake · A/D strafe · R/F up·down · Shift boost · Space retro · drag aim · C chase · E eject'}
         </div>
       </div>
     )

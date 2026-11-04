@@ -21,6 +21,11 @@
  *    altitude-driven, no button), then eject → on foot; and the EVA chain:
  *    eject mid-flight → adrift under real gravity → the fall ENDS on the
  *    surface → on foot (docs/flight.txt)
+ *  - the drive (rover) chain on the same fixture: board → launch REFUSED
+ *    (a drive craft never flies) → W drives along the surface, WELDED to the
+ *    rendered chord fan when grounded → A/D steers → release + settle (it
+ *    obeys gravity when it drives off a ledge but has no lift, so it ends
+ *    back on the ground, welded) → eject → on foot
  *  - the stub-boot crash (harness makeStubWorld, spec 'stubworld'): the
  *    harness boots exactly like the app (player: defaultPlayer(world)), so
  *    a stub-FIRST world must boot without makeSurface dying on
@@ -33,7 +38,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { bootWorld, SOL_REAL_MAJOR } from './harness/index.mjs'
-import { walkReadout } from '../src/core/surface.js'
+import { walkReadout, makeSurface } from '../src/core/surface.js'
 import { craftRuntime, eva } from '../src/core/motion.js'
 
 const SOL_REAL_PRESENT = existsSync(new URL('../public/sol-real.json', import.meta.url))
@@ -187,6 +192,71 @@ test('flight (EVA): eject mid-flight → adrift → the fall ends on foot', { ti
   assert.equal(eva.state, null, 'the EVA state clears on landing')
   await w.frames(1200) // real-human spawn: a fixed 120 m fall (~8 s at the 15 m/s terminal)
   assert.ok(walkReadout.grounded, 'the astronaut must be on the ground where the fall ended')
+  await w.close()
+})
+
+test('drive: board rover → launch refused → drives + stays welded → eject → on foot', { timeout: 240_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await w.frames(30) // runtime sync (parked r resolves against the terrain)
+  const id = w.craft('Rover').id
+  const rt = craftRuntime.get(id)
+  assert.ok(rt && rt.state.mode === 'park', 'rover must sync parked at boot')
+  assert.ok(Number.isFinite(rt.state.r) && rt.state.r > 1, `parked r must be resolved to the surface (got ${rt.state.r})`)
+
+  await w.board('Rover')
+  assert.deepEqual(w.player, { kind: 'craft', craftId: id })
+
+  // a rover is GROUND-LOCKED: launch is refused, it never leaves the pad
+  await w.launch('Rover')
+  assert.equal(craftRuntime.get(id).state.mode, 'park', 'a drive craft has no launch')
+
+  // drive: W throttle — it moves along the surface...
+  const dir0 = [...rt.state.dir]
+  w.fly({ fwd: 1 })
+  await w.frames(180) // 3 s at full throttle (ease 0.4 s)
+  const st = craftRuntime.get(id).state
+  assert.equal(st.mode, 'park', 'driving never enters space mode')
+  const dot = st.dir[0] * dir0[0] + st.dir[1] * dir0[1] + st.dir[2] * dir0[2]
+  const arc = Math.acos(Math.min(1, Math.max(-1, dot)))
+  assert.ok(arc > 0.5, `the rover must drive along the surface (arc ${arc.toFixed(2)} rad)`)
+
+  // it is WELDED to the rendered surface WHEN GROUNDED (the driveStep contract):
+  // the anchor r is the chord-fan radius at its dir. Mid-fall — after it drove
+  // off a ledge and obeys gravity (no lift) — it is legitimately above it.
+  const surface = makeSurface(w.planet('p-testball'), null)
+  if (st.grounded)
+    assert.ok(
+      Math.abs(st.r - surface.heightAt(st.dir).radius) < 1e-9,
+      `grounded rover r (${st.r}) must equal the rendered surface radius at its dir (${surface.heightAt(st.dir).radius})`
+    )
+
+  // steer: A/D turns the heading (and the nose stays on the horizon)
+  w.fly({ yaw: 1 })
+  const h0 = [...st.heading]
+  await w.frames(60)
+  const st2 = craftRuntime.get(id).state
+  const hdot = st2.heading[0] * h0[0] + st2.heading[1] * h0[1] + st2.heading[2] * h0[2]
+  assert.ok(Math.acos(Math.min(1, Math.max(-1, hdot))) > 0.3, 'steering must turn the heading')
+  const tang = st2.heading[0] * st2.dir[0] + st2.heading[1] * st2.dir[1] + st2.heading[2] * st2.dir[2]
+  assert.ok(Math.abs(tang) < 0.05, `the nose stays on the horizon (heading·dir ${tang.toFixed(3)})`)
+
+  // release + settle: the throttle eases to a stop, and any fall (it obeys
+  // gravity when it drove off a ledge, but has NO lift) ends back on the ground
+  w.flyReset()
+  await w.frames(240) // 4 s: well past the longest fall + the stop
+  const st3 = craftRuntime.get(id).state
+  assert.ok(Math.abs(st3.speed) < 0.1, 'the throttle must ease back to 0')
+  assert.ok(st3.grounded, 'the rover settles back on the ground (no lift)')
+  assert.ok(
+    Math.abs(st3.r - surface.heightAt(st3.dir).radius) < 1e-9,
+    `grounded rover r (${st3.r}) must equal the rendered surface radius at its dir (${surface.heightAt(st3.dir).radius})`
+  )
+
+  // eject → on foot at where the rover drove to
+  await w.eject()
+  assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-testball' })
+  await w.frames(1200) // real-human spawn: a fixed 120 m fall (~8 s at the 15 m/s terminal)
+  assert.ok(walkReadout.grounded, 'the ejected astronaut must be on the ground')
   await w.close()
 })
 

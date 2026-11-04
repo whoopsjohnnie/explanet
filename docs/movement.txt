@@ -28,10 +28,10 @@
     src/components/ui/MotionHud.jsx    the session HUD (~8 Hz poll)
     src/App.jsx                      motion-mode keyboard gating
   Tests
-    scripts/test-motion.mjs  13 unit tests of the core movers (npm test)
+    scripts/test-motion.mjs  19 unit tests of the core movers (npm test)
     scripts/test-surface.mjs pins the walker's tile path (npm test)
-    scripts/test-headless.mjs 7 rendered-pipeline regressions, incl. both
-    flight chains (npm run test:headless)
+    scripts/test-headless.mjs 8 rendered-pipeline regressions, incl. both
+    flight chains + the drive (rover) chain (npm run test:headless)
 
 
 --------------------------------------------------------------------------------
@@ -123,7 +123,7 @@
   Two pose forms — the parked one persists across sessions, the flying one
   is a save-time snapshot:
 
-    anchor: { bodyId, dir: [x,y,z], r }
+    anchor: { bodyId, dir: [x,y,z], r, heading? }
       PARKED on a surface. dir is in the body-LOCAL frame, so a parked
       craft rides the body's spin and orbit for free (its world pose
       composes from the body's registry entry — the same float32 stream the
@@ -131,7 +131,10 @@
       document r is null and syncCraftRuntime resolves it against the
       terrain on first sync. A null r must NEVER be read as 0 —
       Number(null) === 0 is finite, and "0" launches the craft from the
-      body's CENTER (pinned trap bug, §13).
+      body's CENTER (pinned trap bug, §13). heading (drive crafts only,
+      §4) is the body-LOCAL tangent the rover faces — optional: a missing
+      one is lazy-initialized on the first drive step, and normalizeCrafts
+      drops a corrupt one rather than rejecting the craft.
 
     space: { pos, vel, yaw, pitch }
       IN FLIGHT. The live state at save time (captureCraftPose). vel is
@@ -144,7 +147,9 @@
   read falls back to a fresh anchor, unusable entries are dropped; an empty
   or missing list means "no crafts" (the field is optional — DB worlds have
   none until P3, §15). TopBar 🚀 Add Craft makes a shuttle parked nose-up
-  (dir [0, 0.7, 0.7]) on the selected body (or the first landable one).
+  (dir [0, 0.7, 0.7]) on the selected body (or the first landable one);
+  🚙 Add Rover makes a drive craft parked the same way (on foot, a few
+  hull-lengths in front of you, like the shuttle).
 
 
 --------------------------------------------------------------------------------
@@ -157,7 +162,7 @@
   `input` is the shared flightInput side channel while the astronaut
   pilots; it is null when unattended — parked crafts ride analytically,
   flying ones coast (arcade eases to a hover over the ground, real keeps
-  orbiting). Movers in P1:
+  orbiting). The movers:
 
     spaceflight  (kind 'shuttle', stepCraft in motion.js) — flies in space;
                may LAND/PARK when its altitude over the dominant body
@@ -165,17 +170,23 @@
     eva          (the adrift astronaut, stepEva) — always Newtonian.
     walk         (core/surface.js, byte-identical) — the on-foot mover;
                the same contract, stepped by Walker.jsx.
-  P2: drive (rover) — drives + parks (it never flies), ground-locked to the
-  surface like the walker but a vehicle. New movers plug into craftRuntime;
-  the world already knows how to persist, render and pilot whatever it steps.
+    drive        (kind 'drive', driveStep in motion.js) — a ground-locked
+               vehicle: it DRIVES along the rendered surface (the same
+               chord fan the walker rides) and parks; it OBEYS GRAVITY but
+               has NO LIFT — it can fall off a ledge and land, but it can
+               not jump or fly (launchCraftState refuses it, §7).
+               Unattended, it rides its body analytically like any parked
+               craft.
+  New movers plug into craftRuntime; the world already knows how to
+  persist, render and pilot whatever it steps.
 
   Tuning lives in craftTypes.js per kind (craft-MODEL data — deliberately
   NOT in constants.json, which is for world dials):
 
-    shuttle.sizeTiles   0.22   world size = 0.22 × the host body's hex-tile
-                               circumradius — a game object, visible at any
-                               scale (≈ 4.8 km on the Moon at true scale,
-                               ≈ 0.05 u on the starter world)
+    shuttle.sizeMeters 30  the shuttle's physical length in METERS — a
+                           fixed real-world size converted to world units
+                           through the world's scale (1 m = 1/scale units),
+                           like the real-human astronaut (§8)
     shuttle.arcade      speedTiles 24  top speed, tiles per doc second
                                ease 0.25      seconds to settle onto target
                                yawRate 1.7 / pitchRate 1.3   rad/s per stick
@@ -185,11 +196,68 @@
                                thrustUps2 0.4 …game worlds (units/s²)
                                kickMps2 20 / kickUps2 0.6   launch kick off the pad
                                boost 3, yawRate 0.8, pitchRate 0.6
+    drive (P2)        sizeMeters 8   the rover's physical length, meters
+                            speedTiles 12  top speed, tiles per doc second —
+                                           TILE-ANCHORED like the arcade
+                                           shuttle: game pace on every world,
+                                           true-scale included (a vehicle,
+                                           not a 1.6 m human)
+                            ease 0.4       seconds for the throttle to settle
+                            boost 1.8      Shift multiplier
+                            turnRate 1.6   rad/s of heading per full steer
+                            climbTiles 1.5 max relief step (in tiles) it
+                                           climbs; steeper is a wall (the
+                                           walker's blocked-step-and-slide
+                                           rule, at the rover's climb)
+                            dropTiles 1.5  descents up to this many tiles
+                                           stay grounded (snap down);
+                                           steeper = it drove off a ledge
+                                           → airborne
+                            gravityTiles 40 downward acceleration while
+                                           airborne, tiles/s² —
+                                           TILE-ANCHORED like its drive
+                                           speed (a physical m/s² fall
+                                           would crawl for minutes on a
+                                           true-scale body)
+                            maxFallTiles 48  terminal fall speed, tiles/s
     EVA_TUNING          thrustMps2 1.8 / thrustUps2 0.12  base jetpack
                                boost 3, yawRate 1.9, pitchRate 1.5
                                hoverRatio 1.6  jetpack = max(base, 1.6 × local
                                                gravity) — it can hover on
                                                EVERY body without tuning
+
+  The drive mover's mechanics (driveStep, motion.js — pure, headless-tested):
+  a rover is ALWAYS in the parked anchor state; piloting just moves that
+  anchor along the rendered surface, so it welds to the terrain and rides
+  the body's spin/orbit for free, exactly like the walker:
+
+    throttle  st.speed eases toward throttle × speedMax × (Shift ? boost : 1)
+              with time constant `ease` — W drives, S reverses, releasing
+              coasts to a stop
+    heading   a body-LOCAL TANGENT (the direction it faces), persisted as
+              anchor.heading. Steer rotates it about the local up at
+              turnRate. When the rover moves unsteered the heading is
+              PARALLEL-TRANSPORTED with the step (the same rotation that
+              takes dir to its successor, re-tangentized) — the walker's
+              rule for its view: a long unsteered drive keeps the nose on
+              the horizon, never tilting it into the ground.
+    step      dir advances along the ground by speed·dt / r of arc; a
+              relief step steeper than climbTiles × tile blocks the move and slides
+              along the wall (the walker's rule) — walls are GROUND-
+              LOCKED-only, so an airborne rover clears a step it couldn't
+              climb.
+    vertical  the walker's grounded/airborne state machine (surface.js
+              stepWalker), MINUS the jump. Grounded: r tracks the chord fan
+              (the weld); a downhill step steeper than dropTiles × tile
+              means it drove off a ledge → airborne (radialVel 0).
+              Airborne: radialVel integrates against gravityTiles × tile
+              (clamped at maxFallTiles × tile) and the fall ends on
+              contact. No input raises it, so radialVel only ever goes
+              inward — it can fall, not fly (it never leaves the
+              surface on its own).
+    unattended  no input → no surface query, no motion; the anchor simply
+              rides the body analytically (a stub body has no elements, so
+              a rover on one sits still — hydration is someone else's job).
 
   Attitude is two Euler angles: yaw ψ about world +Y (ecliptic north), then
   pitch θ about the craft's own right axis (craftVectors):
@@ -350,11 +418,17 @@
   body's own velocity is stripped off (its velocity is relative by
   construction). From launch the document pose is `space`; the live state
   is truth until it parks again or the world is saved.
+  A drive craft (rover) has no launch: launchCraftState refuses it (null)
+  and the store shows a status line instead — the rover can't fly (it obeys
+  gravity: a ledge sends it falling, §4, but no input ever lifts it), and
+  its only exit is ejecting on foot.
 
   EJECTING (the astronaut leaves the craft): from a PARKED craft → on foot
   at the anchor point (the pendingFoot handoff, §8); from a FLYING craft →
   adrift, inheriting the craft's ABSOLUTE velocity (an arcade rel-velocity
   is turned back into a world velocity with the dominant body's motion).
+  (A parked rover ejects at the anchor it has DRIVEN to — its dir is live
+  state, moved by driveStep, so you step out where it stopped.)
 
   The EVA fall ENDS the same way: altitude over the dominant body ≤ 0.005·R
   → stepEva returns a land event { bodyId, dir (body-local) }, clears
@@ -484,6 +558,7 @@
                   with none).
     launch        a parked craft lifts off (§7). The doc pose switches to
                   `space` here.
+                  (A drive craft is exempt — it can't launch, §7.)
     land/park     the craft's altitude over its dominant body reaches 0
                   (the flat 0.002·R check) → parkCraft rewrites the doc
                   pose to `anchor` and the live state to mode 'park'.
@@ -529,6 +604,9 @@
                 forward); C toggles CHASE (third person behind and above:
                 pos − 6·size·forward + 2.2·size·up, looking at the ship);
                 while parked the cockpit sits on the pad, nose skyward.
+                DRIVING (a rover) sits at the mast instead: pos + up·0.55·size
+                looking along the HEADING (the view IS where it drives); chase is
+                behind and above (pos − 6·size·heading + 2.5·size·up, at the rover).
                 The dynamic near plane drops to the ship:
                   near = min(prev, max(1e-5, size × 0.04))
                 (the cockpit is inside the hull; the log depth buffer
@@ -572,7 +650,90 @@
       E            eject (parked → on foot; flying → adrift)
       Esc          free cam
 
-    EVA (adrift)
+ Esc          free cam
+
+ Esc          free cam
+
+ Esc          free cam
+
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ DRIVING (in a rover — the same cockpit component, ground keys)
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ W / S        throttle forward / back (the speed eases, no instant
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ stop — a vehicle, not a jet)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ A / D        steer (rotates the heading about the local up)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ Shift        boost (×1.8)
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ C            cockpit ⇄ chase
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ E            eject (→ on foot where the rover stopped)
+ Esc          free cam
+ Esc          free cam
+ Esc          free cam
+ Esc          free cam
+ Esc          free cam
+ Esc          free cam
+ Esc          free cam
+ (no launch key: a rover can't fly, §7)
+
+ (no launch key: a rover can't fly, §7)
+
+ (no launch key: a rover can't fly, §7)
+
+ (no launch key: a rover can't fly, §7)
+
+ EVA (adrift)
       W A S D      thrust along the view
       R / F        up / down
       Shift        boost
@@ -606,6 +767,9 @@
               "over <body> · NN%" — the dominance SHARE (§5) — terrain
               altitude, body-relative speed, lat/lon (fading in with the
               share)
+              A ROVER (drive) shows its ground speed (the throttle,
+              tile-anchored) + body-fixed lat/lon, and NO 🚀 Launch
+              button (it can't fly) — the keys line says drive instead.
     adrift    motionReadout: speed, "over <body> · alt"
 
   On true-scale worlds (world.scale = meters per unit) every number is
@@ -649,7 +813,9 @@
         surface, v_esc ≈ 30 u/s ≈ 2× arcade cruise — falls finish in 1–3 s
         of frames
       • world.gravity 40; one arcade shuttle parked (c-testball-shuttle,
-        dir [0, 0.7, 0.7], r null)
+        dir [0, 0.7, 0.7], r null) AND one drive rover parked on the
+        opposite side (c-testball-rover, dir [0, -0.7, 0.7], r null) —
+        the flight chains and the drive chain both run here
 
     'stubworld' (makeStubWorld) — the DB-skeleton testbed:
       • the FIRST landable body is a STUB — elements: null, a freq-8
@@ -713,9 +879,12 @@
 --------------------------------------------------------------------------------
   P1 (done)   spacecraft (arcade + real) + EVA + on-foot + free cam —
               everything in this document.
-  P2          the ROVER: a 'drive' mover on the same contract — it drives +
-              parks (it never flies), ground-locked to the surface like the
-              walker but a vehicle (speed, handling per craftTypes).
+  P2 (done)   the ROVER: a 'drive' mover on the same contract — it drives +
+              parks, OBEYS GRAVITY WITH NO LIFT (a ledge sends it falling, §4),
+              ground-locked to the surface like the walker but a vehicle (speed,
+              handling per craftTypes). driveStep's mechanics, the parallel-transported
+              heading, the launch refusal and the TopBar 🚙 are all in this
+              document (§4, §7, §9–§12).
   P3          crafts in the WORLD DATABASE: a `crafts` table (bodies stay
               bodies) so DB worlds carry vehicles; the skeleton streams
               them like bodies do. Until then DB worlds simply have no
@@ -758,6 +927,11 @@
     'stubworld' fixture.
   • r: null on a parked anchor is NULL, not zero, until sync resolves it
     (§13). dist3 takes {x,y,z} objects (§13).
+  • A drive craft (rover) NEVER flies: it stays in the parked anchor
+    state, launchCraftState refuses it, and driveStep only ever moves the
+    anchor along the rendered surface (grounded: it tracks the chord fan;
+    airborne off a ledge: it falls under the tile-anchored gravity, §4)
+    with no input that ever lifts it. Don't give it a space mode or a jump.
   • normalizeCrafts heals corrupt craft docs leniently (the loading
     contract); serializeWorld strips nothing craft-related — crafts are
     ordinary document data.
@@ -773,7 +947,7 @@
  17. VERIFICATION MAP — which test pins what
 --------------------------------------------------------------------------------
   npm test (node, framework-free core):
-    test-motion.mjs (13 tests) —
+    test-motion.mjs (19 tests) —
       craftVectors orthonormality / identity; rotateByQuat round-trip;
       gravityAt = the exact softened law (the orbital-speed identity) and
       zero-mass skip; dominantBody nearest-heavy-wins + share in 0..1;
@@ -783,14 +957,22 @@
       spaceflight REAL falls toward the body, launch faces up; eject
       parked→foot / flying→adrift-with-velocity; EVA jetpack outweighs
       gravity (hover) and a fall ends on foot; craftWorldPose composes a
-      parked craft from the registry (the float32 stream); flightInput /
-      pendingFoot side channels reset cleanly.
+      parked craft from the registry (the float32 stream);
+      DRIVE: drives along the surface, stays parked, eases the throttle
+      (the weld — r tracks the chord fan) + the readout side channel;
+      DRIVE: steering turns the heading and a long unsteered drive keeps
+      the nose on the horizon (parallel transport);
+      DRIVE: launchCraftState refuses a rover and eject drops you on foot
+      where it drove; DRIVE: walls block steep relief, gentle steps climb;
+      DRIVE: an unattended rover rides its body; DRIVE: the parked
+      heading round-trips through the lenient normalize;
+      flightInput / pendingFoot side channels reset cleanly.
     test-surface.mjs — the walker's 3-arg / TILE path pinned
       byte-identical (real mode is the only other configuration).
     (test-hexsphere / test-geometry / test-starfield — the engine, not
     movement.)
 
-  npm run test:headless (rendered pipeline, 7 tests):
+  npm run test:headless (rendered pipeline, 8 tests):
     1 pipeline: starter world orbits clean under RAF jitter — registry ≡
       rendered mesh (the float32 contract the parked-craft pose rides).
     2 surface: the walker welds to terrain while standing still — its
@@ -811,7 +993,11 @@
     6 flight (EVA): board → launch → eject mid-flight → ADRIFT → no input
       → the fall ENDS on the surface → ON FOOT, grounded — on 'testball'
       (the dist3 object-vs-array trap).
-    7 stubs: boot with a stub-FIRST world — defaultPlayer skips the stub,
+    7 drive: board rover → launch REFUSED (it never flies) → W drives
+      along the surface, WELDED to the rendered chord fan (r == fan
+      radius at its dir) → A/D steers (nose stays on the horizon) →
+      eject → ON FOOT, grounded — on 'testball'.
+    8 stubs: boot with a stub-FIRST world — defaultPlayer skips the stub,
       a failed stub hydration does not switch the session, a foot session
       on an unresolvable stub waits then falls back to the free camera —
       on 'stubworld'. The harness boots faithful to the app (§9).
@@ -852,6 +1038,7 @@
   scripts/harness/index.mjs     the headless harness: board / launch /
                         eject / fly helpers, makeTestballWorld,
                         makeStubWorld, the faithful boot
-  scripts/test-motion.mjs       the 13 core-mover unit tests
-  scripts/test-headless.mjs     the 7 rendered regressions (incl. both
-                        flight chains + the stub boot)
+  scripts/test-motion.mjs       the 19 core-mover unit tests (incl. the
+                        drive/rover mover)
+  scripts/test-headless.mjs     the 8 rendered regressions (incl. both
+                        flight chains + the drive chain + the stub boot)

@@ -101,7 +101,7 @@ import { cellCountForFrequency } from './hexsphere.js'
 import { generateElements, defaultElement } from './generators.js'
 import { TERRAIN_TYPES } from './terrain.js'
 import { DEFAULT_DENSITY, MAX_FREQUENCY, ATOM_M_PER_UNIT } from './planetMath.js'
-import { CRAFT_KINDS } from './craftTypes.js'
+import { CRAFT_KINDS, CRAFT_TYPES } from './craftTypes.js'
 
 export const WORLD_VERSION = 1
 
@@ -241,10 +241,11 @@ export function createEmptyWorld(name = 'Untitled World', scale = ATOM_M_PER_UNI
  * docs/flight.txt for the movement model and core/motion.js for the movers.
  */
 export function createCraft(opts = {}) {
+  const kind = CRAFT_KINDS.includes(opts.kind) ? opts.kind : 'shuttle'
   return {
     id: opts.id || `c-${nanoid(8)}`,
-    name: typeof opts.name === 'string' && opts.name ? opts.name : 'Shuttle',
-    kind: CRAFT_KINDS.includes(opts.kind) ? opts.kind : 'shuttle',
+    name: typeof opts.name === 'string' && opts.name ? opts.name : (CRAFT_TYPES[kind]?.label ?? 'Shuttle'),
+    kind,
     realism: opts.realism === 'real' ? 'real' : 'arcade',
     pose: opts.pose || null,
   }
@@ -264,13 +265,18 @@ export function normalizeCrafts(raw, planets) {
     const a = c.pose && c.pose.anchor
     if (a && ids.has(a.bodyId) && Array.isArray(a.dir) && a.dir.length === 3) {
       const r = Number(a.r)
-      pose = {
-        anchor: {
-          bodyId: a.bodyId,
-          dir: [num(a.dir[0], 0), num(a.dir[1], 1), num(a.dir[2], 0)],
-          r: Number.isFinite(r) && r > 0 ? r : null,
-        },
+      const anchor = {
+        bodyId: a.bodyId,
+        dir: [num(a.dir[0], 0), num(a.dir[1], 1), num(a.dir[2], 0)],
+        r: Number.isFinite(r) && r > 0 ? r : null,
       }
+      // a drive craft's (rover's) heading — optional, healed leniently
+      if (Array.isArray(a.heading) && a.heading.length === 3) {
+        const hx = Number(a.heading[0]), hy = Number(a.heading[1]), hz = Number(a.heading[2])
+        if (Number.isFinite(hx) && Number.isFinite(hy) && Number.isFinite(hz))
+          anchor.heading = [hx, hy, hz]
+      }
+      pose = { anchor }
     } else {
       const sp = c.pose && c.pose.space
       if (sp && Array.isArray(sp.pos) && sp.pos.length === 3) {
@@ -287,10 +293,11 @@ export function normalizeCrafts(raw, planets) {
     }
     if (!pose && firstLandable) pose = { anchor: { bodyId: firstLandable.id, dir: [0, 1, 0], r: null } }
     if (!pose) continue
+    const kind = CRAFT_KINDS.includes(c.kind) ? c.kind : 'shuttle'
     out.push({
       id: typeof c.id === 'string' && c.id ? c.id : `c-${nanoid(8)}`,
-      name: typeof c.name === 'string' && c.name ? c.name : 'Shuttle',
-      kind: CRAFT_KINDS.includes(c.kind) ? c.kind : 'shuttle',
+      name: typeof c.name === 'string' && c.name ? c.name : (CRAFT_TYPES[kind]?.label ?? 'Shuttle'),
+      kind,
       realism: c.realism === 'real' ? 'real' : 'arcade',
       pose,
     })

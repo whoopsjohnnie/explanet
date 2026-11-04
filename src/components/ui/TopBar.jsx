@@ -79,9 +79,19 @@ export default function TopBar() {
           e.currentTarget.blur()
           addCraft()
         }}
-        title="Add a craft — parked in front of you (on foot), or on the selected body"
+        title="Add a shuttle — parked in front of you (on foot), or on the selected body"
       >
         🚀 Add Craft
+      </button>
+      <button
+        className="btn"
+        onClick={(e) => {
+          e.currentTarget.blur()
+          addCraft({ kind: 'drive' })
+        }}
+        title="Add a rover — a ground-locked vehicle that drives (it never flies)"
+      >
+        🚙 Add Rover
       </button>
 
       <div className="topbar-divider" />

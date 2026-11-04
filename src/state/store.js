@@ -431,7 +431,10 @@ export const useStore = create((set, get) => ({
     set({
       player: { kind: 'craft', craftId },
       selectedCraftId: craftId,
-      statusMsg: `Piloting ${craft.name} — W thrust · drag to aim · E eject · Esc free-cam`,
+      statusMsg:
+        craft.kind === 'drive'
+          ? `Driving ${craft.name} — W throttle · A/D steer · Shift boost · E eject · Esc free-cam`
+          : `Piloting ${craft.name} — W thrust · drag to aim · E eject · Esc free-cam`,
     })
   },
 
@@ -502,6 +505,11 @@ export const useStore = create((set, get) => ({
     const s = get()
     const craft = (s.world.crafts || []).find((c) => c.id === craftId)
     if (!craft) return
+    // a drive craft (rover) is ground-locked — it can't launch, only drive
+    if (craft.kind === 'drive') {
+      set({ statusMsg: `${craft.name} can't fly — drive it (W throttle · A/D steer)` })
+      return
+    }
     const rt = craftRuntime.get(craftId)
     if (!rt || rt.state.mode !== 'park') return
     const body = s.world.planets.find((p) => p.id === rt.state.bodyId)
@@ -521,6 +529,7 @@ export const useStore = create((set, get) => ({
   addCraft: (opts = {}) => {
     const s = get()
     const world = s.world
+    const kind = opts.kind && CRAFT_TYPES[opts.kind] ? opts.kind : 'shuttle'
     const footBody = s.player?.kind === 'foot' ? s.player.bodyId : null
     const onFoot = footBody && world.planets.find((p) => p.id === footBody && p.preset !== 'star')
     const anchor =
@@ -529,13 +538,12 @@ export const useStore = create((set, get) => ({
       world.planets.find((p) => p.preset !== 'star')
     let pose
     if (anchor) {
-      // on foot: park a few of the shuttle's OWN lengths ahead, down the look
+      // on foot: park a few of the craft's OWN lengths ahead, down the look
       // direction — hull-lengths × the hull's meter size, converted through the
       // world's scale to an arc angle (a meter-sized hull stays "a short walk
       // in front of you" on every world).
       let dir = [0, 0.7, 0.7]
       if (onFoot) {
-        const kind = opts.kind && CRAFT_TYPES[opts.kind] ? opts.kind : 'shuttle'
         const rMeters = planetRadius(anchor) * world.scale
         const arc = (AHEAD_HULL_LENGTHS * CRAFT_TYPES[kind].sizeMeters) / rMeters
         dir = aheadDirection(walkerLocation.dir, walkerLocation.fwd, arc)
@@ -544,7 +552,7 @@ export const useStore = create((set, get) => ({
     } else {
       pose = { space: { pos: [30, 0, 0], vel: [0, 0, 0], yaw: 0, pitch: 0 } }
     }
-    const craft = createCraft({ ...opts, pose })
+    const craft = createCraft({ ...opts, kind, name: opts.name || CRAFT_TYPES[kind].label, pose })
     set({
       world: { ...world, crafts: [...(world.crafts || []), craft] },
       selectedCraftId: craft.id,

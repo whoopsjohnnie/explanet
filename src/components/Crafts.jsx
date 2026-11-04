@@ -32,46 +32,18 @@ import {
 
 const NO_RAYCAST = () => null
 
-// The unit shuttle model's nose-to-tail length, in MODEL units (the geometry
-// below spans z = −0.3 … 1.045). `rt.size` is the shuttle's length in WORLD
-// units (sizeMeters / world.scale), so the mesh scales the model by
-// `rt.size / SHUTTLE_MODEL_LENGTH` to render it at its true meter size. Keep
-// this in sync with the model geometry in CraftMesh.
-const SHUTTLE_MODEL_LENGTH = 1.345
+// The unit models' nose-to-tail length, in MODEL units. `rt.size` is the
+// craft's length in WORLD units (sizeMeters / world.scale), so the mesh scales
+// the model by `rt.size / MODEL_LENGTH` to render it at its true meter size.
+// Keep these in sync with the model geometry in CraftMesh below.
+const SHUTTLE_MODEL_LENGTH = 1.345 // shuttle spans z = −0.3 … 1.045
+const ROVER_MODEL_LENGTH = 0.9 // rover body spans z = −0.45 … 0.45
 
-function CraftMesh({ craft }) {
-  const ref = useRef()
-  const piloting = useStore((s) => !!s.player && s.player.kind !== 'freeCam')
-  const selectCraft = useStore((s) => s.selectCraft)
-  const tmp = useMemo(() => ({ m: new THREE.Matrix4(), up: new THREE.Vector3(), fwd: new THREE.Vector3(), rgt: new THREE.Vector3() }), [])
-
-  useFrame(() => {
-    const rt = craftRuntime.get(craft.id)
-    if (!rt || !ref.current) return
-    const pose = craftWorldPose(rt)
-    if (!pose) return
-    const o = ref.current
-    o.position.set(pose.pos.x, pose.pos.y, pose.pos.z)
-    tmp.up.set(pose.up[0], pose.up[1], pose.up[2])
-    tmp.fwd.set(pose.forward[0], pose.forward[1], pose.forward[2])
-    tmp.rgt.crossVectors(tmp.up, tmp.fwd) // right = up × forward
-    tmp.m.makeBasis(tmp.rgt, tmp.up, tmp.fwd)
-    o.quaternion.setFromRotationMatrix(tmp.m)
-    o.scale.setScalar(rt.size / SHUTTLE_MODEL_LENGTH)
-  })
-
-  // a unit shuttle (SHUTTLE_MODEL_LENGTH model units nose-to-tail), scaled to
-  // its true meter size by rt.size (sizeMeters / world.scale): fuselage +
+function ShuttleModel() {
+  // a unit shuttle (SHUTTLE_MODEL_LENGTH model units nose-to-tail): fuselage +
   // nose along +Z, delta wings, a belly light
   return (
-    <group
-      ref={ref}
-      raycast={piloting ? NO_RAYCAST : undefined}
-      onClick={piloting ? undefined : (e) => {
-        e.stopPropagation()
-        selectCraft(craft.id)
-      }}
-    >
+    <>
       <mesh position={[0, 0, 0.15]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[0.26, 0.3, 0.9, 12]} />
         <meshStandardMaterial color="#cdd6e4" metalness={0.55} roughness={0.4} />
@@ -88,6 +60,78 @@ function CraftMesh({ craft }) {
         <boxGeometry args={[0.5, 0.05, 0.5]} />
         <meshStandardMaterial color="#7d8aa0" metalness={0.5} roughness={0.5} />
       </mesh>
+    </>
+  )
+}
+
+function RoverModel() {
+  // a unit rover (ROVER_MODEL_LENGTH model units nose-to-tail): a chassis +
+  // four wheels + a survey mast, nose (drive heading) along +Z. Modeled so
+  // the WHEELS' bottom is the origin — the craft pose sits the origin on the
+  // rendered surface, and a rover is always grounded (unlike the shuttle,
+  // which straddles its pad point while mostly in flight).
+  return (
+    <>
+      <mesh position={[0, 0.34, 0]}>
+        <boxGeometry args={[0.55, 0.24, 0.9]} />
+        <meshStandardMaterial color="#c8a25e" metalness={0.45} roughness={0.5} />
+      </mesh>
+      <mesh position={[0, 0.51, 0.12]}>
+        <cylinderGeometry args={[0.02, 0.02, 0.34, 6]} />
+        <meshStandardMaterial color="#9aa4b2" metalness={0.6} roughness={0.4} />
+      </mesh>
+      <mesh position={[0, 0.7, 0.12]}>
+        <boxGeometry args={[0.12, 0.08, 0.12]} />
+        <meshStandardMaterial color="#3a3f47" metalness={0.4} roughness={0.5} />
+      </mesh>
+      {[
+        [-0.34, 0.28],
+        [0.34, 0.28],
+        [-0.34, -0.28],
+        [0.34, -0.28],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.16, z]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.16, 0.16, 0.12, 12]} />
+          <meshStandardMaterial color="#33373e" metalness={0.3} roughness={0.75} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+function CraftMesh({ craft }) {
+  const ref = useRef()
+  const piloting = useStore((s) => !!s.player && s.player.kind !== 'freeCam')
+  const selectCraft = useStore((s) => s.selectCraft)
+  const isRover = craft.kind === 'drive'
+  const modelLength = isRover ? ROVER_MODEL_LENGTH : SHUTTLE_MODEL_LENGTH
+  const tmp = useMemo(() => ({ m: new THREE.Matrix4(), up: new THREE.Vector3(), fwd: new THREE.Vector3(), rgt: new THREE.Vector3() }), [])
+
+  useFrame(() => {
+    const rt = craftRuntime.get(craft.id)
+    if (!rt || !ref.current) return
+    const pose = craftWorldPose(rt)
+    if (!pose) return
+    const o = ref.current
+    o.position.set(pose.pos.x, pose.pos.y, pose.pos.z)
+    tmp.up.set(pose.up[0], pose.up[1], pose.up[2])
+    tmp.fwd.set(pose.forward[0], pose.forward[1], pose.forward[2])
+    tmp.rgt.crossVectors(tmp.up, tmp.fwd) // right = up × forward
+    tmp.m.makeBasis(tmp.rgt, tmp.up, tmp.fwd)
+    o.quaternion.setFromRotationMatrix(tmp.m)
+    o.scale.setScalar(rt.size / modelLength)
+  })
+
+  return (
+    <group
+      ref={ref}
+      raycast={piloting ? NO_RAYCAST : undefined}
+      onClick={piloting ? undefined : (e) => {
+        e.stopPropagation()
+        selectCraft(craft.id)
+      }}
+    >
+      {isRover ? <RoverModel /> : <ShuttleModel />}
     </group>
   )
 }

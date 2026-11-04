@@ -179,7 +179,19 @@ export default function CraftCockpit({ craftId }) {
     }
 
     tmp.pos.set(pose.pos.x, pose.pos.y, pose.pos.z)
-    if (rt.state.mode === 'park') {
+    if (rt.doc.kind === 'drive') {
+      // driving: the camera sits at the rover's mast (radially up from the
+      // chassis) and looks along its HEADING — the view IS where it drives
+      tmp.up.set(pose.up[0], pose.up[1], pose.up[2])
+      tmp.fwd.set(pose.forward[0], pose.forward[1], pose.forward[2])
+      if (chase) {
+        camera.position.copy(tmp.pos).addScaledVector(tmp.fwd, -size * 6).addScaledVector(tmp.up, size * 2.5)
+        tmp.look.copy(tmp.pos)
+      } else {
+        camera.position.copy(tmp.pos).addScaledVector(tmp.up, size * 0.55)
+        tmp.look.copy(tmp.pos).addScaledVector(tmp.fwd, size * 10)
+      }
+    } else if (rt.state.mode === 'park') {
       // on the pad: sit in the cockpit, nose skyward (forward = up)
       tmp.up.set(pose.up[0], pose.up[1], pose.up[2])
       tmp.fwd.copy(tmp.up)

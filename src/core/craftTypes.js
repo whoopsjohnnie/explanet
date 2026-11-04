@@ -56,9 +56,38 @@ export const CRAFT_TYPES = {
       pitchRate: 0.6,
     },
   },
-  // P2/P4 slots: drive (rover/cruiser — surface driving, park), aircraft
-  // (atmosphere dynamics), bouncy (elastic hops). A mover is a plugin in
-  // core/motion.js; add its kind here and its step there.
+  // P2 — the ROVER: a ground-locked vehicle. It drives on a surface (the
+  // same rendered chord-fan the walker rides) and parks; it NEVER flies, so
+  // there is no arcade/real split — its one mover (core/motion.js driveStep)
+  // integrates a body-LOCAL heading + position against the terrain at all
+  // times. Like the arcade shuttle, its speed is TILE-ANCHORED (a multiple of
+  // the host body's hex-tile size per doc second), so it crosses terrain at a
+  // game pace on every world, true-scale included — a vehicle, not a 1.6 m
+  // human. Its length is a fixed real-world size (meters) like the shuttle,
+  // so the mesh renders at its true scale.
+  drive: {
+    label: 'Rover',
+    icon: '🚙',
+    sizeMeters: 8, // physical length, meters (the mesh scale, like the shuttle)
+    speedTiles: 12, // top speed, tiles per doc second (2× the tile walk)
+    ease: 0.4, // seconds for the throttle to settle onto the target speed
+    boost: 1.8, // Shift multiplier
+    turnRate: 1.6, // rad/s of heading per full steer
+    climbTiles: 1.5, // max relief step (in tiles) a drive can climb; steeper = wall
+    // The rover OBEYS GRAVITY but has NO LIFT (it can't jump or fly): when it
+    // drives off a ledge it goes airborne and falls back to the surface under
+    // gravity instead of snapping to the hex below (the walker's vertical
+    // model, core/surface.js stepWalker — minus the jump). All of it is
+    // TILE-ANCHORED like its drive speed so the fall is a game pace on every
+    // world: a physical m/s² fall would crawl for minutes on a true-scale body
+    // (the same trap that makes the walker's fall terminal-velocity-limited).
+    dropTiles: 1.5, // descents up to this many tiles keep it grounded (snap
+                    // down); steeper = it drove off a ledge → airborne
+    gravityTiles: 40, // downward acceleration while airborne, tiles/s²
+    maxFallTiles: 48, // terminal fall speed, tiles/s
+  },
+  // P4 slots: aircraft (atmosphere dynamics), bouncy (elastic hops). A mover
+  // is a plugin in core/motion.js; add its kind here and its step there.
 }
 
 export const CRAFT_KINDS = Object.keys(CRAFT_TYPES)

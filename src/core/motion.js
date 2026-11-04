@@ -50,7 +50,7 @@ import { C } from './constants.js'
 import { registry } from './physics.js'
 import { planetRadius } from './planetMath.js'
 import { getHexSphere } from './hexsphere.js'
-import { cellAtDirection, fanRadiusAt } from './surface.js'
+import { cellAtDirection, fanRadiusAt, makeSurface } from './surface.js'
 import { CRAFT_TYPES, EVA_TUNING } from './craftTypes.js'
 
 export { CRAFT_TYPES, EVA_TUNING }
@@ -257,7 +257,22 @@ function stateFromPose(craft, world) {
     // finite "0" and launch the craft from the body's CENTER) — leave it
     // null and let syncCraftRuntime resolve it against the terrain
     const r = a.r != null && Number.isFinite(Number(a.r)) && Number(a.r) > 0 ? Number(a.r) : null
-    return { mode: 'park', bodyId: a.bodyId, dir, r }
+    // a drive craft (rover) persists its heading so it reloads facing the way
+    // it was parked; a missing/invalid one is lazy-initialized on first drive
+    const isDrive = craft.kind === 'drive'
+    const heading =
+      isDrive && Array.isArray(a.heading) && a.heading.length === 3 ? norm3(a.heading) : null
+    return {
+      mode: 'park',
+      bodyId: a.bodyId,
+      dir,
+      r,
+      // a drive craft (rover) obeys gravity but has no lift: it starts grounded
+      // on its surface (r resolves to the chord fan on sync) and gains radial
+      // velocity only by falling off a ledge (driveStep) — never by a jump.
+      ...(isDrive ? { grounded: true, radialVel: 0 } : {}),
+      ...(heading ? { heading } : {}),
+    }
   }
   const sp = (craft.pose && craft.pose.space) || {}
   const pos = (v, i) => (Array.isArray(v) && Number.isFinite(v[i]) ? v[i] : 0)
@@ -279,6 +294,10 @@ function stateFromPose(craft, world) {
  * terrain.
  */
 export function syncCraftRuntime(world) {
+  // the document moved on: drop the cached rover surface (a new world's
+  // element arrays are fresh identities, but this frees the old one now)
+  driveSurface = null
+  driveSurfaceKey = null
   const crafts = Array.isArray(world.crafts) ? world.crafts : []
   const seen = new Set()
   for (const craft of crafts) {
@@ -334,9 +353,15 @@ export function craftWorldPose(rt) {
     const entry = registry.bodies.get(st.bodyId)
     if (!entry) return null
     const dirW = rotateByQuat(st.dir, entry.quat)
-    let ref = [1, 0, 0]
-    if (Math.abs(st.dir[0]) > 0.9) ref = [0, 0, 1]
-    const fwdLocal = norm3(cross3(ref, st.dir))
+    // a drive craft (rover) faces its HEADING (a body-local tangent); any
+    // other parked craft uses a deterministic tangent so it has a nose
+    let fwdLocal
+    if (rt.doc.kind === 'drive' && Array.isArray(st.heading)) fwdLocal = st.heading
+    else {
+      let ref = [1, 0, 0]
+      if (Math.abs(st.dir[0]) > 0.9) ref = [0, 0, 1]
+      fwdLocal = norm3(cross3(ref, st.dir))
+    }
     return {
       pos: {
         x: entry.pos.x + dirW[0] * st.r,
@@ -365,7 +390,12 @@ export function captureCraftPose(rt) {
       },
     }
   } else {
-    rt.doc.pose = { anchor: { bodyId: st.bodyId, dir: [st.dir[0], st.dir[1], st.dir[2]], r: st.r } }
+    // a drive craft (rover) also persists its heading so it reloads facing the
+    // way it was parked
+    const anchor = { bodyId: st.bodyId, dir: [st.dir[0], st.dir[1], st.dir[2]], r: st.r }
+    if (rt.doc.kind === 'drive' && Array.isArray(st.heading))
+      anchor.heading = [st.heading[0], st.heading[1], st.heading[2]]
+    rt.doc.pose = { anchor }
   }
 }
 
@@ -410,7 +440,12 @@ export function stepCraft(craft, dt, input = null) {
   const st = rt.state
   const world = rt.world
   if (!world) return null
-  if (st.mode === 'park') return null // parked: rides the body, nothing to integrate
+  if (st.mode === 'park') {
+    // a drive craft (rover) is ground-locked: piloting it DRIVES it along the
+    // surface (it never flies). Other parked crafts just ride the body.
+    if (input && craft.kind === 'drive') driveStep(rt, input, dt)
+    return null // parked: nothing to integrate in space
+  }
 
   const type = CRAFT_TYPES[craft.kind] || CRAFT_TYPES.shuttle
   const dom = dominantBody(st.pos, world.gravity)
@@ -486,6 +521,163 @@ export function stepCraft(craft, dt, input = null) {
 }
 
 // ---------------------------------------------------------------------------
+// the drive mover (rover, P2) — a ground-locked vehicle that NEVER flies
+// ---------------------------------------------------------------------------
+// The rover is always in the parked anchor state ({ mode:'park', bodyId, dir
+// (body-LOCAL), r }) — driving just moves that anchor along the RENDERED
+// surface (the same chord-fan the walker rides), so it welds to the terrain
+// and rides the body's spin/orbit for free. It has a body-LOCAL HEADING
+// (the direction it faces) and a live THROTTLE; `input` is the shared
+// flightInput (fwd/back = throttle, yaw = steer, boost = Shift). Like the
+// arcade shuttle its speed is TILE-ANCHORED, so it crosses terrain at a game
+// pace on every world. It has no 'space' mode — launchCraftState refuses it.
+
+// The piloted rover's body surface query (makeSurface over its elements). Only
+// one rover is piloted at a time, so a single cache slot keyed by the elements
+// identity suffices: a copy-on-write paint or a different body rebuilds it, and
+// an unattended (or stub-bodied) rover never builds one.
+let driveSurface = null
+let driveSurfaceKey = null
+function getDriveSurface(planet) {
+  if (!planet || !planet.elements) return null
+  if (driveSurfaceKey !== planet.elements) {
+    driveSurface = makeSurface(planet, null) // only heightAt / tile / hex are used
+    driveSurfaceKey = planet.elements
+  }
+  return driveSurface
+}
+
+// Rotate unit v about unit axis by angle (rad) — Rodrigues, allocation-light
+// (v is a tangent so v·axis ≈ 0 and the axis-parallel term vanishes).
+function rotateAboutAxis(v, axis, angle) {
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  const cross = cross3(axis, v)
+  return [v[0] * c + cross[0] * s, v[1] * c + cross[1] * s, v[2] * c + cross[2] * s]
+}
+// Project v onto the tangent plane ⊥ dir (the local up) and normalize.
+function reTangent(v, dir) {
+  const d = dot3(v, dir)
+  const t = [v[0] - dir[0] * d, v[1] - dir[1] * d, v[2] - dir[2] * d]
+  const l = Math.hypot(t[0], t[1], t[2])
+  return l < 1e-12 ? null : [t[0] / l, t[1] / l, t[2] / l]
+}
+// A deterministic tangent perpendicular to dir (a default heading).
+function tangentTo(dir) {
+  const ref = Math.abs(dir[0]) > 0.9 ? [0, 0, 1] : [1, 0, 0]
+  return norm3(cross3(ref, dir))
+}
+
+/** Step the piloted ROVER by dt against its body's rendered surface. Mutates
+ *  the anchor (dir, r, heading, cell, speed). Pure core math — no three. */
+function driveStep(rt, input, dt) {
+  const st = rt.state
+  const world = rt.world
+  const body = world.planets.find((q) => q.id === st.bodyId)
+  if (!body) return
+  const surface = getDriveSurface(body)
+  if (!surface) return // stub (no elements): nothing to drive on, sit still
+
+  const type = CRAFT_TYPES.drive
+  const tile = surface.tile
+  // tile-anchored top speed (game pace on every world), in world units
+  const speedMax = type.speedTiles * tile * (input.boost ? type.boost : 1)
+  const climb = type.climbTiles * tile
+  // the fall (see the drive tuning): a drop beyond `drop` goes airborne, and
+  // while airborne the radial velocity integrates against `gravity`, clamped
+  // at `maxFall`. All in world units (tiles × the body's tile radius).
+  const drop = type.dropTiles * tile
+  const gravity = type.gravityTiles * tile
+  const maxFall = type.maxFallTiles * tile
+  // smooth the throttle toward its target (ease)
+  const throttle = (input.fwd || 0) - (input.back || 0)
+  st.speed = (st.speed || 0) + (throttle * speedMax - (st.speed || 0)) * (1 - Math.exp(-dt / type.ease))
+
+  // heading: a body-local tangent the rover faces; lazy-initialized
+  if (!Array.isArray(st.heading)) st.heading = tangentTo(st.dir)
+  // steer: rotate the heading about the local up (dir)
+  if (input.yaw) st.heading = reTangent(rotateAboutAxis(st.heading, st.dir, type.turnRate * input.yaw * dt), st.dir)
+
+  const d = st.dir
+  const h = st.heading
+  const hd = dot3(h, d)
+  const tx = h[0] - d[0] * hd
+  const ty = h[1] - d[1] * hd
+  const tz = h[2] - d[2] * hd
+  const tl = Math.hypot(tx, ty, tz)
+  if (tl > 1e-9 && Math.abs(st.speed) > 1e-12) {
+    const k = (st.speed * dt) / Math.max(st.r, 0.25) // arc angle swept this step
+    const dirTo = (vx, vy, vz) => {
+      const l = Math.hypot(vx, vy, vz) || 1
+      return norm3([d[0] + (vx / l) * k, d[1] + (vy / l) * k, d[2] + (vz / l) * k])
+    }
+    let nd = dirTo(tx, ty, tz)
+    const ground = surface.heightAt(d, st.cell)
+    let next = surface.heightAt(nd, st.cell)
+    // walls: a GROUND-LOCKED rover can't step up more than the climb limit —
+    // the move is blocked and slides along the wall (the walker's rule, at the
+    // rover's climb). An airborne rover clears relief freely (it's in the air).
+    let blocked = st.grounded && next.h - ground.h > climb
+    if (blocked) {
+      const bn = reTangent(nd, d) // the direction into the blocked cell
+      if (bn) {
+        const bnd = tx * bn[0] + ty * bn[1] + tz * bn[2]
+        const px = tx - bn[0] * bnd
+        const py = ty - bn[1] * bnd
+        const pz = tz - bn[2] * bnd
+        if (px * px + py * py + pz * pz > 1e-9) {
+          nd = dirTo(px, py, pz)
+          next = surface.heightAt(nd, st.cell)
+          blocked = next.h - ground.h > climb
+        }
+      }
+    }
+    if (!blocked) {
+      // parallel-transport the heading with the move (the walker does the
+      // same for its view): the great-circle step is a rotation about
+      // norm(d × nd), and applying it to the heading keeps the nose on the
+      // horizon — without it, a long unsteered drive leaves the stored
+      // heading behind and the nose tilts into the ground (h·d = sin θ).
+      const ax = cross3(d, nd)
+      const al = Math.hypot(ax[0], ax[1], ax[2])
+      if (al > 1e-12) {
+        const ang = Math.atan2(al, dot3(d, nd))
+        st.heading = reTangent(rotateAboutAxis(st.heading, [ax[0] / al, ax[1] / al, ax[2] / al], ang), nd)
+      }
+      st.dir = nd
+      st.cell = next.cell
+    }
+  }
+
+  // ---- vertical: the rover obeys gravity but has NO lift ------------------
+  // The same grounded/airborne state machine the walker runs (core/surface.js
+  // stepWalker), minus the jump. Grounded, it tracks the rendered chord fan
+  // (the weld); a downhill step bigger than the drop limit means it drove off
+  // a ledge → airborne. Airborne, the radial velocity integrates against a
+  // tile-anchored gravity and the fall ends on contact. There is no input that
+  // raises it, so radialVel only ever goes inward — it can fall, not fly.
+  const ground = surface.heightAt(st.dir, st.cell)
+  st.cell = ground.cell
+  if (st.grounded) {
+    if (st.r - ground.radius <= drop) {
+      st.r = ground.radius // track the ground: small steps up/down + terrain edits
+    } else {
+      st.grounded = false
+      st.radialVel = 0 // drove off a taller ledge: start the fall from rest
+    }
+  }
+  if (!st.grounded) {
+    st.radialVel = Math.max(st.radialVel - gravity * dt, -maxFall)
+    st.r += st.radialVel * dt
+    if (st.r <= ground.radius) {
+      st.r = ground.radius // contact — the surface is star-shaped, so it always ends
+      st.radialVel = 0
+      st.grounded = true
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // launch & eject (called by the store; mutate the runtime + document pose)
 // ---------------------------------------------------------------------------
 
@@ -498,7 +690,8 @@ export function stepCraft(craft, dt, input = null) {
  */
 export function launchCraftState(craftId) {
   const rt = craftRuntime.get(craftId)
-  if (!rt || rt.state.mode !== 'park') return null
+  // a drive craft (rover) is ground-locked — it has no launch, only driving
+  if (!rt || rt.state.mode !== 'park' || rt.doc.kind === 'drive') return null
   const st = rt.state
   const world = rt.world
   const body = world.planets.find((q) => q.id === st.bodyId)
@@ -723,6 +916,21 @@ export function writeCraftReadout(craft) {
     r.relSpeed = 0
     r.lat = null
     r.lon = null
+    if (craft.kind === 'drive') {
+      // a rover shows its throttle speed and its body-fixed lat/lon (the spin
+      // axis spun back into the local frame); and — since it now obeys gravity
+      // and can be airborne (falling off a ledge) — its altitude above the
+      // rendered surface (0 when grounded, > 0 mid-fall)
+      r.relSpeed = Math.abs(st.speed || 0)
+      r.altitude = body ? Math.max(0, st.r - (planetRadius(body) + heightAtDir(body, st.dir))) : 0
+      const entry = registry.bodies.get(st.bodyId)
+      const spin = body && body.spin
+      const hasSpin = entry && spin && (spin.x || spin.y || spin.z)
+      const poleL = hasSpin ? rotateByQuat([spin.x, spin.y, spin.z], invertQuat(entry.quat)) : [0, 1, 0]
+      const ll = latLonOf(st.dir, poleL)
+      r.lat = ll.lat
+      r.lon = ll.lon
+    }
     return
   }
   const dom = dominantBody(st.pos, world.gravity)

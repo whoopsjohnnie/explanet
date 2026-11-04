@@ -40,8 +40,12 @@ import {
   flightInput,
   resetFlightInput,
   pendingFoot,
+  writeCraftReadout,
+  motionReadout,
 } from '../src/core/motion.js'
 import { normalizeWorld, serializeWorld, createCraft } from '../src/core/worldSchema.js'
+import { makeSurface } from '../src/core/surface.js'
+import { getHexSphere, dotCenter } from '../src/core/hexsphere.js'
 
 // a tiny two-body field: a heavy body at the origin + a light one 100 away
 const BODIES = new Map([
@@ -145,10 +149,13 @@ test('tileRadius & altitudeOf: tile scales with radius; terrain-corrected alt', 
   // flat-sphere fallback without elements
   const body = { pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, mass: 100, radius: 10, planet: null }
   assert.ok(Math.abs(altitudeOf({ x: 12, y: 0, z: 0 }, body, null) - 2) < 1e-9)
-  // terrain-correct: a +1 hex under the point lowers the altitude
+  // terrain-correct: a +1 hex under the point lowers the altitude to ~1. The
+  // corrected surface is the rendered CHORD FAN (docs/surface.txt), which
+  // sags at or below the per-cell sphere R+h — so alt ≥ 1, never less than
+  // the flat-terrain 2, never exactly 1 off a cell center
   const planet = { frequency: 3, elements: new Array(10 * 9 + 2).fill(null).map(() => ({ t: 'grass', h: 1 })) }
   const alt = altitudeOf({ x: 12, y: 0, z: 0 }, body, planet)
-  assert.ok(Math.abs(alt - 1) < 1e-9, `alt over +1 terrain should be 1, got ${alt}`)
+  assert.ok(alt >= 1 && alt < 1.5, `alt over +1 terrain should be ~1 (chord fan), got ${alt}`)
 })
 
 test('latLonOf: poles at ±90°, equator at 0°, lon reference sane', () => {
@@ -247,7 +254,10 @@ test('spaceflight (arcade): eases to the input, no gravity, lands at alt → 0',
   const st2 = craftRuntime.get('c1').state
   assert.ok(parked, 'altitude → 0 must park the craft')
   assert.equal(st2.bodyId, 'b1')
-  assert.ok(st2.r >= 10, 'parked at radius + terrain')
+  // parked r = body radius + terrain, where terrain is the rendered CHORD
+  // FAN (docs/surface.txt): at or below the per-cell sphere, so r ≤ radius,
+  // within the fan sag — the r:null → 0 trap is pinned by the headless launch
+  assert.ok(st2.r > 9.9 && st2.r <= 10 + 1e-9, `parked at the body radius (chord fan), got ${st2.r}`)
   // parking persisted into the document pose
   assert.ok(craft.pose.anchor && craft.pose.anchor.bodyId === 'b1', 'doc pose is the anchor now')
   restore()
@@ -348,6 +358,256 @@ test('craftWorldPose: parked pose composes from the registry (float32 stream)', 
   assert.ok(Math.abs(pose.pos.y - 12) < 1e-9, 'at r above the surface')
   restore()
   craftRuntime.clear()
+})
+
+// ---------------------------------------------------------------------------
+// the drive mover (rover, P2) — a ground-locked vehicle that never flies
+// ---------------------------------------------------------------------------
+
+const DOT = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const ANGLE = (a, b) => Math.acos(Math.min(1, Math.max(-1, DOT(a, b))))
+
+function driveWorld(overrides = {}) {
+  const world = makeWorld([
+    { id: 'cd', name: 'R', kind: 'drive', pose: { anchor: { bodyId: 'b1', dir: [0, 1, 0], r: null } } },
+  ])
+  return world
+}
+
+test('drive: drives along the surface, stays parked, eases the throttle', () => {
+  craftRuntime.clear()
+  const world = driveWorld()
+  syncCraftRuntime(world)
+  const body = { ...BODY_ENTRY, planet: world.planets[0] }
+  const restore = useBodies(new Map([['b1', body]]))
+  const craft = world.crafts[0]
+  const st = craftRuntime.get('cd').state
+  assert.equal(st.mode, 'park')
+  const start = [0, 1, 0]
+  const surface = makeSurface(world.planets[0], null)
+  assert.ok(Math.abs(st.r - surface.heightAt(st.dir).radius) < 1e-12, 'sync resolved r onto the rendered surface')
+
+  // full throttle for 1 s: the rover moves, NEVER leaves the ground
+  for (let i = 0; i < 60; i++) {
+    stepCraft(craft, 1 / 60, { fwd: 1 })
+    assert.equal(craftRuntime.get('cd').state.mode, 'park', 'a rover never enters space mode')
+  }
+  const st2 = craftRuntime.get('cd').state
+  assert.ok(st2.speed > 0, 'throttle eased up')
+  const arc = ANGLE(start, st2.dir)
+  assert.ok(arc > 0.5 && arc < 2.5, `the rover drove along the surface (arc ${arc.toFixed(2)} rad)`)
+  // the WELD: the anchor r is the rendered surface radius at the new dir
+  assert.ok(Math.abs(st2.r - surface.heightAt(st2.dir).radius) < 1e-12, 'r tracks the chord fan (weld)')
+
+  // release the throttle: the speed eases back down
+  for (let i = 0; i < 60; i++) stepCraft(craft, 1 / 60, {})
+  assert.ok(Math.abs(craftRuntime.get('cd').state.speed) < 1, 'the throttle eases back to 0')
+
+  // the HUD side channel: throttle speed + body-fixed lat/lon in park
+  writeCraftReadout(craft)
+  assert.ok(motionReadout.relSpeed >= 0 && motionReadout.lat != null, 'drive readout carries speed + lat/lon')
+  restore()
+  craftRuntime.clear()
+})
+
+test('drive: steering turns the heading; the nose stays on the horizon', () => {
+  craftRuntime.clear()
+  const world = driveWorld()
+  syncCraftRuntime(world)
+  const restore = useBodies(new Map([['b1', { ...BODY_ENTRY, planet: world.planets[0] }]]))
+  const craft = world.crafts[0]
+  // a long UNSTEERED drive (the rover loops the small freq-3 body a few
+  // times, so accumulate the path, not the net angle): the
+  // parallel-transported heading must stay tangent to the surface (the
+  // pre-fix bug left it behind, h·d → sin θ)
+  let arc = 0
+  let prev = [0, 1, 0]
+  for (let i = 0; i < 300; i++) {
+    stepCraft(craft, 1 / 60, { fwd: 1 })
+    const d = craftRuntime.get('cd').state.dir
+    arc += ANGLE(prev, d)
+    prev = d
+  }
+  const st2 = craftRuntime.get('cd').state
+  assert.ok(arc > 8, `unsteered drive covers the sphere (path ${arc.toFixed(1)} rad)`)
+  assert.ok(Math.abs(DOT(st2.heading, st2.dir)) < 0.05, `heading stays tangent to the surface (dot ${DOT(st2.heading, st2.dir).toFixed(3)})`)
+
+  // steer: the heading rotates about the local up and the path curves
+  const h0 = [...st2.heading]
+  for (let i = 0; i < 60; i++) stepCraft(craft, 1 / 60, { fwd: 1, yaw: 1 })
+  const st3 = craftRuntime.get('cd').state
+  assert.ok(ANGLE(h0, st3.heading) > 0.5, `steering turned the heading (${ANGLE(h0, st3.heading).toFixed(2)} rad)`)
+  assert.ok(Math.abs(DOT(st3.heading, st3.dir)) < 0.05, 'steered heading stays tangent too')
+  restore()
+  craftRuntime.clear()
+})
+
+test('drive: launchCraftState refuses a rover; eject drops you on foot where it drove', () => {
+  craftRuntime.clear()
+  const world = driveWorld()
+  syncCraftRuntime(world)
+  const restore = useBodies(new Map([['b1', { ...BODY_ENTRY, planet: world.planets[0] }]]))
+  const craft = world.crafts[0]
+  const st0 = craftRuntime.get('cd').state
+  const dir0 = [...st0.dir]
+  for (let i = 0; i < 60; i++) stepCraft(craft, 1 / 60, { fwd: 1 })
+  const st = craftRuntime.get('cd').state
+  assert.ok(ANGLE(dir0, st.dir) > 0.3, 'it drove')
+  assert.equal(launchCraftState('cd'), null, 'a drive craft has no launch')
+  assert.equal(craftRuntime.get('cd').state.mode, 'park', '…and it is still parked')
+  const ev = ejectCraftState('cd')
+  assert.equal(ev.type, 'foot')
+  assert.equal(ev.bodyId, 'b1')
+  assert.deepEqual(ev.dir, st.dir, 'eject lands on foot at the (moved) anchor')
+  restore()
+  craftRuntime.clear()
+})
+
+test('drive: walls block steep relief; gentle steps are climbed', () => {
+  const FREQ = 3
+  const hex = getHexSphere(FREQ)
+  const N = 10 * FREQ * FREQ + 2
+  const wallDir = [0, 0, 1] // the cap of tall cells the rover drives into
+  for (const [step, crosses] of [[3, false], [0.5, true]]) {
+    craftRuntime.clear()
+    const elements = new Array(N).fill(null).map((_, i) => ({
+      t: 'grass',
+      h: dotCenter(hex, i, wallDir) > 0.25 ? step : 0,
+    }))
+    const world = driveWorld()
+    world.planets[0].elements = elements
+    syncCraftRuntime(world)
+    const restore = useBodies(new Map([['b1', { ...BODY_ENTRY, planet: world.planets[0] }]]))
+    const craft = world.crafts[0]
+    for (let i = 0; i < 360; i++) stepCraft(craft, 1 / 60, { fwd: 1 }) // 6 s of driving
+    const st = craftRuntime.get('cd').state
+    const z = st.dir[2]
+    if (crosses) assert.ok(z > 0.5, `a ${step} step climbs (rover crossed the ring, z=${z.toFixed(2)})`)
+    else assert.ok(z < 0.4, `a ${step} step is a wall (rover held at z=${z.toFixed(2)})`)
+    restore()
+    craftRuntime.clear()
+  }
+})
+
+test('drive: obeys gravity — it falls off a ledge instead of teleporting down (no lift)', () => {
+  const FREQ = 3
+  const hex = getHexSphere(FREQ)
+  const N = 10 * FREQ * FREQ + 2
+  craftRuntime.clear()
+  // a raised cap around the north pole; the rover starts ON it and drives off
+  // the edge (the ground drops by 3 units — far past the drop limit)
+  const cap = [0, 1, 0]
+  const elements = new Array(N).fill(null).map((_, i) => ({
+    t: 'grass',
+    h: dotCenter(hex, i, cap) > 0.5 ? 3 : 0,
+  }))
+  const world = driveWorld()
+  world.planets[0].elements = elements
+  syncCraftRuntime(world)
+  const restore = useBodies(new Map([['b1', { ...BODY_ENTRY, planet: world.planets[0] }]]))
+  const craft = world.crafts[0]
+  const surface = makeSurface(world.planets[0], null)
+  const st0 = craftRuntime.get('cd').state
+  assert.ok(st0.grounded, 'a freshly synced rover is grounded on the surface')
+  assert.ok(
+    st0.r > surface.heightAt([0, 0, 1]).radius + 1,
+    'it starts up on the plateau (h=3, ~3 units above the plain)'
+  )
+
+  // drive off the edge: it leaves the plateau, the ground drops away, it goes
+  // AIRBORNE and falls under gravity — it does not snap to the hex below
+  let airborne = false
+  for (let i = 0; i < 240; i++) {
+    stepCraft(craft, 1 / 60, { fwd: 1 })
+    const st = craftRuntime.get('cd').state
+    if (!st.grounded && st.r - surface.heightAt(st.dir).radius > 0.2) airborne = true
+  }
+  const st = craftRuntime.get('cd').state
+  assert.ok(airborne, 'the rover went airborne when it drove off the ledge (no teleport-down)')
+  assert.ok(st.grounded, '…and the fall ends: it lands back on the surface')
+  assert.ok(
+    Math.abs(st.r - surface.heightAt(st.dir).radius) < 1e-9,
+    'it lands WELDED to the rendered surface'
+  )
+  restore()
+  craftRuntime.clear()
+})
+
+test('drive: a gentle slope stays grounded (no spurious falling on flat terrain)', () => {
+  const FREQ = 3
+  const hex = getHexSphere(FREQ)
+  const N = 10 * FREQ * FREQ + 2
+  craftRuntime.clear()
+  // a low 0.5-unit step everywhere — below the drop limit, so a grounded rover
+  // tracks it (welded) and never goes airborne
+  const elements = new Array(N).fill(null).map((_, i) => ({
+    t: 'grass',
+    h: dotCenter(hex, i, [0, 1, 0]) > 0.5 ? 0.5 : 0,
+  }))
+  const world = driveWorld()
+  world.planets[0].elements = elements
+  syncCraftRuntime(world)
+  const restore = useBodies(new Map([['b1', { ...BODY_ENTRY, planet: world.planets[0] }]]))
+  const craft = world.crafts[0]
+  const surface = makeSurface(world.planets[0], null)
+  for (let i = 0; i < 120; i++) {
+    stepCraft(craft, 1 / 60, { fwd: 1 })
+    const st = craftRuntime.get('cd').state
+    assert.ok(st.grounded, 'a gentle step never launches the rover airborne')
+    assert.ok(
+      Math.abs(st.r - surface.heightAt(st.dir).radius) < 1e-9,
+      '…and it stays welded to the chord fan'
+    )
+  }
+  restore()
+  craftRuntime.clear()
+})
+
+test('drive: an unattended rover rides its body (no surface, no motion)', () => {
+  craftRuntime.clear()
+  const world = driveWorld()
+  syncCraftRuntime(world)
+  const craft = world.crafts[0]
+  const st0 = craftRuntime.get('cd').state
+  const dir0 = [...st0.dir]
+  const r0 = st0.r
+  for (let i = 0; i < 60; i++) stepCraft(craft, 1 / 60, null)
+  const st = craftRuntime.get('cd').state
+  assert.deepEqual(st.dir, dir0, 'unattended: the anchor does not move (it rides the body analytically)')
+  assert.equal(st.r, r0)
+  craftRuntime.clear()
+})
+
+test('drive: the document round-trips the parked heading (lenient normalize)', () => {
+  const world = {
+    version: 1,
+    name: 't',
+    gravity: 40,
+    scale: 100,
+    planets: [
+      {
+        id: 'p1',
+        name: 'P1',
+        preset: 'earthlike',
+        frequency: 3,
+        center: { x: 0, y: 0, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
+        spin: { x: 0, y: 0, z: 0 },
+        elements: new Array(10 * 9 + 2).fill(null).map(() => ({ t: 'grass', h: 0 })),
+      },
+    ],
+    crafts: [
+      { id: 'c1', name: 'R', kind: 'drive', pose: { anchor: { bodyId: 'p1', dir: [0, 1, 0], r: 5, heading: [0, 0, 1] } } },
+      { id: 'c2', name: 'B', kind: 'drive', pose: { anchor: { bodyId: 'p1', dir: [0, 1, 0], r: 5, heading: 'nonsense' } } },
+    ],
+  }
+  const w = normalizeWorld(world)
+  assert.equal(w.crafts.length, 2, 'both rovers survive')
+  assert.deepEqual(w.crafts[0].pose.anchor.heading, [0, 0, 1], 'a good heading is kept')
+  assert.equal(w.crafts[1].pose.anchor.heading, undefined, 'a bad heading is dropped (lazy-init on first drive)')
+  // and the round-trip keeps it
+  const back = normalizeWorld(serializeWorld(w))
+  assert.deepEqual(back.crafts[0].pose.anchor.heading, [0, 0, 1])
 })
 
 test('flightInput & pendingFoot: side channels reset cleanly', () => {

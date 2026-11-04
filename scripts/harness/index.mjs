@@ -96,6 +96,8 @@ export const SOL_REAL_MAJOR = [
  *  - one arcade shuttle parked on it — the full P1 chain (board → launch →
  *    fly → park → eject-on-foot; eject-flying → EVA → fall → land-on-foot)
  *    is deterministic here.
+ *  - one drive rover parked on the opposite side — the full P2 chain
+ *    (board → drive → stay welded → eject-on-foot) is deterministic here.
  */
 export function makeTestballWorld() {
   const FREQ = 12
@@ -128,6 +130,14 @@ export function makeTestballWorld() {
         kind: 'shuttle',
         realism: 'arcade',
         pose: { anchor: { bodyId: 'p-testball', dir: [0, 0.7, 0.7], r: null } },
+      }),
+      // the P2 drive chain testbed: a ground-locked rover parked on the
+      // opposite side of the ball (board → drive → stay welded → eject)
+      createCraft({
+        id: 'c-testball-rover',
+        name: 'Rover',
+        kind: 'drive',
+        pose: { anchor: { bodyId: 'p-testball', dir: [0, -0.7, 0.7], r: null } },
       }),
     ],
   }
