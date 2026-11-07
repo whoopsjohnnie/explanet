@@ -342,11 +342,14 @@
   P2          the ROVER: a 'drive' mover on the same contract — it drives
               + parks (it never flies), ground-locked to the surface like
               the walker but a vehicle (speed, handling per craftTypes).
-  P3          crafts in the WORLD DATABASE: a `crafts` table (bodies stay
-              bodies) so DB worlds carry vehicles; the skeleton streams
-              them like bodies do. Until then DB worlds simply have no
-              crafts — the document field is optional, and normalizeWorld
-              heals files that lack it.
+  P3 (done)   crafts in the WORLD DATABASE: `models` (craft CLASSES — the
+              mover kind + the serialized mesh design, a jsonb document of
+              positioned primitives) + `craft` (INSTANCES — a named vehicle
+              of a world with a pose + per-instance realism; bodies stay
+              bodies). The skeleton streams them like bodies do (a crafts[]
+              document field, design verbatim from the models table); a
+              craft's look is edited by UPDATEing the JSON in the DB
+              (migration 009, core/craftDesigns.js, GET /api/models).
   Later       more kinds on the same contract: aircraft (needs an
               atmosphere), bouncy-ball, … a mover is {enter?, step, exit?}
               and the world already knows how to persist, render and

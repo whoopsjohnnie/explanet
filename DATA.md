@@ -18,6 +18,8 @@ docs or commit messages. Schema: `explanet`. DDL: `db/schema.sql` +
 | `worlds`  | one row per world document (name, gravity, scale [meters per world unit], version) |
 | `bodies`  | per-body documents (orbit, spin, presets, rings/scripts/kind/atmosphere/generation) |
 | `atoms`   | hex cell elements — the atom model, one row per cell chunk     |
+| `models`  | craft classes — mover kind + serialized mesh design (jsonb)    |
+| `craft`   | craft instances — a named vehicle of a world (pose + realism)  |
 | `stars`   | real-sky reference catalog (Yale BSC v5, `BSC5`, 9,096 rows)   |
 | `materials` | material palette rows                                      |
 

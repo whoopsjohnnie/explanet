@@ -249,7 +249,9 @@ details.
 
 Worlds are stored relationally in PostgreSQL (your world database server;
 schema in [`db/schema.sql`](db/schema.sql)): `worlds → bodies → atoms`, with
-`materials` as the terrain palette. Because atoms are rows, a browser never
+`materials` as the terrain palette and `models`/`craft` as the astronaut's
+vehicles (craft CLASSES — mover kind + serialized mesh design — and their
+named INSTANCES per world). Because atoms are rows, a browser never
 has to swallow the whole 90 MB document again:
 
 - **Skeleton first** — on boot the app fetches every body's document fields
@@ -267,7 +269,12 @@ has to swallow the whole 90 MB document again:
   `dist/`):
   `GET /api/worlds`, `GET /api/worlds/:id` (skeleton, `?refresh=1` rebakes),
   `GET /api/bodies/:dbId/elements` (compact columnar atoms, gzipped),
+  `GET /api/models` (craft classes + instance counts),
+  `GET /api/models/:key` (one class: identity + full design JSON + instances),
   `GET /api/health`.
+  The skeleton also streams the world's `crafts[]` (kind + mesh design from
+  the `models` table, pose verbatim) — a craft's look is edited by UPDATEing
+  its `models.design` JSON; the next skeleton streams it.
 - **Connection**: `PGHOST`, `PGDATABASE`, `PGUSER` are **required** env vars —
   this repo ships no infrastructure names; `PGPORT` defaults to 5432 and the
   password comes from `PGPASSWORD` or `~/.pgpass`. The served world defaults
@@ -296,6 +303,7 @@ src/
     surface.js          surface queries + kinematic walker (the on-foot mover)
     motion.js           craft/astro movers + live craft runtime (flight.txt)
     craftTypes.js       craft kinds, mover tuning, EVA constants
+    craftDesigns.js     craft mesh designs as JSON (DB models.design mirror)
     lod.js              render LOD chains + sampled preview grids
     terrain.js          terrain registry + procedural canvas textures
     db.js               world-database client (skeleton + streamed atoms)

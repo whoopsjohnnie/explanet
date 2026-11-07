@@ -117,6 +117,11 @@
     "name": "Shuttle",
     "kind": "shuttle",            // mover identity (craftTypes.js catalog)
     "realism": "arcade",          // "arcade" | "real" (per craft)
+    "design": { ... },            // OPTIONAL mesh design (JSON) — the model's
+                                  //   serialized mesh from the world database
+                                  //   (models.design), or a per-craft override;
+                                  //   absent = the built-in for the kind
+                                  //   (core/craftDesigns.js, §3b)
     "pose": { ... }               // exactly one of the two forms below
   }
 
@@ -145,11 +150,46 @@
   'arcade', nanoid id). normalizeCrafts is the lenient contract: unknown
   anchor bodies re-anchor on the first landable body, a pose that can't be
   read falls back to a fresh anchor, unusable entries are dropped; an empty
-  or missing list means "no crafts" (the field is optional — DB worlds have
-  none until P3, §15). TopBar 🚀 Add Craft makes a shuttle parked nose-up
-  (dir [0, 0.7, 0.7]) on the selected body (or the first landable one);
+  or missing list means "no crafts" (the field is optional — a world with
+  no vehicles simply omits it). TopBar 🚀 Add Craft makes a shuttle parked
+  nose-up (dir [0, 0.7, 0.7]) on the selected body (or the first landable);
   🚙 Add Rover makes a drive craft parked the same way (on foot, a few
   hull-lengths in front of you, like the shuttle).
+
+  3b. THE DESIGN — the craft's mesh, as data (P3, §15)
+  ---------------------------------------------------------------------------
+  A craft's LOOK is a serialized mesh document, not code (core/craftDesigns.js,
+  framework-free; rendered by Crafts.jsx):
+
+    {
+      "length": 1.345,               // nose-to-tail span in MODEL units — the
+                                     // mesh scales by rt.size ÷ length, so the
+                                     // craft renders at its true meter size
+      "parts": [
+        { "shape": "cylinder",        // box | cylinder | cone | sphere
+          "size": [0.26, 0.3, 0.9, 12],  // the three geometry args
+          "position": [0, 0, 0.15],   // optional, default [0,0,0]
+          "rotation": [1.57, 0, 0],   // optional Euler XYZ (radians)
+          "material": { "color": "#cdd6e4",
+                        "metalness": 0.55, "roughness": 0.4,
+                        "emissive": "#ff3c00", "emissiveIntensity": 1 }
+        } ]
+    }
+
+  Where a design comes from, in order:
+    1. the craft's own `design` field — the skeleton streams it VERBATIM
+       from the world-database models.design for the craft's model
+       (migration 009), or a per-craft override saved in a world file;
+    2. the BUILT-IN design for the kind (DEFAULT_CRAFT_DESIGNS — the same
+       JSON the DB seed carries, pinned against it by test-motion.mjs).
+  Editing a craft's look is a DATA EDIT — e.g.
+    UPDATE models SET design = jsonb_set(design, '{parts,0,material,color}',
+        '"#ff4444"') WHERE key = 'shuttle';
+  and the next skeleton streams it; no code change, no rebuild.
+  normalizeCraftDesign heals leniently (corrupt parts dropped, bad numbers
+  defaulted; no length or no usable parts → null → the built-in). GET
+  /api/models serves the classes for introspection (the API stays read-only
+  — edits go through psql, like everything else in the world database).
 
 
 --------------------------------------------------------------------------------
@@ -885,11 +925,13 @@
               handling per craftTypes). driveStep's mechanics, the parallel-transported
               heading, the launch refusal and the TopBar 🚙 are all in this
               document (§4, §7, §9–§12).
-  P3          crafts in the WORLD DATABASE: a `crafts` table (bodies stay
-              bodies) so DB worlds carry vehicles; the skeleton streams
-              them like bodies do. Until then DB worlds simply have no
-              crafts — the document field is optional, and normalizeWorld
-              heals files that lack it.
+  P3 (done)   crafts in the WORLD DATABASE: `models` (craft CLASSES — the
+              mover kind + the serialized mesh design) + `craft` (named
+              INSTANCES of a model in a world — pose + per-instance
+              realism; bodies stay bodies). The skeleton streams them like
+              bodies do (crafts[] document field, design verbatim from the
+              models table — §3b), and a craft's look is edited by UPDATEing
+              the JSON in the DB (migration 009; GET /api/models).
   Later       more kinds on the same contract: aircraft (needs an
               atmosphere), bouncy-ball, … a mover is {enter?, step, exit?}
               and the world already knows how to persist, render and pilot
