@@ -16,13 +16,17 @@
  *                                         format as the bundled starCatalog.js)
  *   GET /api/stars/list                 → detailed rows (?catalog=&magMax=&limit=)
  *   GET /api/stars/hr/:hr               → one star by Harvard number
+ *   GET /api/models                     → { models: [...] } — craft model
+ *                                         (class) summaries + instance counts
+ *   GET /api/models/:key                → one craft model: identity, the full
+ *                                         design JSON, and its instances
  *
  * The skeleton is the boot payload: bodies with real frequency/density (so
  * derived radius/mass and orbits stay exact) but atoms only for the small
  * bodies; giants arrive as stubs + a preview sample and stream their atoms
  * in later via /api/bodies/:id/elements.
  */
-import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked } from './db.mjs'
+import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked, craftModels, craftModelByKey } from './db.mjs'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -101,9 +105,19 @@ export async function apiHandler(req, res, next) {
       const stars = await starByHr(starMatch[1], { catalog: params.get('catalog') ?? undefined })
       return send(res, 200, JSON.stringify(stars.length === 1 ? stars[0] : { stars }))
     }
+    // ---- craft models: the craft classes + their serialized mesh designs --
+    if (path === '/api/models') {
+      const models = await craftModels()
+      return send(res, 200, JSON.stringify({ models }))
+    }
+    const modelMatch = /^\/api\/models\/([\w-]+)$/.exec(path)
+    if (modelMatch) {
+      const model = await craftModelByKey(modelMatch[1])
+      return send(res, 200, JSON.stringify(model))
+    }
     return send(res, 404, JSON.stringify({ error: `no api route ${path}` }))
   } catch (err) {
-    const status = /no world|no bodies|no star/.test(err.message) ? 404 : 500
+    const status = /no world|no bodies|no star|no craft model/.test(err.message) ? 404 : 500
     return send(res, status, JSON.stringify({ error: err.message }))
   }
 }

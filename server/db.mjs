@@ -12,6 +12,9 @@
  *   * full body atoms — streamed per body on demand (selection / approach /
  *     landing), in a compact columnar JSON form: material dictionary + t/h
  *     columns + sparse color overrides.
+ *   * craft (migration 009) — a world's vehicles ride IN the skeleton
+ *     document (crafts[] — kind + design from the models table, pose
+ *     verbatim); the models endpoints serve the classes for introspection.
  *
  * GENERATED bodies (bodies.generation, docs/scaling.txt §5): no atom rows
  * exist for them. loadBody synthesizes the surface from the descriptor
@@ -400,6 +403,73 @@ export async function skyPacked({ catalog, magMax, refresh = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Craft models — the craft classes (read side of migration 009)
+// ---------------------------------------------------------------------------
+// `models` is the CRAFT CLASS: mover identity (kind) + the serialized mesh
+// (design jsonb). Editing a design in the DB changes how every instance of
+// the model renders — the next skeleton streams it verbatim (see worldSkeleton
+// below). The /api/models endpoints are read-only introspection; edits go
+// through psql (the app never writes world data back to the DB).
+
+/** Model summaries for GET /api/models: identity + instance count. */
+export async function craftModels() {
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.key, m.label, m.kind, m.updated_at,
+            (SELECT count(*)::int FROM craft c WHERE c.model_id = m.id) AS instances
+       FROM models m
+      ORDER BY m.id`
+  )
+  return rows.map((r) => ({
+    id: Number(r.id),
+    key: r.key,
+    label: r.label,
+    kind: r.kind,
+    instances: r.instances,
+    updatedAt: r.updated_at,
+  }))
+}
+
+/** One full model row (with its design JSON) for GET /api/models/:key. */
+export async function craftModelByKey(key) {
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.key, m.label, m.kind, m.design, m.created_at, m.updated_at
+       FROM models m
+      WHERE m.key = $1`,
+    [String(key)]
+  )
+  if (!rows.length)
+    throw new Error(`no craft model '${key}' in ${DATABASE}@${HOST} — see GET /api/models`)
+  const m = rows[0]
+  const { rows: inst } = await getPool().query(
+    `SELECT c.id, c.world_id, w.name AS world_name, c.doc_id, c.name,
+            c.realism, c.pose, c.sort_order
+       FROM craft c
+       JOIN worlds w ON w.id = c.world_id
+      WHERE c.model_id = $1
+      ORDER BY c.world_id, c.sort_order, c.id`,
+    [m.id]
+  )
+  return {
+    id: Number(m.id),
+    key: m.key,
+    label: m.label,
+    kind: m.kind,
+    design: m.design,
+    createdAt: m.created_at,
+    updatedAt: m.updated_at,
+    instances: inst.map((c) => ({
+      id: Number(c.id),
+      worldId: Number(c.world_id),
+      worldName: c.world_name,
+      docId: c.doc_id,
+      name: c.name,
+      realism: c.realism,
+      pose: c.pose,
+    })),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Worlds
 // ---------------------------------------------------------------------------
 
@@ -505,6 +575,29 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     planets.push(planet)
   }
 
+  // Crafts (migration 009): the world's vehicles, streamed like the bodies'
+  // optional jsonb fields — kind from the model (the class), design VERBATIM
+  // from models.design (the serialized mesh), pose verbatim. The app's
+  // normalizeCrafts heals them like any file-world crafts[]; a craft with no
+  // design renders the built-in for its kind (core/craftDesigns.js).
+  const { rows: craftRows } = await getPool().query(
+    `SELECT c.doc_id, c.id AS craft_db_id, c.name, c.realism, c.pose,
+            m.kind AS model_kind, m.design AS design
+       FROM craft c
+       JOIN models m ON m.id = c.model_id
+      WHERE c.world_id = $1
+      ORDER BY c.sort_order, c.id`,
+    [id]
+  )
+  const crafts = craftRows.map((c) => ({
+    id: c.doc_id || `c-db-${c.craft_db_id}`,
+    name: c.name,
+    kind: c.model_kind,
+    realism: c.realism,
+    pose: c.pose,
+    ...(c.design ? { design: c.design } : {}),
+  }))
+
   const doc = {
     version: w[0].doc_version || 1,
     name: w[0].name,
@@ -514,6 +607,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     // real human in meters (core/surface.js SURFACE_REAL).
     scale: w[0].scale,
     source: `db:${DATABASE}@${HOST} · ${w[0].name}`,
+    ...(crafts.length ? { crafts } : {}),
     planets,
   }
   const text = JSON.stringify(doc)

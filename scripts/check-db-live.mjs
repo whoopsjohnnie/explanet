@@ -66,5 +66,26 @@ for (const p of world.planets) {
   )
   if (!ok) failed = true
 }
+
+// craft (migration 009): DB worlds stream their vehicles in the skeleton —
+// kind + the serialized mesh design come from the models table, pose verbatim
+const crafts = world.crafts || []
+if (crafts.length) {
+  for (const c of crafts) {
+    const d = c.design
+    const parked = c.pose?.anchor
+    console.log(
+      `  craft  ${c.name.padEnd(14)} ${c.kind} (${c.realism})` +
+        (d ? ` — design: ${d.parts.length} parts, length ${d.length}` : ' — built-in design') +
+        (parked ? ` — parked @ ${parked.bodyId}` : c.pose?.space ? ' — in flight' : '')
+    )
+    if (!d) {
+      console.error('  ✗ craft without a design from the models table')
+      failed = true
+    }
+  }
+} else {
+  console.log('  craft  (none in this world)')
+}
 console.log(failed ? 'FAILED' : 'OK')
 process.exit(failed ? 1 : 0)

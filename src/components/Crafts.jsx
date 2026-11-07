@@ -7,10 +7,14 @@
  *    flying ones coast (arcade eases to a hover; real keeps orbiting) —
  *    with the piloted craft fed the live flightInput and its telemetry
  *    written to the motionReadout side channel.
- *  • CraftMesh renders one craft as a small primitive (unit shuttle, nose
- *    +Z) posed EVERY frame from the craftRuntime — the same float32
- *    registry stream as the planet meshes (a parked craft composes from its
- *    body's registry entry, so it rides the same quantized pose).
+ *  • CraftMesh renders one craft from its DESIGN — the serialized mesh
+ *    document (core/craftDesigns.js: `models.design` from the world
+ *    database, a per-craft override, or the built-in default for the kind)
+ *    — posed EVERY frame from the craftRuntime: the same float32 registry
+ *    stream as the planet meshes (a parked craft composes from its body's
+ *    registry entry, so it rides the same quantized pose). The mesh scales
+ *    by rt.size / design.length, so the model renders at its true meter size
+ *    (sizeMeters / world.scale, like the real-human astronaut).
  *
  * The player's own craft renders too: the chase camera (C) exists to see
  * the ship, and the cockpit sits inside it.
@@ -29,71 +33,46 @@ import {
   setMotionWorld,
   flightInput,
 } from '../core/motion.js'
+import { craftDesignFor } from '../core/craftDesigns.js'
 
 const NO_RAYCAST = () => null
 
-// The unit models' nose-to-tail length, in MODEL units. `rt.size` is the
-// craft's length in WORLD units (sizeMeters / world.scale), so the mesh scales
-// the model by `rt.size / MODEL_LENGTH` to render it at its true meter size.
-// Keep these in sync with the model geometry in CraftMesh below.
-const SHUTTLE_MODEL_LENGTH = 1.345 // shuttle spans z = −0.3 … 1.045
-const ROVER_MODEL_LENGTH = 0.9 // rover body spans z = −0.45 … 0.45
+// The part primitives a design may use (core/craftDesigns.js CRAFT_DESIGN_SHAPES,
+// mirrored as three geometries — the size array is the geometry's args).
+const GEOMETRIES = {
+  box: (s) => <boxGeometry args={[s[0], s[1], s[2]]} />,
+  cylinder: (s) => <cylinderGeometry args={[s[0], s[1], s[2], s[3] ?? 16]} />,
+  cone: (s) => <coneGeometry args={[s[0], s[1], s[2] ?? 16]} />,
+  sphere: (s) => <sphereGeometry args={[s[0], s[1] ?? 24, s[2] ?? 16]} />,
+}
 
-function ShuttleModel() {
-  // a unit shuttle (SHUTTLE_MODEL_LENGTH model units nose-to-tail): fuselage +
-  // nose along +Z, delta wings, a belly light
+/** One part of a craft design document: a positioned, rotated primitive. */
+function DesignPart({ part }) {
+  const m = part.material
   return (
-    <>
-      <mesh position={[0, 0, 0.15]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[0.26, 0.3, 0.9, 12]} />
-        <meshStandardMaterial color="#cdd6e4" metalness={0.55} roughness={0.4} />
-      </mesh>
-      <mesh position={[0, 0, 0.82]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.3, 0.45, 12]} />
-        <meshStandardMaterial color="#9fb2cc" metalness={0.6} roughness={0.35} />
-      </mesh>
-      <mesh position={[-0.38, -0.02, -0.25]} rotation={[0, 0, 0.5]}>
-        <boxGeometry args={[0.5, 0.05, 0.5]} />
-        <meshStandardMaterial color="#7d8aa0" metalness={0.5} roughness={0.5} />
-      </mesh>
-      <mesh position={[0.38, -0.02, -0.25]} rotation={[0, 0, -0.5]}>
-        <boxGeometry args={[0.5, 0.05, 0.5]} />
-        <meshStandardMaterial color="#7d8aa0" metalness={0.5} roughness={0.5} />
-      </mesh>
-    </>
+    <mesh position={part.position} rotation={part.rotation}>
+      {GEOMETRIES[part.shape](part.size)}
+      <meshStandardMaterial
+        color={m.color}
+        metalness={m.metalness}
+        roughness={m.roughness}
+        {...(m.emissive ? { emissive: m.emissive, emissiveIntensity: m.emissiveIntensity } : {})}
+      />
+    </mesh>
   )
 }
 
-function RoverModel() {
-  // a unit rover (ROVER_MODEL_LENGTH model units nose-to-tail): a chassis +
-  // four wheels + a survey mast, nose (drive heading) along +Z. Modeled so
-  // the WHEELS' bottom is the origin — the craft pose sits the origin on the
-  // rendered surface, and a rover is always grounded (unlike the shuttle,
-  // which straddles its pad point while mostly in flight).
+/**
+ * The craft's mesh, rebuilt from its design JSON (the `ShuttleModel`/
+ * `RoverModel` of old, now data): parts map 1:1 to three primitives, nose
+ * (drive heading) along +Z in model units. Unknown shapes never reach here
+ * (normalizeCraftDesign drops them; the built-in defaults only use known ones).
+ */
+function CraftDesignModel({ design }) {
   return (
     <>
-      <mesh position={[0, 0.34, 0]}>
-        <boxGeometry args={[0.55, 0.24, 0.9]} />
-        <meshStandardMaterial color="#c8a25e" metalness={0.45} roughness={0.5} />
-      </mesh>
-      <mesh position={[0, 0.51, 0.12]}>
-        <cylinderGeometry args={[0.02, 0.02, 0.34, 6]} />
-        <meshStandardMaterial color="#9aa4b2" metalness={0.6} roughness={0.4} />
-      </mesh>
-      <mesh position={[0, 0.7, 0.12]}>
-        <boxGeometry args={[0.12, 0.08, 0.12]} />
-        <meshStandardMaterial color="#3a3f47" metalness={0.4} roughness={0.5} />
-      </mesh>
-      {[
-        [-0.34, 0.28],
-        [0.34, 0.28],
-        [-0.34, -0.28],
-        [0.34, -0.28],
-      ].map(([x, z], i) => (
-        <mesh key={i} position={[x, 0.16, z]} rotation={[0, 0, Math.PI / 2]}>
-          <cylinderGeometry args={[0.16, 0.16, 0.12, 12]} />
-          <meshStandardMaterial color="#33373e" metalness={0.3} roughness={0.75} />
-        </mesh>
+      {design.parts.map((p, i) => (
+        <DesignPart key={i} part={p} />
       ))}
     </>
   )
@@ -103,8 +82,9 @@ function CraftMesh({ craft }) {
   const ref = useRef()
   const piloting = useStore((s) => !!s.player && s.player.kind !== 'freeCam')
   const selectCraft = useStore((s) => s.selectCraft)
-  const isRover = craft.kind === 'drive'
-  const modelLength = isRover ? ROVER_MODEL_LENGTH : SHUTTLE_MODEL_LENGTH
+  // the design the craft renders with: its own (DB-model or document) design,
+  // else the built-in for its kind — stable per craft document identity
+  const design = useMemo(() => craftDesignFor(craft), [craft])
   const tmp = useMemo(() => ({ m: new THREE.Matrix4(), up: new THREE.Vector3(), fwd: new THREE.Vector3(), rgt: new THREE.Vector3() }), [])
 
   useFrame(() => {
@@ -119,7 +99,9 @@ function CraftMesh({ craft }) {
     tmp.rgt.crossVectors(tmp.up, tmp.fwd) // right = up × forward
     tmp.m.makeBasis(tmp.rgt, tmp.up, tmp.fwd)
     o.quaternion.setFromRotationMatrix(tmp.m)
-    o.scale.setScalar(rt.size / modelLength)
+    // rt.size is the craft's length in WORLD units; design.length is the
+    // model's nose-to-tail span in MODEL units — the scale between them
+    o.scale.setScalar(rt.size / design.length)
   })
 
   return (
@@ -131,7 +113,7 @@ function CraftMesh({ craft }) {
         selectCraft(craft.id)
       }}
     >
-      {isRover ? <RoverModel /> : <ShuttleModel />}
+      <CraftDesignModel design={design} />
     </group>
   )
 }

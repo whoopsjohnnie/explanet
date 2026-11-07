@@ -12,6 +12,12 @@
  *                 atoms    (elements[i] → cell_index i, positional identity)
  *                 materials(terrain key `t` resolved through the palette;
  *                          unknown keys become private materials of the world)
+ *                 models   (craft classes, upserted from core/craftDesigns.js
+ *                          built-in designs — NEVER overwriting a customized
+ *                          design already in the DB)
+ *                 craft    (world.crafts[] rows; the model is resolved by
+ *                          kind — a craft carrying its own design gets a
+ *                          derived model key so the design round-trips)
  *
  * Everything runs in ONE transaction: either the whole world lands or nothing
  * does. Before COMMIT a DO block re-checks every body against
@@ -28,6 +34,8 @@ import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { lookupPgpass } from '../server/db.mjs'
+import { DEFAULT_CRAFT_DESIGNS } from '../src/core/craftDesigns.js'
+import { CRAFT_TYPES, CRAFT_KINDS } from '../src/core/craftTypes.js'
 
 // psql connection: env vars REQUIRED (no infrastructure names in this repo —
 // see DATA.md). psql matches hostnames EXACTLY, so a ~/.pgpass entry must be
@@ -71,8 +79,10 @@ const vec = (v, px) => [num(v?.x), num(v?.y), num(v?.z)].map((n, i) => `${px}_${
 
 const totalAtoms = world.planets.reduce((s, p) => s + (p.elements?.length || 0), 0)
 const genCount = world.planets.filter((p) => p.generation).length
+const craftCount = Array.isArray(world.crafts) ? world.crafts.length : 0
 console.error(`importing ${src}: "${world.name ?? 'Untitled World'}", ` +
-  `${world.planets.length} bodies (${genCount} generated), ${totalAtoms.toLocaleString('en-US')} atoms → $PGDATABASE`)
+  `${world.planets.length} bodies (${genCount} generated), ${totalAtoms.toLocaleString('en-US')} atoms` +
+  `${craftCount ? `, ${craftCount} craft` : ''} → $PGDATABASE`)
 
 // ---------------------------------------------------------------------------
 // SQL + COPY payload (one stream; psql reads COPY data after each
@@ -101,10 +111,54 @@ const bodyRows = world.planets.map((p, i) => {
   ].join('\t')
 }).join('\n')
 
+// ---------------------------------------------------------------------------
+// Craft (migration 009): models are upserted from the BUILT-IN designs in
+// core/craftDesigns.js (ON CONFLICT DO NOTHING — a design you have
+// customized in the DB is never overwritten by an import). A craft whose
+// document carries its own design gets a DERIVED model key (kind-doc_id) so
+// the design round-trips without touching the base class.
+// ---------------------------------------------------------------------------
+const craftSrc = Array.isArray(world.crafts) ? world.crafts : []
+const craftRows = craftSrc
+  .map((c, i) => {
+    const docId = c && typeof c.id === 'string' && c.id ? c.id : `c-import-${i}`
+    c.__docId = docId
+    const kind = CRAFT_KINDS.includes(c?.kind) ? c.kind : 'shuttle'
+    const hasDesign = !!c?.design && typeof c.design === 'object'
+    return [
+      cop(docId),
+      cop(c?.name ?? CRAFT_TYPES[kind]?.label ?? 'Craft'),
+      cop(hasDesign ? `${kind}-${docId}` : kind), // model key
+      c?.realism === 'real' ? 'real' : 'arcade',
+      cop(JSON.stringify(c?.pose && typeof c.pose === 'object' ? c.pose : {})),
+      i,
+    ].join('\t')
+  })
+  .join('\n')
+
+const modelUpserts = [
+  ...Object.entries(DEFAULT_CRAFT_DESIGNS).map(([kind, design]) =>
+    `INSERT INTO models (key, label, kind, design)
+     VALUES (${q(kind)}, ${q(CRAFT_TYPES[kind]?.label ?? kind)}, ${q(kind)}, ${q(JSON.stringify(design))})
+     ON CONFLICT (key) DO NOTHING`),
+  ...craftSrc
+    .filter((c) => c?.design && typeof c.design === 'object')
+    .map((c) => {
+      const kind = CRAFT_KINDS.includes(c?.kind) ? c.kind : 'shuttle'
+      const label = `${CRAFT_TYPES[kind]?.label ?? 'Craft'} (${c?.name ?? c.__docId})`
+      return `INSERT INTO models (key, label, kind, design)
+     VALUES (${q(`${kind}-${c.__docId}`)}, ${q(label)}, ${q(kind)}, ${q(JSON.stringify(c.design))})
+     ON CONFLICT (key) DO NOTHING`
+    }),
+].join(';\n')
+
 const staging = `BEGIN;
 SET LOCAL search_path = explanet;
 SET LOCAL client_min_messages = warning;
 SET LOCAL statement_timeout = 0;
+
+-- craft classes (built-in designs; never overwrites a customized design)
+${modelUpserts};
 
 CREATE TEMP TABLE st_bodies (
   doc_id text, name text, preset text, kind text, seed bigint, frequency integer,
@@ -121,9 +175,19 @@ CREATE TEMP TABLE st_atoms (
   material_key text, color text
 ) ON COMMIT DROP;
 
+CREATE TEMP TABLE st_crafts (
+  doc_id text, name text, model_key text, realism text, pose text,
+  sort_order integer
+) ON COMMIT DROP;
+
 COPY st_bodies (${bodyCols}, generation, rings, atmosphere, scripts, parent) FROM stdin;
 ${bodyRows}
 \\.
+${craftRows ? `
+COPY st_crafts (doc_id, name, model_key, realism, pose, sort_order) FROM stdin;
+${craftRows}
+\\.
+` : ''}
 
 WITH w AS (
   INSERT INTO worlds (name, gravity, doc_version, scale)
@@ -167,6 +231,14 @@ LEFT JOIN LATERAL (
   WHERE key = a.material_key AND (world_id = b.world_id OR world_id IS NULL)
   ORDER BY world_id NULLS LAST LIMIT 1
 ) m ON true;
+
+-- the world's crafts (migration 009): resolve the model by key — built-in
+-- kinds point at the base class, a craft's own design at its derived model
+INSERT INTO craft (world_id, doc_id, name, model_id, realism, pose, sort_order)
+SELECT currval('worlds_id_seq'), s.doc_id, s.name, m.id, s.realism,
+       s.pose::jsonb, s.sort_order
+FROM st_crafts s
+JOIN models m ON m.key = s.model_key;
 
 -- observer frame: anchor the world view on its first star (no-op if none)
 UPDATE worlds SET reference_body_id = s.id
@@ -252,6 +324,14 @@ const report = spawn('psql', ['-X', '-q', '-A', '-F', ' | ', '-c', `
   FROM v_body_stats
   WHERE world_id = (SELECT max(id) FROM worlds WHERE name = ${q(world.name ?? 'Untitled World')})
   ORDER BY body_id;
+  SELECT '  craft ' || c.name || ' (' || m.kind || ', ' || c.realism || ')'
+         || CASE WHEN (c.pose ? 'anchor')
+                THEN ' parked @ ' || (c.pose->'anchor'->>'bodyId')
+                ELSE ' in flight' END
+  FROM craft c
+  JOIN models m ON m.id = c.model_id
+  WHERE c.world_id = (SELECT max(id) FROM worlds WHERE name = ${q(world.name ?? 'Untitled World')})
+  ORDER BY c.sort_order, c.id;
 `], { stdio: ['ignore', 'inherit', 'inherit'] })
 const rc = await once(report, 'exit')
 process.exit(rc[0] === 0 ? 0 : 1)
