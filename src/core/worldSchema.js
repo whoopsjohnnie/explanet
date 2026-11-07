@@ -69,6 +69,11 @@
  *       "name": "Shuttle",              //   core/motion.js craftRuntime)
  *       "kind": "shuttle",              //   mover + tuning, core/craftTypes.js
  *       "realism": "arcade",            //   "arcade" = plug-and-play
+ *       "design": { ... },              //   OPTIONAL mesh design (JSON — the
+ *                                       //   world-database models.design for
+ *                                       //   the kind, or a per-craft
+ *                                       //   override; core/craftDesigns.js).
+ *                                       //   Absent = the built-in design.
  *       "pose": {                       //   "real"   = Newtonian
  *         "anchor": {                   // PARKED on a surface (persisted):
  *           "bodyId": "p-earth",         //   dir in the body-LOCAL frame
@@ -102,6 +107,7 @@ import { generateElements, defaultElement } from './generators.js'
 import { TERRAIN_TYPES } from './terrain.js'
 import { DEFAULT_DENSITY, MAX_FREQUENCY, ATOM_M_PER_UNIT } from './planetMath.js'
 import { CRAFT_KINDS, CRAFT_TYPES } from './craftTypes.js'
+import { normalizeCraftDesign } from './craftDesigns.js'
 
 export const WORLD_VERSION = 1
 
@@ -242,12 +248,14 @@ export function createEmptyWorld(name = 'Untitled World', scale = ATOM_M_PER_UNI
  */
 export function createCraft(opts = {}) {
   const kind = CRAFT_KINDS.includes(opts.kind) ? opts.kind : 'shuttle'
+  const design = normalizeCraftDesign(opts.design)
   return {
     id: opts.id || `c-${nanoid(8)}`,
     name: typeof opts.name === 'string' && opts.name ? opts.name : (CRAFT_TYPES[kind]?.label ?? 'Shuttle'),
     kind,
     realism: opts.realism === 'real' ? 'real' : 'arcade',
     pose: opts.pose || null,
+    ...(design ? { design } : {}),
   }
 }
 
@@ -294,12 +302,14 @@ export function normalizeCrafts(raw, planets) {
     if (!pose && firstLandable) pose = { anchor: { bodyId: firstLandable.id, dir: [0, 1, 0], r: null } }
     if (!pose) continue
     const kind = CRAFT_KINDS.includes(c.kind) ? c.kind : 'shuttle'
+    const design = normalizeCraftDesign(c.design)
     out.push({
       id: typeof c.id === 'string' && c.id ? c.id : `c-${nanoid(8)}`,
       name: typeof c.name === 'string' && c.name ? c.name : (CRAFT_TYPES[kind]?.label ?? 'Shuttle'),
       kind,
       realism: c.realism === 'real' ? 'real' : 'arcade',
       pose,
+      ...(design ? { design } : {}),
     })
   }
   return out.length ? out : null

@@ -18,7 +18,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { orbitalSpeed, registry } from '../src/core/physics.js'
+import {
+  DEFAULT_CRAFT_DESIGNS,
+  CRAFT_DESIGN_SHAPES,
+  normalizeCraftDesign,
+  craftDesignFor,
+} from '../src/core/craftDesigns.js'
 import {
   craftVectors,
   gravityAt,
@@ -208,6 +215,99 @@ test('craft documents: lenient normalize + serialize round-trip', () => {
   const c = createCraft({})
   assert.equal(c.kind, 'shuttle')
   assert.equal(c.realism, 'arcade')
+})
+
+// ---------------------------------------------------------------------------
+// craft designs — the serialized mesh (core/craftDesigns.js), the data that
+// lives in the world database's models.design and renders as the craft's mesh
+// ---------------------------------------------------------------------------
+
+test('craft design: built-in defaults are complete and renderer-ready', () => {
+  for (const [kind, d] of Object.entries(DEFAULT_CRAFT_DESIGNS)) {
+    assert.ok(Number.isFinite(d.length) && d.length > 0, `${kind}: length`)
+    assert.ok(d.parts.length >= 1, `${kind}: parts`)
+    for (const p of d.parts) {
+      assert.ok(CRAFT_DESIGN_SHAPES.includes(p.shape), `${kind}: shape ${p.shape}`)
+      assert.ok(p.size.length >= 3 && p.size.every((v) => Number.isFinite(v) && v > 0), `${kind}: size`)
+      assert.ok(p.position.length === 3, `${kind}: position`)
+      assert.ok(p.rotation.length === 3, `${kind}: rotation`)
+      assert.ok(/^#[0-9a-f]{3,8}$/.test(p.material.color), `${kind}: color`)
+    }
+    // the normalizer accepts the defaults unchanged (they are the reference)
+    assert.deepEqual(normalizeCraftDesign(d), d, `${kind}: default survives healing`)
+  }
+  assert.ok(DEFAULT_CRAFT_DESIGNS.shuttle && DEFAULT_CRAFT_DESIGNS.drive, 'shuttle + rover shipped')
+})
+
+test('craft design: normalizeCraftDesign heals leniently, drops unusable', () => {
+  // garbage in → null (the caller falls back to the built-in)
+  for (const bad of [null, 42, 'x', {}, { length: 1 }, { length: 1, parts: [] }, { parts: [{}] }])
+    assert.equal(normalizeCraftDesign(bad), null)
+  // a corrupt PART is dropped, the rest kept; bad numbers healed to defaults
+  const d = normalizeCraftDesign({
+    length: 2,
+    parts: [
+      { shape: 'torus', size: [1, 1, 1] }, // unknown shape → dropped
+      { shape: 'box', size: [1, 'oops', 1] }, // unreadable size → dropped
+      { shape: 'box', size: [1, 2, 3], position: [1], rotation: 'junk', material: { color: 'nope' } },
+    ],
+  })
+  assert.equal(d.parts.length, 1, 'only the usable part survives')
+  assert.deepEqual(d.parts[0].position, [1, 0, 0], 'short position vector padded')
+  assert.deepEqual(d.parts[0].rotation, [0, 0, 0], 'unreadable rotation → identity')
+  assert.equal(d.parts[0].material.color, '#8892a0', 'bad color → default')
+  // segment counts are positive integers ≥ 3 (three's floor, per-shape arg list)
+  const seg = normalizeCraftDesign({ length: 1, parts: [{ shape: 'cone', size: [0.3, 0.45, 2.4] }] })
+  assert.equal(seg.parts[0].size[2], 3, 'segments rounded, clamped to the three minimum')
+})
+
+test('craft design: a document design rides the craft through normalize + serialize', () => {
+  // the design as the document carries it (already schema-clean)
+  const design = normalizeCraftDesign({
+    length: 1,
+    parts: [{ shape: 'sphere', size: [0.5, 12, 8], material: { color: '#ff5533', emissive: '#ff3c00', emissiveIntensity: 2 } }],
+  })
+  const world = normalizeWorld({
+    version: 1,
+    name: 't',
+    gravity: 40,
+    scale: 100,
+    planets: [
+      { id: 'p1', name: 'P1', preset: 'earthlike', frequency: 3,
+        center: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, spin: { x: 0, y: 0, z: 0 },
+        density: 0.05, elements: new Array(32).fill(null).map(() => ({ t: 'grass', h: 0 })) },
+    ],
+    crafts: [
+      { id: 'c1', kind: 'shuttle', pose: { anchor: { bodyId: 'p1', dir: [0, 1, 0] } }, design },
+      { id: 'c2', kind: 'shuttle', pose: { anchor: { bodyId: 'p1', dir: [0, 1, 0] } }, design: { length: -1 } }, // corrupt → dropped
+    ],
+  })
+  assert.deepEqual(world.crafts[0].design, design, 'valid design kept verbatim')
+  assert.equal(world.crafts[1].design, undefined, 'corrupt design dropped (falls back at render)')
+  const back = normalizeWorld(serializeWorld(world))
+  assert.deepEqual(back.crafts[0].design, design, 'round-trips through the file format')
+  // craftDesignFor: the craft's own design wins, else the built-in for the kind
+  assert.equal(craftDesignFor(world.crafts[0]).parts.length, 1)
+  assert.deepEqual(craftDesignFor(world.crafts[1]), DEFAULT_CRAFT_DESIGNS.shuttle)
+  assert.deepEqual(craftDesignFor({ kind: 'drive' }), DEFAULT_CRAFT_DESIGNS.drive)
+  assert.deepEqual(craftDesignFor({ kind: 'bogus' }), DEFAULT_CRAFT_DESIGNS.shuttle, 'unknown kind → shuttle')
+})
+
+test('craft design: the DB seed (migration 009) is byte-identical to the built-ins', () => {
+  // the models seed in the migration is a hand-copy of DEFAULT_CRAFT_DESIGNS —
+  // pin it so the JSON a fresh DB ships and the code's fallback can't drift.
+  const sql = readFileSync(new URL('../db/migrations/009-crafts.sql', import.meta.url), 'utf8')
+  const seeds = new Map()
+  for (const line of sql.split('\n')) {
+    const m = /^\s*\('([\w-]+)',\s*'([^']*)',\s*'([\w-]+)',\s*'(.*?)'::jsonb\)\s*,?\s*$/.exec(line)
+    if (m) seeds.set(m[1], { key: m[3], design: JSON.parse(m[4]) })
+  }
+  assert.equal(seeds.size, Object.keys(DEFAULT_CRAFT_DESIGNS).length, 'one seeded model per built-in kind')
+  for (const [kind, d] of Object.entries(DEFAULT_CRAFT_DESIGNS)) {
+    assert.ok(seeds.has(kind), `seed for '${kind}'`)
+    assert.equal(seeds.get(kind).key, kind, `seed kind for '${kind}'`)
+    assert.deepEqual(seeds.get(kind).design, d, `seed design for '${kind}' matches the code`)
+  }
 })
 
 // ---------------------------------------------------------------------------
