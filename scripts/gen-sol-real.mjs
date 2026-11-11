@@ -5,9 +5,10 @@
  *   • Sun + 8 planets + Pluto + 4 dwarf planets: fully simulated (cannon),
  *     osculating J2000 elements → state vectors, true masses (density trick),
  *     true sidereal spins.
- *   • Earth stores REAL terrain: coastlines from world-atlas 1:50m, mountain
- *     systems as corridors (Everest 8.849 km on the f203 grid), climate-belt
- *     colors. Mars (dichotomy, Olympus, Valles, Hellas), the Moon (maria),
+ *   • Earth stores REAL terrain from the ETOPO2022 60s DEM: true coastlines,
+ *     true mountain heights, seafloor DEPTH as negative h (sea level = 0,
+ *     Mariana Trench walkable at −10 km), climate-belt + elevation colors.
+ *     Mars (dichotomy, Olympus, Valles, Hellas), the Moon (maria),
  *     Mercury (Caloris) and Venus likewise. The giant moons get palette-true
  *     procedural surfaces (Io sulfur, Europa linea, Titan dunes…).
  *   • ~450 moons, ~450 asteroids, ~70 comets: SCRIPTED test particles
@@ -29,7 +30,7 @@
  */
 
 import { writeFileSync } from 'node:fs'
-import { readSeed } from './seed.mjs'
+import { readSeed, readSeedBinary } from './seed.mjs'
 import { generateElements } from '../src/core/generators.js'
 import { createCraft } from '../src/core/worldSchema.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
@@ -44,9 +45,8 @@ import {
   buildVenus,
   buildMoonByPalette,
   buildPotato,
-  landRings,
-  rasterLandMask,
 } from './sol-real/terrain.js'
+import { loadEtopo } from './sol-real/etopo.mjs'
 
 // ---------------------------------------------------------------------------
 // anchors (identical to the Sol Trial)
@@ -155,7 +155,9 @@ function stateFrom(el) {
 const seedAt = (rel) => new URL(rel, import.meta.url).pathname
 const moonsData = JSON.parse(readSeed(seedAt('./sol-real/data/moons.json'), 'regenerate with scripts/sol-real/fetch-moons.mjs or fetch from S3 (DATA.md)'))
 const orbitsData = JSON.parse(readSeed(seedAt('./sol-real/data/orbits.json'), 'regenerate with scripts/sol-real/fetch-small.mjs or fetch from S3 (DATA.md)'))
-const landTopo = JSON.parse(readSeed(seedAt('./sol-real/data/land-50m.json'), 'world-atlas 1:50m land TopoJSON — fetch from S3 (DATA.md)'))
+const etopo = loadEtopo(
+  readSeedBinary(seedAt('./sol-real/data/etopo2022-60s.f32'), 'fetch + convert with scripts/sol-real/fetch-terrain.mjs (DATA.md)')
+)
 
 const PLANET_DOC_ID = {}
 for (const p of PLANETS) PLANET_DOC_ID[p.name] = `p-${p.name.toLowerCase()}`
@@ -230,11 +232,9 @@ const GIANTS = {
   Neptune: { preset: 'ice_neptune', seed: 707 },
 }
 
-let earthMask = null
 function buildRockyTerrain(name, rKm, seed) {
   if (name === 'Earth') {
-    if (!earthMask) earthMask = rasterLandMask(landRings(landTopo), 0.2)
-    return { freq: MAX_FREQUENCY, elements: buildEarth(MAX_FREQUENCY, earthMask, seed) }
+    return { freq: MAX_FREQUENCY, elements: buildEarth(MAX_FREQUENCY, etopo, seed) }
   }
   const freq = gridFor(rKm)
   if (name === 'Mars') return { freq, elements: buildMars(freq, seed) }
@@ -561,6 +561,28 @@ const world = {
   ),
 }
 writeFileSync(new URL('../public/sol-real.json', import.meta.url), JSON.stringify(world))
+
+// Earth verification: the DEM integration must read like the real world
+{
+  const earth = planets.find((p) => p.name === 'Earth')
+  let land = 0
+  let sea = 0
+  let maxKm = 0
+  let minKm = 0
+  for (const e of earth.elements) {
+    if (e.h >= 0) land++
+    else sea++
+    const km = e.h / KM2U
+    if (km > maxKm) maxKm = km
+    if (km < minKm) minKm = km
+  }
+  const pct = (n) => ((n / earth.elements.length) * 100).toFixed(1)
+  console.log(
+    `  Earth: LAND ${land.toLocaleString('en-US')} (${pct(land)}%) / SEA ${sea.toLocaleString('en-US')} (${pct(sea)}%) — ` +
+      `peak ${maxKm.toFixed(2)} km, deepest ${minKm.toFixed(2)} km ` +
+      `(real: ~29% land, Everest 8.85 km, Mariana −11.0 km; the (mean±extreme)/2 hex blend reads a touch lower)`
+  )
+}
 
 let storedAtoms = 0
 let scripted = 0

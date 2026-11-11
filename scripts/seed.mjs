@@ -14,9 +14,22 @@ export function readSeed(path, hint) {
   try {
     return readFileSync(path, 'utf8')
   } catch {
-    console.error(`\nSeed file not found: ${path}`)
-    console.error('Seed data is not part of this repo — see DATA.md.')
-    if (hint) console.error(`For this seed: ${hint}`)
-    process.exit(1)
+    failSeed(path, hint)
   }
+}
+
+/** Binary seed reader (grids like the ETOPO .f32 DEM are not text). */
+export function readSeedBinary(path, hint) {
+  try {
+    return readFileSync(path)
+  } catch {
+    failSeed(path, hint)
+  }
+}
+
+function failSeed(path, hint) {
+  console.error(`\nSeed file not found: ${path}`)
+  console.error('Seed data is not part of this repo — see DATA.md.')
+  if (hint) console.error(`For this seed: ${hint}`)
+  process.exit(1)
 }

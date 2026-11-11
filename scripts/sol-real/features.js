@@ -7,64 +7,7 @@
  * handedness that keeps the globe un-mirrored; see terrain.js).
  */
 
-// ---------------------------------------------------------------------------
-// Earth — mountain systems as great-circle corridors.
-// pts: [lat, lon] endpoints; h: peak height km above the regional base;
-// w: corridor half-width in degrees; jag: ridged-noise exponent contribution.
-// ---------------------------------------------------------------------------
-export const MOUNTAINS = [
-  // Himalaya — Everest (27.9889 N, 86.9257 E, 8.849 km) sits mid-corridor
-  { name: 'himalaya', pts: [[35.9, 73.3], [27.9, 86.9], [27.0, 91.5], [28.8, 97.5]], h: 7.4, w: 3.2 },
-  { name: 'karakoram', pts: [[35.8, 76.5], [35.5, 79.5], [36.1, 82.0]], h: 6.8, w: 1.6 }, // K2 8611 m
-  { name: 'hindu-kush', pts: [[36.5, 71.0], [34.0, 70.5], [33.0, 69.0]], h: 5.8, w: 1.8 }, // Tirich Mir
-  { name: 'tibet-plateau', pts: [[34.0, 80.0], [33.0, 88.0], [31.5, 92.0]], h: 4.6, w: 9.0 },
-  { name: 'tian-shan', pts: [[42.4, 74.5], [42.9, 80.0], [42.4, 85.0], [41.5, 90.0]], h: 4.6, w: 1.6 },
-  { name: 'altai', pts: [[49.5, 87.5], [48.2, 90.5]], h: 3.8, w: 1.8 },
-  { name: 'urals', pts: [[67.0, 64.0], [61.0, 60.0], [55.5, 58.5], [51.5, 57.5]], h: 1.9, w: 1.4 },
-  { name: 'caucasus', pts: [[43.4, 42.5], [42.5, 45.0]], h: 4.9, w: 1.3 }, // Elbrus 5642 m
-  { name: 'alps', pts: [[45.9, 6.9], [46.9, 10.5], [47.0, 11.6], [46.4, 15.0]], h: 3.8, w: 1.7 }, // Mont Blanc
-  { name: 'carpathians', pts: [[49.2, 19.8], [47.5, 25.5], [45.4, 25.2]], h: 2.1, w: 1.2 },
-  { name: 'apennines', pts: [[44.2, 9.5], [42.4, 13.3], [40.0, 15.6], [38.1, 15.8]], h: 2.4, w: 1.0 },
-  { name: 'pyrenees', pts: [[42.7, 0.5], [42.7, 2.0]], h: 2.6, w: 1.0 },
-  { name: 'scandes', pts: [[62.0, 8.0], [64.5, 13.5], [66.5, 16.5], [61.5, 8.5]], h: 2.3, w: 1.5 },
-  { name: 'andes-n', pts: [[10.0, -73.5], [4.5, -75.5], [0.5, -78.5]], h: 5.2, w: 1.8 },
-  { name: 'andes-c', pts: [[0.5, -78.5], [-12.0, -75.0], [-22.0, -68.0]], h: 6.2, w: 1.9 }, // Huascarán / Sajama
-  { name: 'aconcagua', pts: [[-32.6, -70.0], [-33.5, -69.8]], h: 6.6, w: 1.7 }, // 6961 m
-  { name: 'andes-s', pts: [[-36.0, -71.0], [-45.0, -72.0], [-52.0, -73.0]], h: 3.2, w: 1.5 },
-  { name: 'rockies-n', pts: [[48.5, -113.5], [45.0, -111.0], [41.5, -109.5]], h: 3.4, w: 1.9 },
-  { name: 'rockies-c', pts: [[41.0, -106.5], [39.0, -106.4], [37.5, -107.6]], h: 4.0, w: 1.9 }, // 4401 m park range
-  { name: 'rockies-s', pts: [[37.0, -107.5], [35.0, -106.0], [32.5, -106.5]], h: 3.2, w: 1.7 }, // Wheeler Peak
-  { name: 'appalachians', pts: [[44.0, -72.5], [40.0, -78.5], [37.5, -80.5], [35.5, -83.5]], h: 1.8, w: 1.5 },
-  { name: 'mckinley', pts: [[63.1, -151.0], [62.8, -150.2]], h: 5.4, w: 1.8 }, // Denali 6190 m
-  { name: 'brookrange', pts: [[67.5, -152.0], [66.5, -145.0], [64.5, -142.0]], h: 2.4, w: 1.7 },
-  { name: 'sierras', pts: [[38.5, -119.8], [37.0, -118.8], [36.0, -118.3]], h: 3.5, w: 1.2 }, // Whitney
-  { name: 'cascades', pts: [[44.0, -121.8], [42.0, -121.8], [40.5, -122.2]], h: 3.6, w: 1.0 },
-  { name: 'kilimanjaro', pts: [[-3.07, 37.35], [-3.07, 37.36]], h: 5.0, w: 1.2 }, // 5895 m
-  { name: 'ethiopian', pts: [[13.0, 38.5], [9.0, 40.0], [6.0, 41.0]], h: 3.6, w: 2.4 },
-  { name: 'atlas', pts: [[34.5, -5.5], [33.5, -2.5], [34.0, 1.0], [34.5, 4.5]], h: 3.3, w: 1.4 }, // Toubkal
-  { name: 'drakensberg', pts: [[-29.5, 29.5], [-31.0, 28.5], [-32.5, 27.5]], h: 2.8, w: 1.3 },
-  { name: 'cameroon', pts: [[4.3, 9.1], [4.3, 9.12]], h: 3.5, w: 0.9 },
-  { name: 'sahalyalin', pts: [[53.0, 137.0], [48.0, 140.0], [45.0, 142.5]], h: 2.4, w: 1.4 },
-  { name: 'kamchatka', pts: [[56.0, 160.0], [54.0, 160.5], [52.5, 159.0]], h: 4.0, w: 1.2 }, // Klyuchevskoy
-  { name: 'japan-alps', pts: [[36.3, 137.6], [35.8, 138.0]], h: 3.2, w: 0.9 }, // Fuji 3776
-  { name: 'hindu-raj', pts: [[30.2, 68.5], [30.6, 69.5]], h: 3.3, w: 1.0 },
-  { name: 'elburz', pts: [[35.9, 51.5], [36.3, 53.5]], h: 4.3, w: 1.0 }, // Damavand
-  { name: 'zagros', pts: [[34.0, 46.0], [31.5, 50.5], [29.0, 53.5], [27.5, 56.5]], h: 3.2, w: 1.6 },
-  { name: 'great-divide', pts: [[-17.0, 145.8], [-25.0, 151.5], [-33.0, 150.0], [-37.5, 148.5]], h: 1.9, w: 1.6 },
-  { name: 'southern-alps', pts: [[-43.5, 170.5], [-44.5, 168.5]], h: 3.2, w: 1.0 }, // Cook 3724
-  { name: 'new-guinea', pts: [[-4.2, 138.5], [-4.4, 140.5]], h: 4.2, w: 1.4 }, // Puncak Jaya
-]
 
-// Single named summits raised on top of their range corridor (peak-out).
-export const PEAKS = [
-  { name: 'everest', lat: 27.9889, lon: 86.9257, h: 8.849, w: 0.55 },
-  { name: 'k2', lat: 35.881, lon: 76.513, h: 8.611, w: 0.5 },
-  { name: 'kilimanjaro', lat: -3.067, lon: 37.355, h: 5.895, w: 0.7 },
-  { name: 'denali', lat: 63.069, lon: -151.007, h: 6.19, w: 0.8 },
-  { name: 'aconcagua', lat: -32.653, lon: -70.011, h: 6.961, w: 0.7 },
-  { name: 'elbrus', lat: 43.349, lon: 42.445, h: 5.642, w: 0.6 },
-  { name: 'montblanc', lat: 45.832, lon: 6.865, h: 4.808, w: 0.5 },
-]
 
 // Deserts as lat/lon ellipses (color hint on top of the climate model).
 export const DESERTS = [
@@ -78,13 +21,12 @@ export const DESERTS = [
   { lat: -23.0, lon: 17.5, rLat: 6, rLon: 6, c: '#d2ac74' }, // Namib/Kalahari
 ]
 
-// Earth's great lakes & inland seas as water-color ellipses (above sea level
-// but water-colored: the Caspian, the Aral, Victoria, the Great Lakes).
+// Earth's great lakes as water-color ellipses stamped over LAND cells
+// (the Caspian is below sea level in the ETOPO DEM, so it reads as ocean
+// automatically and needs no stamp).
 export const LAKES = [
-  { lat: 46.0, lon: 50.5, rLat: 5.5, rLon: 4.5, level: -0.028 }, // Caspian
   { lat: 1.2, lon: 33.0, rLat: 1.6, rLon: 1.4 }, // Victoria
-  { lat: 45.5, lon: -83.0, rLat: 3.2, rLon: 3.6 }, // Great Lakes smokescreen
-  { lat: 14.0, lon: -107.5, rLat: 6, rLon: 5 }, // dummy-skip
+  { lat: 45.5, lon: -83.0, rLat: 3.2, rLon: 3.6 }, // Great Lakes
 ]
 
 // ---------------------------------------------------------------------------

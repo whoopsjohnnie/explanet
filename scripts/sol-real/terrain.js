@@ -2,10 +2,12 @@
  * Sol Real / terrain — hex element builders with real geography.
  *
  * Every builder returns a plain elements array [{ t, h, c }] for a given
- * frequency, in ENGINE units (h is absolute). Heights come from real figures
- * (km × KM2U), so Everest is 8.849 km when you walk up it and nothing is
- * exaggerated. Colors ride per-cell `c`, so one planet paints continents,
- * maria, rust and sulfur without a material system.
+ * frequency, in ENGINE units (h is absolute). Heights come from real
+ * figures (km × KM2U), so nothing is exaggerated. Earth is special: its
+ * h comes from the ETOPO2022 60s DEM — real coastlines, real mountain
+ * heights, and seafloor DEPTH as negative h (sea level = 0). Colors ride
+ * per-cell `c`, so one planet paints continents, maria, rust and sulfur
+ * without a material system.
  *
  * Sphere convention (matches hexsphere cell centers):
  *   y = sin(lat);  lon = atan2(-z, x)  (degrees in tables, radians here)
@@ -16,13 +18,14 @@
  * from above the north pole, as on the real Earth. Using +sin L would make
  * east run clockwise and render the whole globe mirrored (Arabia west of
  * Africa, every coastline backwards). Every lat/lon ↔ direction conversion in
- * this file (latLon, angDist) must agree on this sign.
+ * this file (latLon, angDist, the DEM pixel scan) must agree on this sign.
  */
 
 import { getHexSphere } from '../../src/core/hexsphere.js'
 import { valueNoise, fbm } from '../../src/core/generators.js'
 import { radiusForFrequency, MAX_FREQUENCY } from '../../src/core/planetMath.js'
-import { MOUNTAINS, PEAKS, DESERTS, LAKES, MARS, MOON, MERCURY, VENUS, MOON_PALETTES } from './features.js'
+import { sampleAt, trigTables } from './etopo.mjs'
+import { DESERTS, LAKES, MARS, MOON, MERCURY, VENUS, MOON_PALETTES } from './features.js'
 
 // km → engine units (one hex ≈ 35 km on the f203 grid — the same anchor as
 // the generators). ALL builders below take heights in real km from the
@@ -62,286 +65,198 @@ function angDist(v, latR, lonR) {
   return Math.acos(clamp(d, -1, 1))
 }
 
-/** Great-circle corridor: min angular distance (rad) to the polyline. */
-function corridorDist(v, pts) {
-  let best = Infinity
-  for (let s = 0; s < pts.length - 1; s++) {
-    const [la1, lo1] = pts[s]
-    const [la2, lo2] = pts[s + 1]
-    const d = segmentDist(v, la1 * DEG, lo1 * DEG, la2 * DEG, lo2 * DEG)
-    if (d < best) best = d
-  }
-  return best
-}
-
-function segmentDist(v, aLat, aLon, bLat, bLon) {
-  // sample the segment densely enough for widths ≥ ~1° (fine at deg scale)
-  let best = Infinity
-  const n = 8
-  for (let k = 0; k <= n; k++) {
-    const t = k / n
-    const la = lerp(aLat, bLat, t)
-    const lo = lerp(aLon, bLon, t)
-    const d = angDist(v, la, lo)
-    if (d < best) best = d
-  }
-  return best
-}
-
 // ---------------------------------------------------------------------------
-// Land/ocean mask from world-atlas TopoJSON (coastlines, 1:50m)
+// Earth — from the ETOPO2022 60s digital elevation model
+// (scripts/sol-real/etopo.mjs): land elevation + seafloor depth in METERS,
+// sea level = 0 — the same convention this world's `h` field uses.
+//
+// Every hex integrates the DEM pixels whose centers fall inside it (a
+// 35 km hex covers ~360 px of the 1.85 km grid). Containment is the EXACT
+// Voronoi test: a pixel direction p belongs to cell i iff p·c_i ≥ p·c_n for
+// every neighbor n — the great circles p·(c_i − c_n) = 0 are the true cell
+// edges (the stored corner ring is a face-CENTROID approximation of the
+// Voronoi vertices, so corner great circles do not tile the sphere: they cut
+// ~6 % inside the cells and leave polar caps unassigned). The pixel scan
+// covers a geodesic disc about the cell center — a guaranteed superset of
+// the cell, which reaches the pole when the cell does:
+//   land  (mean ≥ 0):  h = (mean + max) / 2 — the hex's peak gets half credit
+//   ocean (mean < 0):  h = (mean + min) / 2 — the hex's trench gets half credit
+// (variation inside one hex is ≤ ~2 km, so the blend is a gentle
+// peak/trench accent, not a cliff). Colors: climate belt + desert table +
+// elevation modifiers for land; a depth ramp for the seafloor; an ice tint
+// on high-latitude water. The ocean SURFACE at h = 0 is a render-time
+// sphere (Planet.jsx), not a cell height.
 // ---------------------------------------------------------------------------
-
-/** Decode all land rings (stitching arcs, honoring negative refs). */
-export function landRings(topo) {
-  const { scale, translate } = topo.transform
-  const ptsOfArc = (idx) => {
-    const rev = idx < 0
-    const arc = topo.arcs[rev ? ~idx : idx]
-    const out = []
-    let x = 0
-    let y = 0
-    for (const [dx, dy] of arc) {
-      x += dx
-      y += dy
-      out.push([x * scale[0] + translate[0], y * scale[1] + translate[1]])
-    }
-    return rev ? out.reverse() : out
-  }
-  const rings = []
-  for (const g of topo.objects.land.geometries) {
-    // Polygon.arcs = [ring,…]; MultiPolygon.arcs = [polygon,…]; ring = [arcIdx,…]
-    const polys = g.type === 'MultiPolygon' ? g.arcs : [g.arcs]
-    for (const poly of polys) {
-      for (const ringIdx of poly) {
-        let ring = []
-        for (const idx of ringIdx) ring = ring.concat(ptsOfArc(idx))
-        if (ring.length > 2) rings.push(ring)
-      }
-    }
-  }
-  return rings
-}
 
 /**
- * Rasterize rings to a lon/lat grid via even-odd scanline fill.
- * Grid: GW × GH, cell (ix, iy) covers lon −180 + (ix+0.5)·dlon,
- * lat −90 + (iy+0.5)·dlat. Returns Uint8Array (1 = land).
+ * DEM stats for one hex: mean/max/min of the pixels whose centers fall
+ * inside the cell. Returns null if the scan finds none (degenerate cell).
  */
-export function rasterLandMask(rings, dlonDeg = 0.2) {
-  const dlat = dlonDeg
-  const GW = Math.round(360 / dlonDeg)
-  const GH = Math.round(180 / dlat)
-  const grid = new Uint8Array(GW * GH)
-  // bucket edges by starting row: (xAtTop, dxPerRow, y1row)
-  const buckets = new Array(GH)
-  for (const ring of rings) {
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i]
-      const [x2, y2] = ring[(i + 1) % ring.length]
-      if (y1 === y2) continue
-      const lo = Math.min(y1, y2)
-      const hi = Math.max(y1, y2)
-      let r0 = Math.max(0, Math.ceil((lo + 90) / dlat - 0.5))
-      const r1 = Math.min(GH - 1, Math.floor((hi + 90) / dlat - 0.5))
-      const slope = (x2 - x1) / (y2 - y1)
-      for (let r = r0; r <= r1; r++) {
-        const yRow = -90 + (r + 0.5) * dlat
-        if (yRow < lo || yRow > hi) continue
-        const xAt = x1 + (yRow - y1) * slope
-        ;(buckets[r] || (buckets[r] = [])).push(xAt)
+export function hexDemStats(hex, i, geo, trig) {
+  const c3 = i * 3
+  const cx = hex.centers[c3]
+  const cy = hex.centers[c3 + 1]
+  const cz = hex.centers[c3 + 2]
+  const cn = Math.hypot(cx, cy, cz) || 1
+  const cLat = Math.asin(cy / cn)
+  // the cell center's REAL longitude (handedness convention: lon = atan2(-z, x))
+  const cLon = Math.atan2(-cz / cn, cx / cn)
+  const sides = hex.sides[i]
+
+  // exact Voronoi boundary: the great circle between cell i and neighbor k
+  // is { p : p·(c_i − c_n) = 0 }; inside = p·(c_i − c_n) ≥ 0 (the center
+  // itself scores 1 − cos θ > 0). Corners double as the disc radius: the
+  // cell is convex with the center inside, so it is contained in the
+  // geodesic disc of radius (max corner distance) — margin ×1.4 covers the
+  // centroid-vs-circumcenter offset of the stored corner ring.
+  const ex = new Float64Array(sides)
+  const ey = new Float64Array(sides)
+  const ez = new Float64Array(sides)
+  let reach = 0
+  for (let k = 0; k < sides; k++) {
+    const nIdx = hex.neighbors[i * 6 + k]
+    const o = nIdx * 3
+    let nx = cx - hex.centers[o]
+    let ny = cy - hex.centers[o + 1]
+    let nz = cz - hex.centers[o + 2]
+    const m = Math.hypot(nx, ny, nz) || 1
+    ex[k] = nx / m
+    ey[k] = ny / m
+    ez[k] = nz / m
+    const o0 = (i * 6 + k) * 3
+    const d = Math.acos(clamp((hex.corners[o0] * cx + hex.corners[o0 + 1] * cy + hex.corners[o0 + 2] * cz) / cn, -1, 1))
+    if (d > reach) reach = d
+  }
+  const r = reach * 1.4
+
+  // pixel box: the geodesic disc, clamped to the grid. Longitude extent is
+  // largest at the box's highest |latitude| (Δlon ≤ d / cos lat); a disc
+  // that touches a pole covers every longitude.
+  const latMin = cLat - r
+  const latMax = cLat + r
+  const rowMin = Math.max(0, Math.ceil((90 - latMax / DEG) * 60 - 0.5))
+  const rowMax = Math.min(geo.H - 1, Math.floor((90 - latMin / DEG) * 60 - 0.5))
+  const latEdge = Math.max(Math.abs(latMin), Math.abs(latMax))
+  const lonHalf = r / Math.cos(Math.min(latEdge, Math.PI / 2 - 1e-6))
+  let colMin
+  let colMax
+  if (lonHalf >= Math.PI) {
+    colMin = 0
+    colMax = geo.W - 1
+  } else {
+    colMin = Math.ceil(((cLon - lonHalf) / DEG + 180) * 60 - 0.5)
+    colMax = Math.floor(((cLon + lonHalf) / DEG + 180) * 60 - 0.5)
+  }
+
+  let sum = 0
+  let min = Infinity
+  let max = -Infinity
+  let count = 0
+  for (let row = rowMin; row <= rowMax; row++) {
+    const clat = trig.clat[row]
+    const slat = trig.slat[row]
+    const base = row * geo.W
+    for (let colU = colMin; colU <= colMax; colU++) {
+      const col = ((colU % geo.W) + geo.W) % geo.W
+      // the pixel's scene direction: (cos·cos, sin, -cos·sin) — the minus on
+      // z is the handedness convention, matching latLon/angDist (file header)
+      const px = clat * trig.clon[col]
+      const py = slat
+      const pz = -clat * trig.slon[col]
+      let inside = true
+      for (let k = 0; k < sides; k++) {
+        if (ex[k] * px + ey[k] * py + ez[k] * pz < -1e-9) {
+          inside = false
+          break
+        }
       }
+      if (!inside) continue
+      const v = geo.data[base + col]
+      sum += v
+      if (v < min) min = v
+      if (v > max) max = v
+      count++
     }
   }
-  for (let r = 0; r < GH; r++) {
-    const xs = buckets[r]
-    if (!xs || xs.length < 2) continue
-    xs.sort((a, b) => a - b)
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      let ix0 = Math.round((xs[k] + 180) / dlonDeg - 0.5)
-      const ix1 = Math.round((xs[k + 1] + 180) / dlonDeg - 0.5)
-      // fill spans (clamped; rings are cut at ±180 so no wrap merge needed)
-      for (let ix = Math.max(0, ix0); ix <= Math.min(GW - 1, ix1); ix++) grid[r * GW + ix] = 1
-    }
-  }
-  return { grid, GW, GH, dlat, dlon: dlonDeg }
+  return count ? { mean: sum / count, min, max, count } : null
 }
 
-/** Separable box blur ×k on a Uint8 grid → Float32 0..1. */
-function blurMask(mask, passes = 3, radius = 3) {
-  const { grid, GW, GH } = mask
-  let src = new Float32Array(GW * GH)
-  for (let i = 0; i < grid.length; i++) src[i] = grid[i]
-  let dst = new Float32Array(GW * GH)
-  for (let p = 0; p < passes; p++) {
-    // horizontal (wrap longitude, clamp latitude)
-    for (let y = 0; y < GH; y++) {
-      let acc = 0
-      const row = y * GW
-      for (let x = -radius; x <= radius; x++) acc += src[row + ((x % GW) + GW) % GW]
-      for (let x = 0; x < GW; x++) {
-        dst[row + x] = acc / (2 * radius + 1)
-        acc -= src[row + ((x - radius) % GW + GW) % GW]
-        acc += src[row + ((x + radius + 1) % GW + GW) % GW]
-      }
-    }
-    ;[src, dst] = [dst, src]
-    // vertical
-    for (let x = 0; x < GW; x++) {
-      let acc = 0
-      for (let y = -radius; y <= radius; y++) acc += src[clamp(y, 0, GH - 1) * GW + x]
-      for (let y = 0; y < GH; y++) {
-        dst[y * GW + x] = acc / (2 * radius + 1)
-        acc -= src[clamp(y - radius, 0, GH - 1) * GW + x]
-        acc += src[clamp(y + radius + 1, 0, GH - 1) * GW + x]
-      }
-    }
-    ;[src, dst] = [dst, src]
-  }
-  return src
-}
-
-function maskSample(blur, GW, GH, latDeg, lonDeg) {
-  const fx = (lonDeg + 180) / (360 / GW) - 0.5
-  const fy = (latDeg + 90) / (180 / GH) - 0.5
-  const x0 = Math.floor(fx)
-  const y0 = Math.floor(fy)
-  const tx = fx - x0
-  const ty = fy - y0
-  const at = (x, y) => blur[clamp(y, 0, GH - 1) * GW + (((x % GW) + GW) % GW)]
-  return lerp(lerp(at(x0, y0), at(x0 + 1, y0), tx), lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), tx), ty)
-}
-
-// ---------------------------------------------------------------------------
-// Earth
-// ---------------------------------------------------------------------------
-
-export function buildEarth(frequency, mask, seed = 42) {
+export function buildEarth(frequency, dem, seed = 42) {
   const hex = getHexSphere(frequency)
-  const blur = blurMask(mask, 4, 4)
-  const { GW, GH } = mask
+  const trig = trigTables(dem)
   const els = new Array(hex.cellCount)
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
     const lat = p.lat / DEG
     const lon = p.lon / DEG
-    const landness = maskSample(blur, GW, GH, lat, lon)
     const nx = p.x * 3.1
     const ny = p.y * 3.1
     const nz = p.z * 3.1
     const detail = fbm(nx, ny, nz, seed, 5)
     const rough = fbm(nx * 2.7, ny * 2.7, nz * 2.7, seed + 99, 4)
 
-    // --- mountain systems ---
-    let ridge = 0
-    for (const m of MOUNTAINS) {
-      const d = corridorDist(p, m.pts) // rad
-      const w = m.w * DEG
-      if (d < w * 2.2) {
-        const prof = Math.max(0, 1 - d / (w * 2.2))
-        const ridged = 1 - Math.abs(fbm(p.x * 6, p.y * 6, p.z * 6, seed + 7, 4) * 2 - 1)
-        ridge = Math.max(ridge, m.h * prof * (0.55 + 0.75 * ridged))
+    // a cell that scans to zero pixels (degenerate) falls back to its center
+    const st = hexDemStats(hex, i, dem, trig) || { mean: sampleAt(dem, lat, lon), min: 0, max: 0 }
+    // meters; sea level = 0, the DEM's own convention
+    const meanM = st.mean
+    let hM, t, c
+    if (meanM >= 0) {
+      // land: the hex's peak gets half credit (real relief, no exaggeration)
+      hM = 0.5 * (st.mean + st.max)
+      const al = Math.abs(lat)
+      // climate belts
+      const dry = fbm(nx * 1.4 + 11, ny * 1.4, nz * 1.4, seed + 55, 3)
+      let desert = 0
+      for (const ds of DESERTS) {
+        const dlat = (lat - ds.lat) / ds.rLat
+        let dlon = ((lon - ds.lon + 540) % 360) - 180
+        dlon /= ds.rLon
+        const e = dlat * dlat + dlon * dlon
+        if (e < 1.6) desert = Math.max(desert, 1 - e / 1.6)
       }
-    }
-    let h, t, c // named peaks are stamped after the normalization pass
-    if (landness < 0.5) {
-      // ocean: latitude-tinted blue, shallow brightening near coast
-      const shelf = smoothstep(landness * 2) // 0..1 within ocean side
-      const warm = Math.max(0, 1 - Math.abs(lat) / 30)
-      const cold = Math.max(0, (Math.abs(lat) - 45) / 45)
-      c = mix('#0c4a8a', '#1668b4', warm * 0.8)
-      c = mix(c, '#072a55', cold * 0.7)
-      c = mix(c, '#2f86c9', shelf * 0.35)
-      // sea ice
-      const iceEdge = lat > 0 ? 74 - 6 * detail : 60 + 12 * detail
-      if (Math.abs(lat) > iceEdge) {
+      desert = clamp(desert + (dry - 0.5) * 0.9, 0, 1)
+      if (al < 13) c = mix('#2f6d2a', '#4a7d32', detail) // rainforest/jungle
+      else if (al < 26) c = mix('#7d7a4a', '#a99a5e', detail) // savanna/steppe belt
+      else if (al < 40) c = mix('#5d7a3e', '#7c8a4c', detail) // temperate
+      else if (al < 55) c = mix('#4a6b3c', '#6d7f52', detail) // mixed forest
+      else c = mix('#5b6f52', '#8a947f', rough) // boreal/tundra
+      c = mix(c, '#d2b078', desert * 0.85)
+      t = hM < 80 && al < 30 ? 'sand' : 'grass'
+      // elevation modifiers on top of the belt color
+      if (hM > 2800) c = mix(c, '#8d8d93', clamp((hM - 2800) / 2200, 0, 1) * 0.75) // rock
+      // snowline falls with |lat|
+      const snowline = 4600 - 42 * al
+      if (hM >= snowline) {
         t = 'snow'
-        c = mix('#dfeaf2', '#ffffff', detail)
-      } else {
-        t = 'water'
-      }
-      h = 0
-    } else {
-      // land: base relief from the continent mask, ridges on top; a summit
-      // sets the ABSOLUTE height (its table value is above sea level), it
-      // never stacks on top of the corridor ridge
-      const base = 0.18 + 0.85 * smoothstep((landness - 0.5) * 2)
-      let elev = base * (0.7 + 0.6 * detail) + ridge + (rough - 0.5) * 0.18
-      if (elev < 0.02) elev = 0.02
-      h = elev
-
-      // snowline: falls with |lat|
-      const snowline = 4.6 - Math.abs(lat) * 0.042
-      if (elev > snowline + (rough - 0.5) * 0.3) {
-        t = 'snow'
-        c = mix('#e8eef4', '#b9c4cc', clamp((elev - snowline) / 3, 0, 1) * 0.5)
-      } else if (Math.abs(lat) > 66 + detail * 6) {
+        c = mix('#e8eef4', '#b9c4cc', clamp((hM - snowline) / 3000, 0, 1) * 0.5)
+      } else if (al > 66 + detail * 6) {
         t = 'snow'
         c = mix('#dde6ea', '#9fb2a8', detail)
-      } else {
-        // climate belts
-        const dry = fbm(nx * 1.4 + 11, ny * 1.4, nz * 1.4, seed + 55, 3)
-        let desert = 0
-        for (const ds of DESERTS) {
-          const dlat = (lat - ds.lat) / ds.rLat
-          let dlon = ((lon - ds.lon + 540) % 360) - 180
-          dlon /= ds.rLon
-          const e = dlat * dlat + dlon * dlon
-          if (e < 1.6) desert = Math.max(desert, 1 - e / 1.6)
-        }
-        desert = clamp(desert + (dry - 0.5) * 0.9, 0, 1)
-        const al = Math.abs(lat)
-        if (al < 13) c = mix('#2f6d2a', '#4a7d32', detail) // rainforest/jungle
-        else if (al < 26) c = mix('#7d7a4a', '#a99a5e', detail) // savanna/steppe belt
-        else if (al < 40) c = mix('#5d7a3e', '#7c8a4c', detail) // temperate
-        else if (al < 55) c = mix('#4a6b3c', '#6d7f52', detail) // mixed forest
-        else c = mix('#5b6f52', '#8a947f', rough) // boreal/tundra
-        c = mix(c, '#d2b078', desert * 0.85)
-        // lakes (freshwater ellipses punched into land)
-        for (const lk of LAKES) {
-          if (lk.name === 'dummy-skip') continue
-          const dlat = (lat - lk.lat) / lk.rLat
-          let dl = ((lon - lk.lon + 540) % 360) - 180
-          dl /= lk.rLon
-          if (dlat * dlat + dl * dl < 1) {
-            t = 'water'
-            c = '#175fa0'
-            h = Math.max(0.01, elev + (lk.level || 0))
-            break
-          }
-        }
-        if (t !== 'water') t = elev < 0.08 && al < 30 ? 'sand' : 'grass'
       }
-    }
-    els[i] = { t, h, c } // km; scaled to engine units after the pass below
-  }
-  // True scale, enforced: overlapping corridors can stack past the real
-  // ceiling at knots (Pamir, Tibet), so rescale the whole landmass so the
-  // tallest pre-summit ground sits under the summit table (8.849 km), then
-  // stamp the named peaks. Everest is exactly Everest, no stacking.
-  let landMax = 0
-  for (const el of els) if (el.h > landMax) landMax = el.h
-  const k = landMax > 7.4 ? 7.4 / landMax : 1
-  for (const el of els) {
-    if (el.h <= 0) { el.h = 0; continue }
-    el.h = Math.max(0.02, el.h * k) * KM2U
-  }
-  // named peaks: absolute km, stamped over the rescaled range
-  for (const pk of PEAKS) {
-    const w = pk.w * DEG
-    for (let i = 0; i < hex.cellCount; i++) {
-      if (!els[i] || els[i].h <= 0 || (els[i].t !== 'grass' && els[i].t !== 'sand' && els[i].t !== 'snow')) continue
-      const p = latLon(hex, i)
-      const d = angDist(p, pk.lat * DEG, pk.lon * DEG)
-      if (d > w * 3) continue
-      // flat top within w (the true summit is sub-hex), quadratic fade outside
-      const prof = d < w ? 1 : Math.max(0, 1 - ((d - w) / (2 * w)) ** 2)
-      const want = pk.h * prof
-      if (want * KM2U > els[i].h) {
-        els[i].h = want * KM2U
-        if (want > 6.5) { els[i].t = 'snow'; els[i].c = mix('#e8eef4', '#b9c4cc', clamp((want - 6.5) / 2.3, 0, 1) * 0.6) }
+      // lakes (freshwater ellipses punched into land)
+      for (const lk of LAKES) {
+        const dlat = (lat - lk.lat) / lk.rLat
+        let dl = ((lon - lk.lon + 540) % 360) - 180
+        dl /= lk.rLon
+        if (dlat * dlat + dl * dl < 1) {
+          t = 'water'
+          c = '#175fa0'
+          break
+        }
       }
+    } else {
+      // ocean: the hex's deepest point gets half credit (negative h = depth)
+      hM = 0.5 * (st.mean + st.min)
+      const depth = -hM
+      c = mix('#2f8fc4', '#1c64a4', clamp(depth / 1500, 0, 1)) // shelf → slope
+      c = mix(c, '#123f7c', clamp((depth - 1500) / 2500, 0, 1)) // slope → abyssal
+      c = mix(c, '#0a2548', clamp((depth - 4000) / 3000, 0, 1)) // abyssal → hadal
+      t = 'water'
+      // sea ice (t stays 'water' — the stats count it as sea)
+      const iceEdge = lat > 0 ? 74 - 6 * detail : 60 + 12 * detail
+      if (Math.abs(lat) > iceEdge) c = mix('#dfeaf2', '#ffffff', detail)
     }
+    els[i] = { t, h: (hM / 1000) * KM2U, c }
   }
   return els
 }
