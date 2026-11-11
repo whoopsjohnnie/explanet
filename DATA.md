@@ -41,7 +41,7 @@ aws s3 sync s3://explanet-seeds/ .
 | `scripts/stars/data/BSC.json`        | Yale Bright Star Catalog v5 (public domain)  | mirrored in the `stars` table; re-export from source |
 | `scripts/sol-real/data/moons.json`   | scraped moon catalog (NASA)                  | `scripts/sol-real/fetch-moons.mjs`                  |
 | `scripts/sol-real/data/orbits.json`  | scraped asteroid/comet osculating elements   | `scripts/sol-real/fetch-small.mjs`                  |
-| `scripts/sol-real/data/land-50m.json`| world-atlas 1:50m land TopoJSON (Earth)      | re-download from the world-atlas distribution        |
+| `scripts/sol-real/data/etopo2022-60s.f32` | ETOPO2022 60s global DEM — land + seafloor, meters, sea level 0 (21600×10800 float32) | `scripts/sol-real/fetch-terrain.mjs` (NOAA .tif + PIL conversion) |
 
 All seed reads go through `scripts/seed.mjs`, which fails with a pointer to
 this file instead of a stack trace.
