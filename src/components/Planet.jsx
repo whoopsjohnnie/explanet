@@ -277,7 +277,7 @@ function usePlanetPick(planet, renderPlanet) {
 // PlanetView — terrain meshes + decor shared by both physics flavors.
 // ---------------------------------------------------------------------------
 
-function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, onPointerDown, onPointerMove, children }) {
+function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, onPointerDown, onPointerMove, children, hasOcean }) {
   const selected = useStore((s) => s.selectedId === planet.id)
   const showLabels = useStore((s) => s.showLabels)
   const parentSelected = useStore((s) => !!planet.parent && s.selectedId === planet.parent)
@@ -400,6 +400,8 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
       )}
 
       <group ref={poseRef}>
+        {hasOcean && <OceanSurface radius={radius} />}
+
         {ringGeo && ringMat && (
           <mesh
             geometry={ringGeo}
@@ -422,6 +424,38 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
         )}
       </group>
     </group>
+  )
+}
+
+/**
+ * Ocean surface: one translucent sphere at the body's reference radius
+ * (sea level = h 0; negative-h cells are seafloor depth). Mounted with
+ * renderOrder −1 so it paints BEFORE the transparent water seafloor: the
+ * depth test still clips it at the coastline (land is opaque, written first,
+ * and pokes through), while the seafloor blends over the disc — deep water
+ * reads dark from its own depth-ramp colors, shallow water bright. From
+ * under the surface the DoubleSide disc IS the water plane. Own material —
+ * the shared terrain materials are vertex-colored.
+ */
+function OceanSurface({ radius }) {
+  const mat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#2e7cc2',
+        transparent: true,
+        opacity: 0.55,
+        roughness: 0.15,
+        metalness: 0.05,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    []
+  )
+  useEffect(() => () => mat.dispose(), [mat])
+  return (
+    <mesh material={mat} raycast={NO_RAYCAST} renderOrder={-1}>
+      <sphereGeometry args={[radius, 128, 80]} />
+    </mesh>
   )
 }
 
@@ -454,6 +488,8 @@ function PlanetSim({ planet }) {
   const renderPlanet = useRenderPlanet(planet)
   const { lodLevels, level } = useLodLevels(planet, renderPlanet, radius)
   const { pickRaycast, onPointerDown, onPointerMove } = usePlanetPick(planet, renderPlanet)
+  // any negative-h cell = seafloor → render the sea-surface disc at h 0
+  const hasOcean = useMemo(() => (renderPlanet?.elements ? renderPlanet.elements.some((e) => e.h < 0) : false), [renderPlanet])
 
   const [bodyRef, api] = useSphere(
     () => ({
@@ -553,6 +589,7 @@ function PlanetSim({ planet }) {
         pickRaycast={pickRaycast}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
+        hasOcean={hasOcean}
       >
         <TerrainMeshes shown={shown} materials={materials} pickRaycast={pickRaycast} />
       </PlanetView>
@@ -576,6 +613,8 @@ function PlanetFlyer({ planet }) {
   const renderPlanet = useRenderPlanet(planet)
   const { lodLevels, level } = useLodLevels(planet, renderPlanet, radius)
   const { pickRaycast, onPointerDown, onPointerMove } = usePlanetPick(planet, renderPlanet)
+  // any negative-h cell = seafloor → render the sea-surface disc at h 0
+  const hasOcean = useMemo(() => (renderPlanet?.elements ? renderPlanet.elements.some((e) => e.h < 0) : false), [renderPlanet])
 
   const orbit = useMemo(() => prepareOrbit(planet.scriptsOrbit), [planet.scriptsOrbit])
 
@@ -672,6 +711,7 @@ function PlanetFlyer({ planet }) {
         pickRaycast={pickRaycast}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
+        hasOcean={hasOcean}
       >
         <TerrainMeshes shown={shown} materials={materials} pickRaycast={pickRaycast} />
       </PlanetView>
