@@ -3,7 +3,8 @@
  *
  * Everything here is degrees / km / real units; the generators apply them to
  * hex cells through the shared lat/lon convention (lat = asin(y), lon =
- * atan2(z, x) on the unit vector of a cell center — see terrain.js).
+ * atan2(-z, x) on the unit vector of a cell center — the minus is the
+ * handedness that keeps the globe un-mirrored; see terrain.js).
  */
 
 // ---------------------------------------------------------------------------

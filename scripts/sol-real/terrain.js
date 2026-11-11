@@ -8,7 +8,15 @@
  * maria, rust and sulfur without a material system.
  *
  * Sphere convention (matches hexsphere cell centers):
- *   y = sin(lat);  lon = atan2(z, x)  (degrees in tables, radians here)
+ *   y = sin(lat);  lon = atan2(-z, x)  (degrees in tables, radians here)
+ *
+ * The minus on z is a HANDEDNESS requirement, not a style choice: the scene is
+ * right-handed with north = +y, so a point at longitude L must sit at
+ * (cos L, 0, -sin L) — then east (increasing L) runs COUNTERCLOCKWISE seen
+ * from above the north pole, as on the real Earth. Using +sin L would make
+ * east run clockwise and render the whole globe mirrored (Arabia west of
+ * Africa, every coastline backwards). Every lat/lon ↔ direction conversion in
+ * this file (latLon, angDist) must agree on this sign.
  */
 
 import { getHexSphere } from '../../src/core/hexsphere.js'
@@ -43,12 +51,14 @@ function latLon(hex, i) {
   const y = hex.centers[i * 3 + 1]
   const z = hex.centers[i * 3 + 2]
   const n = Math.hypot(x, y, z) || 1
-  return { lat: Math.asin(clamp(y / n, -1, 1)), lon: Math.atan2(z / n, x / n), x: x / n, y: y / n, z: z / n }
+  return { lat: Math.asin(clamp(y / n, -1, 1)), lon: Math.atan2(-z / n, x / n), x: x / n, y: y / n, z: z / n }
 }
 
 /** Angular distance (radians) between a cell vector and a lat/lon point. */
 function angDist(v, latR, lonR) {
-  const d = v.x * Math.cos(latR) * Math.cos(lonR) + v.y * Math.sin(latR) + v.z * Math.cos(latR) * Math.sin(lonR)
+  // the lat/lon point's scene direction is (cos·cos, sin, -cos·sin) — the
+  // minus on z is the handedness convention (see file header)
+  const d = v.x * Math.cos(latR) * Math.cos(lonR) + v.y * Math.sin(latR) - v.z * Math.cos(latR) * Math.sin(lonR)
   return Math.acos(clamp(d, -1, 1))
 }
 
