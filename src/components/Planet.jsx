@@ -62,6 +62,7 @@ function buildLevelsSync(renderPlanet) {
       g.setAttribute('uv', new THREE.BufferAttribute(d.uvs, 2))
       g.setAttribute('normal', new THREE.BufferAttribute(computeFaceNormals(d.positions), 3))
       g.userData.cellByTri = d.cellByTri
+      g.userData.frequency = f // the LOD level this geometry was built at
       out.push({ type, geometry: g })
     }
     return { frequency: f, meshes: out }
@@ -154,10 +155,15 @@ function useLodLevels(planet, renderPlanet, radius) {
     const dx = camera.position.x - c.x
     const dy = camera.position.y - c.y
     const dz = camera.position.z - c.z
-    const distR = Math.sqrt(dx * dx + dy * dy + dz * dz) / radius
+    // World units — the lodDistances thresholds are world units (lod.js).
+    // Normalizing the distance to R before the comparison made every body
+    // coarsen R-times later than designed: giants never left full resolution
+    // (Earth stayed f203 out past the Moon) and the "a body in the sky
+    // renders whole at its minimum level" contract never held.
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
     let want = levelRef.current
-    while (want < thresholds.length && distR > thresholds[want] * 1.2) want++
-    while (want > 0 && distR < thresholds[want - 1] / 1.2) want--
+    while (want < thresholds.length && dist > thresholds[want] * 1.2) want++
+    while (want > 0 && dist < thresholds[want - 1] / 1.2) want--
     if (want !== levelRef.current) {
       levelRef.current = want
       setLevel(want)

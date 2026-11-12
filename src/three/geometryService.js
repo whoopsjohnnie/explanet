@@ -37,6 +37,7 @@ function assembleLevel(level) {
       g.setAttribute('uv', new THREE.BufferAttribute(b.uvs, 2))
       g.setAttribute('normal', new THREE.BufferAttribute(b.normals, 3))
       g.userData.cellByTri = b.cellByTri
+      g.userData.frequency = level.frequency // the LOD level this geometry was built at
       return { type: b.type, geometry: g }
     }),
   }

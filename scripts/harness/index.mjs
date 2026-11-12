@@ -427,6 +427,29 @@ export async function bootWorld(opts = {}) {
   }
 
   /**
+   * The frequency of the LOD level currently MOUNTED for a body (null = no
+   * terrain mesh yet). Terrain batches only — the ocean disc, rings and
+   * atmosphere shells carry no cellByTri and never report a level.
+   */
+  function mountedFrequency(nameOrId) {
+    const p = planet(nameOrId)
+    const entry = registry.bodies.get(p.id)
+    if (!entry) return null
+    const ep = new THREE.Vector3(entry.pos.x, entry.pos.y, entry.pos.z)
+    const reach = Math.max((entry.radius ?? 1) * 1.5, 1)
+    let best = null
+    scene.traverse((o) => {
+      if (!o.isMesh || !o.geometry?.attributes?.position) return
+      const f = o.geometry.userData?.frequency
+      if (f == null) return // not a stamped terrain level
+      const wp = new THREE.Vector3().setFromMatrixPosition(o.matrixWorld)
+      const d = wp.distanceTo(ep)
+      if (d < reach && (!best || d < best.d)) best = { f, d }
+    })
+    return best ? best.f : null
+  }
+
+  /**
    * Anchor a tracker to one rendered vertex of a body (default vertex 0 of the
    * active LOD mesh — an arbitrary coastline corner) and sample it every frame.
    * Pumps frames while the geometry workers are still building if needed.
@@ -641,6 +664,7 @@ export async function bootWorld(opts = {}) {
     planet,
     craft,
     track,
+    mountedFrequency,
     frames,
     walk,
     board,

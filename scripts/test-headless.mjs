@@ -32,6 +32,9 @@
  *    `planet.elements is null` — defaultPlayer skips the stub, a failed
  *    hydration bails, and a foot session on an unresolvable stub falls
  *    back to the free camera
+ *  - LOD level selection against WORLD-unit thresholds (the R-normalized
+ *    comparison made giants never coarsen): close → full resolution, far →
+ *    coarsest level, back close → full again
  */
 
 import { test } from 'node:test'
@@ -288,5 +291,42 @@ test('stubs: boot with a stub-first world (the elements-is-null crash)', { timeo
   assert.deepEqual(w.player, { kind: 'foot', bodyId: 'p-stub' }, 'waiting for the streaming atoms')
   await w.frames(400) // ~300 frames of patience, then the free camera
   assert.equal(w.player.kind, 'freeCam', 'unresolvable stub must fall back to the free camera')
+  await w.close()
+})
+
+// ---------------------------------------------------------------------------
+// LOD level selection (lod.js / Planet.jsx): world-unit thresholds
+// ---------------------------------------------------------------------------
+
+test('lod: the mounted level coarsens with distance and refines up close', { timeout: 240_000 }, async () => {
+  // testball: f12 document, chain [12, 6, 4], thresholds 95R / 142.5R
+  // (×1.2 hysteresis). The level selection divided the camera distance by R
+  // before comparing it against WORLD-unit thresholds, so every body stayed
+  // at full resolution ~R-times longer than designed — a giant never
+  // coarsened (Earth f203 out past the Moon) and a body in the sky never
+  // rendered at its minimum level.
+  const w = await bootWorld({ world: 'testball' })
+  const entry = w.registry.bodies.get('p-testball')
+  const R = entry.radius
+  // The boot player is on FOOT (a parked shuttle): the Walker owns the camera
+  // every frame and would clobber cameraNear. Free cam leaves it where we put it.
+  await w.set({ player: { kind: 'freeCam' } })
+  const camDist = () =>
+    Math.hypot(
+      w.camera.position.x - entry.pos.x,
+      w.camera.position.y - entry.pos.y,
+      w.camera.position.z - entry.pos.z
+    )
+  await w.cameraNear('Testball', { offset: [0, 0, R * 1.5] })
+  await w.frames(30)
+  assert.ok(camDist() < R * 3, `camera must hold the requested offset (got ${camDist().toFixed(2)}, want ${(R * 1.5).toFixed(2)})`)
+  assert.equal(w.mountedFrequency('Testball'), 12, 'up close: full document resolution')
+  await w.cameraNear('Testball', { offset: [0, 0, R * 300] })
+  await w.frames(30)
+  assert.ok(camDist() > R * 100, `camera must be far out (got ${camDist().toFixed(1)}, want ${(R * 300).toFixed(0)})`)
+  assert.equal(w.mountedFrequency('Testball'), 4, 'far out: the coarsest level')
+  await w.cameraNear('Testball', { offset: [0, 0, R * 1.5] })
+  await w.frames(30)
+  assert.equal(w.mountedFrequency('Testball'), 12, 'back close: refined to full resolution')
   await w.close()
 })
