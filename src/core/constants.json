@@ -66,6 +66,13 @@
       "scaleSunGlow": { "value": 0.55 },
       "scaleLimbGlow": { "value": 0.35 },
       "scaleAirTerminator": { "value": 0.4 }
+    },
+
+    "fineDisc": {
+      "_note": "The fine-terrain region (docs/terrain.txt): a body-fixed cap of radius `radius` around the player, streamed in chunks and feathered to the document mesh at its outer edge. `radius` is a PHYSICAL distance in km — the visual horizon — converted per-body to world units through the world scale (D_u = radius*1000/scale); it does not scale with body size, so a body small enough to hold the whole cap clamps it. `feather` is the outer FRACTION of `radius` where fine heights fade to the document (w -> 0 exactly at the cap edge, so the fine region sits on the document surface to sub-meter precision). Stage 1 runs the whole machinery at document frequency (a visual no-op that isolates the mechanism from the data); stage 2 streams the real DEM. `chunkKm` is the PHYSICAL size of one chunk (the streaming unit): the fine-hex count per chunk side is round(chunkKm/hexKm), derived from the fine grid's hex size, so a chunk keeps a constant physical footprint across stages (64 fine hexes at stage 2's 1.85 km; ~5 doc cells at stage 1's 21.8 km, where the 500 km cap holds only ~634 doc cells and a fixed cell count would be a single unstreaming chunk).",
+      "radius": { "value": 500 },
+      "feather": { "value": 0.2 },
+      "chunkKm": { "value": 118 }
     }
   }
 }

@@ -27,19 +27,22 @@ let workerBroken = false
 let seq = 0
 const jobs = new Map() // key → { seq, slots, onLevels, onError }
 
+/** One worker batch (raw typed arrays) → an assembled { type, geometry } mesh. */
+function assembleMesh(b, frequency) {
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(b.positions, 3))
+  g.setAttribute('color', new THREE.BufferAttribute(b.colors, 3))
+  g.setAttribute('uv', new THREE.BufferAttribute(b.uvs, 2))
+  g.setAttribute('normal', new THREE.BufferAttribute(b.normals, 3))
+  g.userData.cellByTri = b.cellByTri
+  g.userData.frequency = frequency // the grid this geometry was built at
+  return { type: b.type, geometry: g }
+}
+
 function assembleLevel(level) {
   return {
     frequency: level.frequency,
-    meshes: level.batches.map((b) => {
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.BufferAttribute(b.positions, 3))
-      g.setAttribute('color', new THREE.BufferAttribute(b.colors, 3))
-      g.setAttribute('uv', new THREE.BufferAttribute(b.uvs, 2))
-      g.setAttribute('normal', new THREE.BufferAttribute(b.normals, 3))
-      g.userData.cellByTri = b.cellByTri
-      g.userData.frequency = level.frequency // the LOD level this geometry was built at
-      return { type: b.type, geometry: g }
-    }),
+    meshes: level.batches.map((b) => assembleMesh(b, level.frequency)),
   }
 }
 
@@ -48,6 +51,12 @@ function startWorker() {
   worker.onmessage = ({ data }) => {
     const job = jobs.get(data.key)
     if (!job || job.seq !== data.seq) return // superseded or cancelled
+    if (data.type === 'chunk') {
+      // a chunk is a single unit of work: one reply with all its batches
+      job.onBatches(data.batches.map((b) => assembleMesh(b, data.frequency)))
+      jobs.delete(data.key)
+      return
+    }
     job.slots[data.levelIndex] = assembleLevel(data.level)
     job.onLevels(job.slots.slice())
     if (job.slots.every(Boolean)) jobs.delete(data.key)
@@ -91,6 +100,46 @@ export function buildLevelsAsync(planetId, renderPlanet, { atomsPacked, onLevels
       frequency: renderPlanet.frequency,
       scale: renderPlanet.scale ?? 1,
       packed: transferable.packed,
+    },
+    transferable.transfer
+  )
+  return () => {
+    const job = jobs.get(key)
+    if (job && job.seq === jobId) jobs.delete(key)
+  }
+}
+
+/**
+ * Build ONE fine chunk off-thread (docs/terrain.txt §3). Same worker, same
+ * seq-supersede contract as the chain builds — but keyed per CHUNK (a newer
+ * build of the same chunk key supersedes a stale one), and a chunk is a single
+ * unit of work: one postMessage, one reply carrying all of its terrain batches
+ * (`onBatches`), not a streamed level. The main thread owns the chunk's
+ * identity and the fine→doc map; the worker returns geometry only.
+ *
+ * Returns a cancel function; after it (or supersession by a newer build of the
+ * same chunk) `onBatches` never fires again.
+ */
+export function buildChunkAsync(planetId, chunkKey, renderPlanet, { atomsPacked, cells, onBatches, onError }) {
+  if (workerBroken) {
+    onError(new Error('geometry worker unavailable'))
+    return () => {}
+  }
+  if (!worker) startWorker()
+  const key = `${planetId}|chunk:${chunkKey}`
+  const jobId = ++seq
+  jobs.set(key, { seq: jobId, onBatches, onError })
+  const packed = atomsPacked || packElements(renderPlanet.elements)
+  const transferable = packedForTransfer(packed)
+  worker.postMessage(
+    {
+      key,
+      seq: jobId,
+      type: 'chunk',
+      frequency: renderPlanet.frequency,
+      scale: renderPlanet.scale ?? 1,
+      packed: transferable.packed,
+      cells,
     },
     transferable.transfer
   )

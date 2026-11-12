@@ -35,14 +35,42 @@
  *  - LOD level selection against WORLD-unit thresholds (the R-normalized
  *    comparison made giants never coarsen): close → full resolution, far →
  *    coarsest level, back close → full again
+ *  - the fine-terrain region (docs/terrain.txt, stage 1 — the machinery at
+ *    document frequency, a visual no-op): the on-foot focus body publishes its
+ *    mounted chunks to the §6 dispatch and the walker welds to the surface of
+ *    record; the pick remap routes a fine hit to the document cell; a stroke
+ *    composites (doc + edit overlay + same-frame chunk patch); unmounting is
+ *    clean (every chunk geometry disposed, no leak, the doc mesh survives) and
+ *    restores byte-identical LOD rendering (doc terrain unsuppressed, same
+ *    level, no chunks)
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
+import { act } from '@react-three/test-renderer'
 import { bootWorld, SOL_REAL_MAJOR } from './harness/index.mjs'
-import { walkReadout, makeSurface } from '../src/core/surface.js'
+import { walkReadout, walkerLocation, makeSurface } from '../src/core/surface.js'
 import { craftRuntime, eva } from '../src/core/motion.js'
+import { useStore } from '../src/state/store.js'
+import {
+  fineRegionOf,
+  isFine,
+  remapToDoc,
+  fineEditFor,
+  surfaceOfRecord,
+} from '../src/core/finedisc.js'
+
+/**
+ * Settle the on-foot spawn fall (real human: a fixed 120 m drop at the
+ * 15 m/s terminal ≈ 8 s) — a FIXED frame wait, not a `walkReadout.grounded`
+ * latch: that flag (and `walkerLocation`) is module-global and survives
+ * between boots, so a latch would return on the PREVIOUS test's landed walker.
+ */
+async function landWalker(w) {
+  await w.frames(1200)
+  assert.ok(walkReadout.grounded, 'the on-foot walker must land its spawn fall')
+}
 
 const SOL_REAL_PRESENT = existsSync(new URL('../public/sol-real.json', import.meta.url))
 
@@ -328,5 +356,161 @@ test('lod: the mounted level coarsens with distance and refines up close', { tim
   await w.cameraNear('Testball', { offset: [0, 0, R * 1.5] })
   await w.frames(30)
   assert.equal(w.mountedFrequency('Testball'), 12, 'back close: refined to full resolution')
+  await w.close()
+})
+
+// ---------------------------------------------------------------------------
+// The fine-terrain region (docs/terrain.txt, stage 1). The fine grid IS the
+// document grid, so every assertion below is a visual no-op — the point is to
+// pin the MACHINERY (lattice, streaming, dispatch, the stroke, clean
+// teardown) so stage 2 cannot hide a machinery bug behind a terrain reveal.
+// The 'testball' fixture boots on foot: the real FineRegion streams the cap's
+// chunks and publishes the mounted set to core/finedisc.js.
+// ---------------------------------------------------------------------------
+
+test('finedisc: the walker welds to the surface of record (chunks mounted)', { timeout: 300_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  // the real FineRegion published its mounted set to the core dispatch
+  assert.ok(fineRegionOf(bodyId), 'the on-foot focus body must publish a fine region')
+  assert.ok(isFine(bodyId, walkerLocation.cell), 'a chunk must be mounted under the walker')
+  // §6 dispatch: the surface of record at the walker's cell is the fine surface
+  const surface = makeSurface(w.planet(bodyId), w.world.scale)
+  const rec = surfaceOfRecord(surface, bodyId, walkerLocation.cell)
+  assert.equal(rec.fine, true, 'the dispatch must report the fine branch under the walker')
+  assert.equal(rec.surface, surface, 'stage 1: the fine surface IS the document surface')
+  // the weld: the walker's radius equals the surface-of-record radius at its dir
+  const q = rec.surface.heightAt(walkerLocation.dir)
+  assert.ok(
+    Math.abs(walkerLocation.r - q.radius) < 1e-6,
+    `walker r (${walkerLocation.r}) must equal the fine-surface radius at its dir (${q.radius})`
+  )
+  // and it holds across frames as the region streams/settles around the walker
+  const t = await w.track('Testball')
+  const { missed } = await w.frames(240, { jitter: true })
+  const s = t.stats()
+  await w.close()
+  assert.equal(s.jumps.length, 0, `discontinuities: ${JSON.stringify(s.jumps.slice(0, 5))}`)
+  assert.ok(s.maxHexCameraU < 0.05, `per-frame view-space slide ${s.maxHexCameraU.toExponential(2)} u — weld broken`)
+  assert.ok(missed <= 3, `missed worker frames: ${missed}`)
+})
+
+test('finedisc: the pick remaps a fine hit to the document cell', { timeout: 300_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  const region = fineRegionOf(bodyId)
+  assert.ok(region, 'the fine region must be published (the pick remap consults it)')
+  // a mounted (fine) cell remaps to its document cell — stage 1: the identity
+  const fineCell = walkerLocation.cell
+  assert.ok(isFine(bodyId, fineCell), 'the underfoot cell is under a mounted chunk')
+  assert.equal(remapToDoc(bodyId, fineCell), fineCell, 'stage 1: the fine→doc map is the identity')
+  // a document cell OUTSIDE the region passes through unchanged
+  const cellCount = w.planet(bodyId).elements.length
+  let outside = -1
+  for (let i = 0; i < cellCount; i++) if (!region.byCell.has(i)) { outside = i; break }
+  assert.ok(outside >= 0, 'there must be a document cell outside the fine region')
+  assert.equal(remapToDoc(bodyId, outside), outside, 'a document cell outside the region passes through')
+  await w.close()
+})
+
+test('finedisc: a stroke composites — doc + overlay + same-frame chunk patch', { timeout: 300_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  const cell = walkerLocation.cell
+  // the chunk mesh(es) covering the underfoot cell (before the stroke)
+  const coveringBefore = w
+    .terrainMeshes()
+    .filter((m) => !m.suppressed)
+    .filter((m) => m.geometry.userData.cellByTri.includes(cell))
+  assert.ok(coveringBefore.length >= 1, 'a mounted chunk must cover the underfoot cell')
+  const meshBefore = coveringBefore[0].object
+  const geoBefore = coveringBefore[0].geometry
+  const posBefore = Float32Array.from(geoBefore.attributes.position.array)
+  const hBefore = useStore.getState().world.planets.find((p) => p.id === bodyId).elements[cell].h
+
+  // the stroke: raise the underfoot cell (§5 steps 1-4)
+  await act(async () => {
+    useStore.setState({ tool: 'raise', strength: 0.5 })
+    useStore.getState().applyBrush(bodyId, cell)
+  })
+  const hAfter = useStore.getState().world.planets.find((p) => p.id === bodyId).elements[cell].h
+  assert.ok(hAfter !== hBefore, 'step 1: the document cell must be raised')
+  // step 2: the sparse edit overlay records the stroke
+  const edit = fineEditFor(bodyId, cell)
+  assert.ok(edit && edit.h === hAfter, 'step 2: the overlay must record the raised height')
+  // step 3: the covering chunk is rebuilt the SAME frame with the new height —
+  // the patcher swaps in a fresh mesh + geometry (the weld invariant holds for
+  // the fine layer exactly as for the document)
+  const coveringAfter = w
+    .terrainMeshes()
+    .filter((m) => !m.suppressed)
+    .filter((m) => m.geometry.userData.cellByTri.includes(cell))
+  assert.ok(coveringAfter.length >= 1, 'the underfoot cell must still be covered by a chunk')
+  const meshAfter = coveringAfter[0].object
+  const geoAfter = coveringAfter[0].geometry
+  assert.notEqual(meshAfter, meshBefore, 'step 3: the patcher must swap in a fresh chunk mesh')
+  assert.notEqual(geoAfter, geoBefore, 'step 3: ...with a fresh geometry')
+  const posAfter = Float32Array.from(geoAfter.attributes.position.array)
+  let changed = posBefore.length !== posAfter.length
+  if (!changed) for (let i = 0; i < posBefore.length; i++) if (posBefore[i] !== posAfter[i]) { changed = true; break }
+  assert.ok(changed, 'step 3: the rebuilt chunk must carry the new height in its vertices')
+  await w.close()
+})
+
+test('finedisc: unmount is clean — chunks disposed, no leak, the doc mesh stays', { timeout: 300_000 }, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  // the mounted chunk meshes + their geometries (wrap dispose to count teardown)
+  const chunks = w.terrainMeshes().filter((m) => !m.suppressed)
+  assert.ok(chunks.length >= 1, 'chunks must be mounted under the on-foot walker')
+  const geos = chunks.map((c) => c.geometry)
+  const disposed = new Set()
+  for (const g of geos) {
+    const orig = g.dispose.bind(g)
+    g.dispose = () => { disposed.add(g); orig() }
+  }
+  // the document terrain mesh (the suppression clone while focused) survives
+  const docBefore = w.terrainMeshes().filter((m) => m.suppressed)
+  assert.ok(docBefore.length >= 1, 'the focus body doc terrain renders with the suppression material')
+  const docGeo = docBefore[0].geometry
+  // unmount: leave the body (free cam) → every chunk evicts
+  await w.set({ player: { kind: 'freeCam' } })
+  await w.frames(30)
+  for (const g of geos) assert.ok(disposed.has(g), 'an evicted chunk geometry must be disposed (no leak)')
+  assert.equal(w.terrainMeshes().filter((m) => !m.suppressed).length, 0, 'no chunk meshes remain after unmount')
+  assert.ok(w.terrainMeshes().some((m) => m.geometry === docGeo), 'the document terrain mesh must survive the eviction')
+  await w.close()
+})
+
+test('finedisc: unmount restores byte-identical LOD rendering (unsuppressed, same level)', {
+  timeout: 300_000,
+}, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  const lvlBefore = w.mountedFrequency('Testball')
+  assert.ok(lvlBefore != null, 'a LOD level must be mounted while walking')
+  const before = w.terrainMeshes()
+  const docTypes = before.filter((m) => m.suppressed).length // the doc terrain's type batches
+  const chunkCount = before.filter((m) => !m.suppressed).length
+  assert.ok(docTypes >= 1 && chunkCount >= 1, 'focused: the doc terrain (suppressed) + the chunks (normal)')
+  const docGeo = before.find((m) => m.suppressed).geometry
+  const docFreq = docGeo.userData.frequency
+  // unmount
+  await w.set({ player: { kind: 'freeCam' } })
+  await w.frames(30)
+  // the region is cleared: the dispatch falls back to the document
+  assert.equal(fineRegionOf(bodyId), null, 'the fine region must be cleared on unmount')
+  const after = w.terrainMeshes()
+  assert.ok(!after.some((m) => m.suppressed), 'the doc terrain must be UNSUPPRESSED after unmount')
+  assert.equal(after.length, docTypes, 'only the doc terrain batches remain (every chunk is gone)')
+  const docAfter = after.find((m) => m.geometry === docGeo)
+  assert.ok(docAfter, 'the doc terrain mesh is back — the SAME geometry object (byte-identical)')
+  assert.equal(docAfter.geometry.userData.frequency, docFreq, 'the LOD level is unchanged')
+  assert.equal(w.mountedFrequency('Testball'), lvlBefore, 'the mounted LOD level is byte-identical')
   await w.close()
 })

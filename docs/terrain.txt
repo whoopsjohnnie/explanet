@@ -450,30 +450,32 @@
 
 
 --------------------------------------------------------------------------------
-10. OPEN QUESTIONS (for review before stage 1)
+10. DECISIONS (resolved before stage 1 — Nov 2026)
 --------------------------------------------------------------------------------
-  1. D default: 500 km (21 chunks / 0.6 s / ~1 MB tiles — covers Earth's
-     entire relief field, Everest horizon 335 km) or 1000 km (86 chunks /
-     2.3 s / ~3 MB — 3x margin)? Proposal: default 500, dial to 1000.
-  2. Feather: outer 20% of D, smoothstep. Wider (30%) hides the blend
-     further from the eye at the cost of flattening more mid-range relief;
-     narrower risks the blend being visible in deep relief. Proposal: 20%.
-  3. Edit overlay persistence: a DB table (sparse, per fine cell) vs a
-     document field (terrainEdits[] per body, rides the save). Proposal:
-     DB table for DB worlds + document field for file worlds — mirrors
-     how models/crafts already split (P3).
-  4. Chunk side: 64 fine hexes (110 km) at stage 2. 32 hexes (55 km)
-     stream more often and evict faster; 128 build more per job. The
-     loaded-set size is set by D either way — only the granularity of
-     streaming changes. Proposal: 64.
-  5. Suppression implementation: fragment discard (this document) vs an
-     early vertex discard (cheaper GPU-wise, but the document mesh's
-     vertices would skip walls at the region edge — the fragment discard
-     keeps every document wall intact up to the boundary). Proposal:
-     fragment discard for stage 1, measure, then decide.
-  6. EVA: the proposal is that an EVA astronaut with a dominant body
-     within D mounts that body's region (the walls under an adrift
-     astronaut are the whole point of the view). Confirm.
+  1. D (the fine-disc radius) = 500 km, defined as the VISUAL HORIZON.
+     Constant: tunables.fineDisc.radius — a PHYSICAL distance in km,
+     converted per-body to world units via the world scale
+     (D_u = radius*1000/scale). 500 km covers Earth's entire relief field
+     (the Everest horizon is 335 km); a body small enough to hold the whole
+     cap clamps it to its own horizon.
+  2. Feather = the outer 20% of D, smoothstep.
+     Constant: tunables.fineDisc.feather (0.2).
+  3. Edit overlay persistence: a DB table for DB worlds + a document field
+     for file worlds — mirrors the models/crafts split (P3).
+  4. Chunk size = a fixed PHYSICAL footprint: the constant
+     tunables.fineDisc.chunkKm (~118 km). The fine-hex count per chunk
+     side is derived as round(chunkKm/hexKm) from the fine grid's hex size
+     — 64 fine hexes at stage 2 (1.85 km) and ~5 doc cells at stage 1
+     (21.8 km). A physical (not cell-count) size is what makes it one
+     constant: at f203 the 500 km cap holds only ~634 doc cells, so the
+     earlier draft's fixed 32x32 cell count would be one chunk bigger than
+     the cap — nothing to stream. Fixed km keeps ~25 chunks in the cap.
+  5. Suppression: fragment discard for stage 1 — then MEASURE (fragment
+     cost vs the early-vertex-discard alternative, which would skip
+     document walls at the region edge) before deciding on stage 2.
+  6. EVA: CONFIRMED — an EVA astronaut whose dominant body is within D
+     mounts that body's region (the walls under an adrift astronaut are the
+     whole point of the view).
 
 
 --------------------------------------------------------------------------------

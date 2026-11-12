@@ -40,6 +40,7 @@ import {
 } from '../core/motion.js'
 import { walkerLocation, aheadDirection } from '../core/surface.js'
 import { CRAFT_TYPES } from '../core/craftTypes.js'
+import { recordFineEdit, notifyFineEdit } from '../core/finedisc.js'
 
 // Add Craft (on foot): how many of the shuttle's OWN lengths it parks ahead —
 // "a short walk in front of you," in meters via the world's scale.
@@ -345,6 +346,16 @@ export const useStore = create((set, get) => ({
     const planets = [...world.planets]
     planets[idx] = { ...planet, elements }
     set({ world: { ...world, planets }, dirty: true })
+
+    // §5 steps 2-4: the stroke also touches the FINE region (if one is
+    // mounted on this body). Record the edit overlay (step 2 — at document
+    // frequency it is the identity, i.e. the just-written element), then let
+    // the mounted chunks patch themselves the same frame + re-synthesize in
+    // the background (steps 3-4, via the patcher FineRegion registered). A
+    // body with no fine region simply has no patcher — this is a no-op.
+    const fresh = planets[idx]
+    for (const ci of cells) recordFineEdit(planetId, ci, elements[ci].h, elements[ci].t, elements[ci].c)
+    notifyFineEdit(planetId, cells, fresh)
   },
 
   // ----------------------------------------------------------------- ui ----

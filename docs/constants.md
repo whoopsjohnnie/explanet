@@ -120,6 +120,18 @@ exists twice by necessity — GLSL (`core/glsl.js`) and a JS mirror
 (`core/constants.js`) so CPU-side math (star fade, glow textures) steps in
 lockstep. Keep the two in sync.
 
+### tunables — `fineDisc` (no dial)
+
+The fine-terrain region (the visual-horizon cap streamed in chunks around the
+player — `core/finedisc.js`, docs/terrain.txt). Stage 1 runs the machinery at
+document frequency (a no-op); stage 2 streams the real DEM.
+
+| Key | Value | What it governs |
+|---|---|---|
+| `radius` | 500 | the cap's radius in **km** (the visual horizon) — converted per-body to world units through the world scale (`D_u = radius·1000/scale`); it is a physical distance, not a body-size fraction, so a body small enough to hold the whole cap clamps it |
+| `feather` | 0.2 | the outer **fraction** of `radius` where fine heights fade to the document (`w → 0` exactly at the cap edge, so the fine region sits on the document surface to sub-meter precision) |
+| `chunkKm` | 118 | the **physical** size of one chunk (the streaming unit): fine-hexes per chunk side = `round(chunkKm/hexKm)`, derived from the fine grid's hex size, so a chunk keeps a constant physical footprint across stages (64 fine hexes at stage 2's 1.85 km; ~5 doc cells at stage 1's 21.8 km) |
+
 ## What stays out of constants.json
 
 - **Astronomy** (obliquity, galactic pole/center) — invariants next to their

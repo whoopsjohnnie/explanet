@@ -450,6 +450,35 @@ export async function bootWorld(opts = {}) {
   }
 
   /**
+   * Every terrain mesh in the scene (document + fine chunks), tagged. A terrain
+   * mesh carries `geometry.userData.cellByTri` (the document-cell-per-triangle
+   * table). `suppressed` is true when the mesh renders with the per-body
+   * fine-region suppression material (the focus body's DOCUMENT terrain, while
+   * the fine region is mounted); chunk meshes use the shared terrain materials
+   * and are therefore `suppressed: false`. (While focused: suppressed ⇒ doc,
+   * not ⇒ chunk. Unfocused: every terrain mesh is doc, no chunks exist.)
+   */
+  function terrainMeshes() {
+    const out = []
+    scene.traverse((o) => {
+      if (!o.isMesh) return
+      const geo = o.geometry
+      if (!geo || !geo.userData || !geo.userData.cellByTri) return
+      let suppressed = false
+      const mat = o.material
+      if (mat && typeof mat.customProgramCacheKey === 'function') {
+        try {
+          suppressed = String(mat.customProgramCacheKey()).startsWith('finedisc-suppression-')
+        } catch {
+          /* no key */
+        }
+      }
+      out.push({ object: o, geometry: geo, suppressed })
+    })
+    return out
+  }
+
+  /**
    * Anchor a tracker to one rendered vertex of a body (default vertex 0 of the
    * active LOD mesh — an arbitrary coastline corner) and sample it every frame.
    * Pumps frames while the geometry workers are still building if needed.
@@ -665,6 +694,7 @@ export async function bootWorld(opts = {}) {
     craft,
     track,
     mountedFrequency,
+    terrainMeshes,
     frames,
     walk,
     board,

@@ -55,6 +55,7 @@ import {
 } from '../core/surface.js'
 import { isPlanetStub } from '../core/worldSchema.js'
 import { pendingFoot, latLonOf } from '../core/motion.js'
+import { surfaceOfRecord } from '../core/finedisc.js'
 
 const LOOK_SENS = 0.0032 // radians of view rotation per dragged pixel
 const PITCH_LIMIT = 1.45 // ±83° from the horizon; never flips past straight up/down
@@ -402,7 +403,14 @@ export default function Walker({ planetId }) {
     // real mode (world.scale, meters per unit): physical gravity in m/s², clamped human-livable;
     // tile mode (absent): the classic game-feel gravityScale + clamp
     const g = surfaceGravity(st.world.gravity, mass, w.r, st.world.scale)
-    stepWalker(surface, w, g, tmp.wishArr, { jump: k.jump, sprint: k.sprint }, dt)
+    // §6 dispatch: the walked surface is the surface of record at the walker's
+    // cell. Stage 1 the fine cells ARE the document cells, so the dispatch
+    // returns the same object — the branch is real (checked against the
+    // mounted set), the value is the identity. The walker sits at the region's
+    // center (500+ km from its edge) and never crosses the fine→doc boundary
+    // mid-stride; crossing a CHUNK boundary is seamless by construction.
+    const walkSurface = surfaceOfRecord(surface, planetId, w.cell).surface
+    stepWalker(walkSurface, w, g, tmp.wishArr, { jump: k.jump, sprint: k.sprint }, dt)
     k.jump = false
 
     // ---- carry the heading across the curvature ----------------------------
@@ -429,7 +437,7 @@ export default function Walker({ planetId }) {
     camera.quaternion.setFromRotationMatrix(tmp.m)
 
     // ---- HUD telemetry -----------------------------------------------------
-    const ground = surface.heightAt(w.dir, w.cell)
+    const ground = walkSurface.heightAt(w.dir, w.cell)
     walkReadout.alt = Math.max(0, w.r - ground.radius)
     walkReadout.vel = w.radialVel
     walkReadout.grounded = w.grounded

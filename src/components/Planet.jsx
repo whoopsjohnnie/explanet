@@ -37,7 +37,10 @@ import { makeSurface, intersectHeightfield } from '../core/surface.js'
 import { keplerState, prepareOrbit } from '../core/kepler.js'
 import { planetRadius, planetMass, planetScale, radiusForFrequency } from '../core/planetMath.js'
 import { getTerrainMaterials } from '../three/materials.js'
+import { makeSuppressionMaterials } from '../three/fineMaterial.js'
 import { buildLevelsAsync, ASYNC_MIN_CELLS } from '../three/geometryService.js'
+import FineRegion, { useIsFocus } from './FineRegion.jsx'
+import { remapToDoc } from '../core/finedisc.js'
 
 // scratch objects for the analytic pick (single-threaded, per-call)
 const _ray = new THREE.Ray()
@@ -215,10 +218,14 @@ function usePlanetPick(planet, renderPlanet) {
         [_ray.direction.x, _ray.direction.y, _ray.direction.z]
       )
       if (!hit) return
+      // §6: the hit is remapped to the enclosing DOCUMENT cell before anything
+      // else sees it — applyBrush, the selection and the brush preview all take
+      // a document cell, unchanged. (Stage 1 the fine→doc map is the identity.)
+      hit.cell = remapToDoc(planet.id, hit.cell)
       const point = new THREE.Vector3(hit.point[0], hit.point[1], hit.point[2]).applyMatrix4(this.matrixWorld)
       intersects.push({ distance: raycaster.ray.origin.distanceTo(point), point, object: this, cell: hit.cell })
     },
-    [surface]
+    [surface, planet.id]
   )
 
   const painting = useRef(false)
@@ -497,6 +504,23 @@ function PlanetSim({ planet }) {
   // any negative-h cell = seafloor → render the sea-surface disc at h 0
   const hasOcean = useMemo(() => (renderPlanet?.elements ? renderPlanet.elements.some((e) => e.h < 0) : false), [renderPlanet])
 
+  // ---- fine region (docs/terrain.txt, stage 1) -----------------------------
+  // The body the player is ON gets a streamed fine region: its document mesh
+  // is suppressed under the mounted chunks (the §4.4 discard) and the chunk
+  // meshes ride the spin frame. A stub has no fine region — the chunks need the
+  // document (the blend input, the fine->doc map), and the session hydrates
+  // before anything on-body happens, so this is downstream of it, never a bypass.
+  const isFocus = useIsFocus(planet)
+  const canFine = isFocus && !!renderPlanet && Array.isArray(renderPlanet.elements)
+  const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
+  useEffect(
+    () => () => {
+      if (supp) for (const m of Object.values(supp.materials)) m.dispose()
+    },
+    [supp]
+  )
+  const docMaterials = supp ? supp.materials : materials
+
   const [bodyRef, api] = useSphere(
     () => ({
       mass: isStatic ? 0 : mass,
@@ -591,14 +615,15 @@ function PlanetSim({ planet }) {
         planet={planet}
         radius={radius}
         shown={shown}
-        materials={materials}
+        materials={docMaterials}
         pickRaycast={pickRaycast}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         hasOcean={hasOcean}
       >
-        <TerrainMeshes shown={shown} materials={materials} pickRaycast={pickRaycast} />
+        <TerrainMeshes shown={shown} materials={docMaterials} pickRaycast={pickRaycast} />
       </PlanetView>
+      {canFine && <FineRegion planet={planet} renderPlanet={renderPlanet} supp={supp} />}
     </group>
   )
 }
@@ -621,6 +646,19 @@ function PlanetFlyer({ planet }) {
   const { pickRaycast, onPointerDown, onPointerMove } = usePlanetPick(planet, renderPlanet)
   // any negative-h cell = seafloor → render the sea-surface disc at h 0
   const hasOcean = useMemo(() => (renderPlanet?.elements ? renderPlanet.elements.some((e) => e.h < 0) : false), [renderPlanet])
+
+  // fine region (stage 1) — same as PlanetSim: the body the player is ON gets
+  // streamed chunks + the §4.4 document suppression. A stub gets none.
+  const isFocus = useIsFocus(planet)
+  const canFine = isFocus && !!renderPlanet && Array.isArray(renderPlanet.elements)
+  const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
+  useEffect(
+    () => () => {
+      if (supp) for (const m of Object.values(supp.materials)) m.dispose()
+    },
+    [supp]
+  )
+  const docMaterials = supp ? supp.materials : materials
 
   const orbit = useMemo(() => prepareOrbit(planet.scriptsOrbit), [planet.scriptsOrbit])
 
@@ -713,14 +751,15 @@ function PlanetFlyer({ planet }) {
         planet={planet}
         radius={radius}
         shown={shown}
-        materials={materials}
+        materials={docMaterials}
         pickRaycast={pickRaycast}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         hasOcean={hasOcean}
       >
-        <TerrainMeshes shown={shown} materials={materials} pickRaycast={pickRaycast} />
+        <TerrainMeshes shown={shown} materials={docMaterials} pickRaycast={pickRaycast} />
       </PlanetView>
+      {canFine && <FineRegion planet={planet} renderPlanet={renderPlanet} supp={supp} />}
     </group>
   )
 }

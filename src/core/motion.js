@@ -51,6 +51,7 @@ import { registry } from './physics.js'
 import { planetRadius } from './planetMath.js'
 import { getHexSphere } from './hexsphere.js'
 import { cellAtDirection, fanRadiusAt, makeSurface } from './surface.js'
+import { recordSurfaceRadius } from './finedisc.js'
 import { CRAFT_TYPES, EVA_TUNING } from './craftTypes.js'
 
 export { CRAFT_TYPES, EVA_TUNING }
@@ -195,7 +196,10 @@ export function altitudeOf(p, body, planet) {
   const hex = getHexSphere(planet.frequency)
   const cell = cellAtDirection(hex, dir)
   const h = (planet.elements[cell] && planet.elements[cell].h) || 0
-  return d - fanRadiusAt(hex, cell, body.radius + h, dir)
+  const docRadius = fanRadiusAt(hex, cell, body.radius + h, dir)
+  // §6 dispatch: altitude reads the surface of record (stage 1: fine == doc,
+  // so the record radius is the document fan radius — the check is real).
+  return d - recordSurfaceRadius(docRadius, planet.id, cell).radius
 }
 
 /**
@@ -211,7 +215,10 @@ export function heightAtDir(planet, dirLocal) {
   const cell = cellAtDirection(hex, dirLocal)
   const h = (planet.elements[cell] && planet.elements[cell].h) || 0
   const R = planetRadius(planet)
-  return fanRadiusAt(hex, cell, R + h, norm3(dirLocal)) - R
+  const docRadius = fanRadiusAt(hex, cell, R + h, norm3(dirLocal))
+  // §6 dispatch: the park anchor's terrain-resolved r (and the launch pad)
+  // read the surface of record — stage 1: fine == doc, the check is real.
+  return recordSurfaceRadius(docRadius, planet.id, cell).radius - R
 }
 
 /**

@@ -82,10 +82,17 @@ export function computeFaceNormals(positions) {
 
 /**
  * Build one vertex batch per terrain type present on the planet.
+ *
+ * `cellSet` (optional): a Set of cell indices to restrict the build to. Walls
+ * still read their neighbour's height from the FULL `elements` array, so a
+ * restricted build (a fine chunk, §terrain.txt) closes its boundary correctly
+ * against out-of-chunk neighbours. `cellByTri` records the DOCUMENT cell index
+ * in every case — the restricted build's caller owns any fine→doc remap.
  * @param {object} planet world-document planet
+ * @param {Set<number>|null} [cellSet] restrict to these cell indices (default: all)
  * @returns {Map<string, {positions: Float32Array, colors: Float32Array, uvs: Float32Array, cellByTri: Uint32Array, triangles: number}>}
  */
-export function buildPlanetGeometryData(planet) {
+export function buildPlanetGeometryData(planet, cellSet) {
   const hex = getHexSphere(planet.frequency)
   const elements = planet.elements
   const R = planetRadius(planet)
@@ -122,6 +129,7 @@ export function buildPlanetGeometryData(planet) {
   }
 
   for (let i = 0; i < hex.cellCount; i++) {
+    if (cellSet && !cellSet.has(i)) continue
     const el = elements[i]
     if (!el) continue
     const type = TERRAIN_TYPES[el.t] ? el.t : 'grass'
