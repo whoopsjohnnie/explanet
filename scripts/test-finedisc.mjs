@@ -2,7 +2,8 @@
  * test-finedisc.mjs — headless tests for the fine-terrain region machinery
  * (core/finedisc.js): gnomonic projection round-trip, the fine hex lattice,
  * chunk keys, the cap loaded set (exact coverage), the ahead-of-velocity
- * streaming queue, and the stage-1 identity fine->doc map.
+ * streaming queue, the horizon-gap no-region guard, and the stage-1 identity
+ * fine->doc map.
  * Run: node scripts/test-finedisc.mjs
  */
 
@@ -25,6 +26,9 @@ import {
   fineToDocOf,
   capRadiusU,
   chunkSideFor,
+  horizonGap,
+  safeFocusAngle,
+  focusSafe,
   buildChunkGeometryData,
   publishFineRegion,
   fineRegionOf,
@@ -304,6 +308,62 @@ function mulberry32(seed) {
   check('dispatch: no region → document, not fine', okNoRegion)
   check('dispatch: published region → fine branch, identity surface (stage 1)', okRegion)
   check('dispatch: cleared region → document again', okCleared)
+}
+
+// ---------------------------------------------------------------------------
+// 9. the horizon gap: the cap must sit inside its patch with a bounded §4.4
+//    texture — near a patch horizon the gnomonic plane point diverges
+//    (chunk I/J ~ 1/z, texture box ~ 1/z²), so the region must not mount
+// ---------------------------------------------------------------------------
+{
+  const freq = 12 // the testball grid
+  const grid = getHexSphere(freq)
+  const R = radiusForFrequency(freq)
+  const aU = fineHexEdge(grid, R)
+  const a = aU / R // the PLANE cell edge (dimensionless)
+  const chunkSide = 1 // testball: one doc cell per chunk
+  const capAngle = (10 * aU) / R // a cap ten hex edges across
+  const gap = horizonGap(a, chunkSide)
+  const safe = safeFocusAngle(capAngle, a, chunkSide)
+
+  // the formula: safe = 90° − capAngle − gap, gap = atan(2/(4096·side·a))
+  const okFormula =
+    Math.abs(gap - Math.atan(2 / (4096 * chunkSide * a))) < 1e-12 &&
+    Math.abs(safe - (Math.PI / 2 - capAngle - gap)) < 1e-12
+
+  // a body-local direction at polar angle φ from the +Z pole
+  const dirAt = (phi) => [Math.sin(phi), 0, Math.cos(phi)]
+
+  const okPole = focusSafe([0, 0, 1], capAngle, a, chunkSide)
+  const okMid = focusSafe(dirAt(Math.PI / 4), capAngle, a, chunkSide)
+  const okHorizon = !focusSafe(dirAt(Math.PI / 2 - 0.001), capAngle, a, chunkSide)
+  const okBand =
+    focusSafe(dirAt(safe - 0.01), capAngle, a, chunkSide) &&
+    !focusSafe(dirAt(safe + 0.01), capAngle, a, chunkSide)
+
+  // a focus at the safe boundary: the cap's far edge sits at (90° − gap), so
+  // every in-cap cell projects inside 1/tan(gap) and the mounted set's
+  // bounding box fits the 4096² texture — the exact invariant the crash broke
+  const ls = loadedSet(grid, dirAt(safe - 1e-3), capAngle * R, R, chunkSide)
+  let maxPlane = 0
+  for (const i of ls.byCell.keys()) {
+    const b = i * 3
+    const { x, y } = projectToPlane([grid.centers[b], grid.centers[b + 1], grid.centers[b + 2]])
+    maxPlane = Math.max(maxPlane, Math.abs(x), Math.abs(y))
+  }
+  let Imin = Infinity, Jmin = Infinity, Imax = -Infinity, Jmax = -Infinity
+  for (const c of ls.chunks) {
+    Imin = Math.min(Imin, c.I)
+    Imax = Math.max(Imax, c.I)
+    Jmin = Math.min(Jmin, c.J)
+    Jmax = Math.max(Jmax, c.J)
+  }
+  const texels = (Imax - Imin + 1) * (Jmax - Jmin + 1)
+  const okBounded = maxPlane <= 1 / Math.tan(gap) + 1e-6 && texels <= 4096 * 4096
+
+  check(`horizon gap: safe = 90° − capAngle − gap (gap ${(gap * 180) / Math.PI}° at this grid)`, okFormula)
+  check('horizon gap: pole/mid-latitudes safe, the horizon band is no-region', okPole && okMid && okHorizon && okBand)
+  check(`horizon gap: at the safe boundary the cap projects bounded (${texels} texels ≤ 4096²)`, okBounded)
 }
 
 console.log(failures === 0 ? '\nAll fine-disc checks passed.' : `\n${failures} fine-disc check(s) FAILED.`)

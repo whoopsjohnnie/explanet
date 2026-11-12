@@ -154,6 +154,17 @@
     wholly inside one patch; the player, at the cap's center, is always in
     exactly one. Projection distortion at the cap edge is ~1% — invisible,
     and it lives in the feather band anyway.
+  * The "sits wholly inside one patch" clause has a finite range: at the
+    patch horizon the gnomonic plane point diverges (plane radius
+    tan(90° - γ) = 1/tan γ at horizon gap γ), and with it the §4.4 discard
+    texture — the mounted set's bounding box spans
+    2/(tan γ · chunkSide · a) texels per side. The required gap is
+    γ = atan(2/(maxTexSide · chunkSide · a)) (maxTexSide 4096; finedisc.js
+    `horizonGap`). A focus whose polar angle from its patch pole exceeds
+    (90° - capAngle - γ) hosts NO region: the document surface renders
+    there instead (stage 1: byte-identical; stage 2: the known cost of the
+    two-patch scheme — §10.5's measurement decides the stage-2 encoding,
+    which can lift the bound).
   * A chunk is a 64 x 64 fine-hex block of the lattice (~110 x 96 km),
     keyed (patch, i, j). Chunks tile each patch seamlessly: adjacent chunks
     share lattice rows EXACTLY, so the fine surface has no seams anywhere
@@ -476,6 +487,13 @@
   6. EVA: CONFIRMED — an EVA astronaut whose dominant body is within D
      mounts that body's region (the walls under an adrift astronaut are the
      whole point of the view).
+  7. HORIZON GAP: the region does not mount where the cap cannot sit wholly
+     inside one patch with a bounded §4.4 texture — the focus's polar angle
+     from its patch pole is capped at (90° - capAngle - γ), γ =
+     atan(2/(maxTexSide · chunkSide · a)) (finedisc.js `focusSafe`; the
+     document surface renders in that band — byte-identical at stage 1).
+     Found stage 1: a craft driving a focus across a patch horizon made the
+     plane point 1e9 and the texture box 1e20 bytes.
 
 
 --------------------------------------------------------------------------------

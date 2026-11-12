@@ -54,6 +54,37 @@ export function chunkSideFor(hexKm) {
 }
 
 // ---------------------------------------------------------------------------
+// The horizon gap (§3.2's precondition, quantified)
+// ---------------------------------------------------------------------------
+// The cap must sit WHOLLY inside one patch, and the §4.4 discard texture (the
+// mounted set's bounding box) must stay bounded. Both fail at the patch
+// horizon, where the gnomonic plane point diverges: a direction at horizon
+// gap γ has plane radius tan(90° − γ) = 1/tan(γ), so a cap whose far edge is
+// γ from the horizon makes the box span 2·(1/tan γ) in plane units —
+// 2/(tan γ · chunkSide · a) texels. The smallest γ that keeps the texture
+// within `maxTexSide` per side is atan(2/(maxTexSide · chunkSide · a)). A
+// focus closer to the horizon than that (plus the cap's own radius) hosts NO
+// region: the document surface renders there instead (stage 1: byte-identical;
+// stage 2: the known cost of the two-patch scheme — §10.5's measurement
+// decides the stage-2 encoding, which can lift the bound).
+
+/** The required horizon gap (radians) for a bounded §4.4 texture. */
+export function horizonGap(a, chunkSide, maxTexSide = 4096) {
+  return Math.atan(2 / (maxTexSide * chunkSide * a))
+}
+
+/** The largest polar angle (radians, from the focus's patch pole) a focus may have. */
+export function safeFocusAngle(capAngle, a, chunkSide, maxTexSide = 4096) {
+  return Math.PI / 2 - capAngle - horizonGap(a, chunkSide, maxTexSide)
+}
+
+/** True if the cap around body-local `dir` can be streamed (see horizonGap). */
+export function focusSafe(dir, capAngle, a, chunkSide, maxTexSide = 4096) {
+  const polar = Math.acos(Math.min(1, Math.max(-1, Math.abs(dir[2]))))
+  return polar <= safeFocusAngle(capAngle, a, chunkSide, maxTexSide)
+}
+
+// ---------------------------------------------------------------------------
 // Gnomonic two-patch projection
 // ---------------------------------------------------------------------------
 // Patch 0: pole +Z, tangent plane z=1, basis e1=(1,0,0), e2=(0,1,0).

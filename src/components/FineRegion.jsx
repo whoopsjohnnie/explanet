@@ -30,6 +30,7 @@ import {
   capRadiusU,
   chunkSideFor,
   fineHexEdge,
+  focusSafe,
   loadedSet,
   orderQueue,
   projectToPlane,
@@ -205,6 +206,20 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     publishRegion()
   }
 
+  // Full region teardown (session left the body, or the focus crossed into
+  // the no-region band near a patch horizon): every chunk evicted, the §6
+  // dispatch falls back to the document, the suppression cap is zeroed.
+  const teardownRegion = () => {
+    for (const key of [...mountedRef.current.keys()]) evictChunk(key)
+    pendingRef.current.clear()
+    lastFocusChunkRef.current = null
+    publishFineRegion(planet.id, null)
+    if (supp) {
+      supp.uniforms.fdCapPlane.value = 0 // radius 0 → the discard is a no-op
+      setMountedTexture(supp.mountedTexture, [])
+    }
+  }
+
   // ---- §5 the stroke patcher: keep mounted chunks honest on a doc edit ------
   // Assembles raw builder batches into THREE meshes (the worker path does this
   // off-thread; the §5 same-frame patch does it here, on the main thread, so
@@ -272,32 +287,34 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     const focus = fineFocusFor(planet.id)
     if (!focus) {
       // the session left the body: full unmount
-      if (lastFocusChunkRef.current !== null) {
-        for (const key of [...mountedRef.current.keys()]) evictChunk(key)
-        pendingRef.current.clear()
-        lastFocusChunkRef.current = null
-        publishFineRegion(planet.id, null) // §6: the dispatch falls back to the document
-        if (supp) {
-          supp.uniforms.fdCapPlane.value = 0 // radius 0 → the discard is a no-op
-          setMountedTexture(supp.mountedTexture, [])
-        }
-      }
+      if (lastFocusChunkRef.current !== null) teardownRegion()
       return
     }
 
     const grid = getHexSphere(renderPlanet.frequency)
     const R = planetRadius(renderPlanet)
+    const D = capRadiusU(useStore.getState().world.scale)
     const aU = fineHexEdge(grid, R)
     const a = aU / R // the PLANE cell edge (dimensionless)
-    const focusPlane = projectToPlane(focus.dir)
-    const fh = planeToHex(a, focusPlane.x, focusPlane.y)
     const hexKm = (aU * useStore.getState().world.scale) / 1000
     const chunkSide = chunkSideFor(hexKm)
+
+    // §3.2: the cap must sit wholly inside one patch and the §4.4 texture
+    // must stay bounded. Near a patch horizon the gnomonic plane point
+    // diverges (chunk I/J ~ 1/z, texture box ~ 1/z²) — beyond the safe
+    // angle there is NO region: the document surface renders there, and the
+    // dispatch publishes null (§6).
+    if (!focusSafe(focus.dir, D / R, a, chunkSide)) {
+      if (lastFocusChunkRef.current !== null) teardownRegion()
+      return
+    }
+
+    const focusPlane = projectToPlane(focus.dir)
+    const fh = planeToHex(a, focusPlane.x, focusPlane.y)
     const focusChunkKey = chunkOfHex(focusPlane.patch, chunkSide, fh.q, fh.r)
 
     if (focusChunkKey !== lastFocusChunkRef.current) {
       lastFocusChunkRef.current = focusChunkKey
-      const D = capRadiusU(useStore.getState().world.scale)
       const ls = loadedSet(grid, focus.dir, D, R, chunkSide)
       const desired = new Set(ls.chunks.map((c) => c.key))
 
