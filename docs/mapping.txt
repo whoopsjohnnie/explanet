@@ -1,0 +1,327 @@
+================================================================================
+  Terrain Mapping — Earth from the NOAA ETOPO2022 60s DEM
+  How the real globe becomes hex elements
+================================================================================
+  Nov 2026 · companion to design.txt / terrain.txt. This document is the
+  canonical reference for the EARTH terrain pipeline: what the NOAA file is,
+  how it is converted, how one hex gets its height and color, and how to
+  generate Earth at other hex sizes (including the one small extension the
+  generator needs — §5).
+
+
+--------------------------------------------------------------------------------
+1. THE SOURCE — WHAT THE NOAA FILE IS
+--------------------------------------------------------------------------------
+  ETOPO2022 60s (NOAA NCEI / NGDC): a global relief grid of land elevation
+  AND seafloor depth in METERS, with sea level at exactly 0 and the
+  ice-sheet surface included (Antarctica reads as positive land). That is
+  the same convention this world's `h` field uses — negative h is depth —
+  so no datum conversion exists anywhere in the pipeline.
+
+      1 px = 1 arc-minute  (1.85 km at the equator)
+      21,600 (lon) × 10,800 (lat) pixels
+      row 0 = 90 N, col 0 = 180 W          (north-first, west-first)
+      distribution: one GeoTIFF, ~445 MB
+
+  The GeoTIFF's INTERNAL tile layout is non-standard (adobe-deflate float32
+  that TIFF tag 259 does not describe), so no Node-side TIFF parsing is
+  attempted. The file is converted ONCE to the pipeline form — a plain
+  row-major float32 grid — and everything downstream reads that with trivial
+  indexing. The .tif is kept (re-convertible); the .f32 is what runs.
+
+  Both files are SEEDS, not repo content (DATA.md): the repository holds
+  the engine and the world-building tools only — no world data, no seed
+  data. The seed table row:
+
+      scripts/sol-real/data/etopo2022-60s.f32   ETOPO2022 60s global DEM
+          (21600×10800 float32, meters, sea level 0)
+      produced by: scripts/sol-real/fetch-terrain.mjs (NOAA .tif + PIL)
+
+
+--------------------------------------------------------------------------------
+2. THE PIPELINE — FILES AND COMMANDS
+--------------------------------------------------------------------------------
+  File                                   Role
+  ------------------------------------   ------------------------------------------------
+  sol-real/fetch-terrain.mjs             download the NOAA .tif; convert to the
+                                         .f32 grid (python3 + Pillow); spot-check
+  sol-real/etopo.mjs                     the grid reader: loadEtopo(), sampleAt(),
+                                         trigTables() (pixel-center cos/sin tables)
+  sol-real/terrain.js                    buildEarth(frequency, dem, seed) — the
+                                         per-hex integration and the colors
+  gen-sol-real.mjs                       assembles the whole world; loads the
+                                         .f32 once; writes public/sol-real.json
+  import-db.mjs                          streams the world into the DB (new row)
+  seed.mjs                               seed-file reader with a clear DATA.md
+                                         pointer when a seed is missing
+
+  The full run, in order:
+
+      # one-time (or after moving machines): fetch + convert the DEM
+      node scripts/sol-real/fetch-terrain.mjs            # ~445 MB download
+      node scripts/sol-real/fetch-terrain.mjs --tif      # download only;
+                                                         # convert later (Pillow
+                                                         # may not be installed yet)
+
+      # build the world document (~10 s — Earth's DEM integration is the cost)
+      node scripts/gen-sol-real.mjs
+
+      # into the world database (each run is a NEW world row — there is no upsert)
+      node scripts/import-db.mjs public/sol-real.json
+
+      # then make the server see it: restart the dev server, or
+      #   GET /api/worlds/:id?refresh=1   (the skeleton cache is per process)
+
+  The conversion step is the only part that needs anything beyond node:
+  python3 + Pillow (pip install pillow). PIL is the reference decoder — the
+  script asserts the grid size (21600×10800) and mode (F), then runs FIVE
+  spot checks straight from the raw bytes and REFUSES to write a grid that
+  fails:
+
+      Mariana (11.35N, 142.2E)   -10426 m   (the trench)
+      Everest cell (27.99N, 86.93E)  7258 m (the peak)
+      Iceland (65N, -18W)          852 m    (LAND)
+      Baltic (60N, 20E)             -12 m   (WATER)
+      Antarctica (75S, 0E)         2874 m   (ICE SHEET)
+
+  The checks pin orientation (a transposed or mirrored grid fails them),
+  datum (meters, sea level 0), and coverage (land, sea, ice).
+
+
+--------------------------------------------------------------------------------
+3. THE MAPPING — HOW ONE HEX GETS ITS HEIGHT
+--------------------------------------------------------------------------------
+3.1  The sphere convention (handedness)
+
+  The scene is right-handed with north = +y, so a point at latitude φ,
+  longitude L sits at
+
+      (cos φ · cos L,  sin φ,  -cos φ · sin L)
+
+  i.e.  y = sin(lat),  lon = atan2(-z, x).  The minus on z is a HANDEDNESS
+  requirement, not a style choice: it makes east (increasing L) run
+  COUNTERCLOCKWISE seen from above the north pole, as on the real Earth.
+  Using +sin L would render the whole globe mirrored (Arabia west of
+  Africa, every coastline backwards) — a bug that actually shipped and was
+  fixed (commit eb87c5d). Every lat/lon ↔ direction conversion in
+  terrain.js (latLon, angDist, the DEM pixel scan) must agree on this sign;
+  the fetch script's spot checks are the end-to-end proof that they do.
+
+3.2  Per-hex integration — hexDemStats(hex, i, geo, trig)
+
+  For each hex, the DEM pixels whose CENTERS fall inside the cell are
+  collected and summarized as { mean, min, max, count }:
+
+  * Containment is the EXACT Voronoi test, not the corner ring. A pixel
+    direction p belongs to cell i iff  p·(c_i − c_n) ≥ 0  for every
+    neighbor n — the great circles  p·(c_i − c_n) = 0  are the true cell
+    edges. The stored corner ring is a face-CENTROID approximation of the
+    Voronoi vertices; the corner great circles do NOT tile the sphere
+    (they cut ~6 % inside the cells and leave polar caps unassigned), so
+    they must never be used for containment. (The corner ring is still
+    what the GEOMETRY draws — §3.3's blend makes the two agree well
+    enough that nobody can tell.)
+  * The scan covers a geodesic disc about the cell center, radius =
+    (largest stored corner distance) × 1.4 — a guaranteed SUPERSET of the
+    cell (the cell is convex with its center inside), and the margin covers
+    the centroid-vs-circumcenter offset of the stored corner ring. A disc
+    that touches a pole covers every longitude; longitude extent is largest
+    at the disc's highest |latitude| (Δlon ≤ r / cos lat).
+  * Cost: ~361 pixels per hex at f203 (the cell area 1,238 km² against the
+    3.42 km² pixel). The pixel box is clamped to the grid, and
+    trigTables() (per-grid cos/sin of every pixel-center latitude and
+    longitude, memoized in a WeakMap) put all transcendentals OUT of the
+    inner loop — the scan is dot products and integer indexing only.
+  * A cell that scans to zero pixels (degenerate) falls back to a center
+    sample (sampleAt) rather than throwing.
+
+3.3  The blend — why the stored extremes read low
+
+  A hex covers ~22 km of terrain at f203; one number cannot be all of it,
+  so each hex takes a BLENDED height (variation inside one hex is ≤ ~2 km,
+  so this is a gentle peak/trench accent, not a cliff):
+
+      land  (mean ≥ 0):   h = (mean + max) / 2    the hex's peak gets half credit
+      ocean (mean < 0):   h = (mean + min) / 2    the hex's trench gets half credit
+
+  Measured at f203 (this machine, seed 42):
+
+      land 29.0 %   (real Earth: 29.2 % — the integration is honest)
+      peak  7.08 km (Everest is 8.85)
+      deep  −9.96 km (the Mariana Trench is −11.0)
+
+  The (mean ± extreme)/2 blend reads a touch lower than the true extremes
+  by construction — that is the price of one number per hex, and it is
+  exactly the trade terrain.txt's fine chunks remove at 1.85 km.
+
+3.4  Colors and terrain types (per-cell `c` — no material system)
+
+  * Land: climate belts by |latitude| — rainforest < 13°, savanna/steppe
+    < 26°, temperate < 40°, mixed forest < 55°, boreal/tundra above — each
+    a two-color mix driven by fbm detail; the desert table (features.js) +
+    a dryness-noise term pushes Sahara/Arabia/Gobi toward sand; a rock mix
+    above 2,800 m; a snowline that falls with |lat| (4600 − 42·|lat| m)
+    plus a high-latitude tundra band.
+  * Ocean: a depth ramp — shelf → slope at 1,500 m, abyssal at 4,000 m,
+    hadal at 7,000 m; a sea-ice tint beyond a noise-jittered ice edge
+    (t stays 'water' — the stats count it as sea).
+  * Lakes: the freshwater-ellipse table punches 'water' cells into land.
+  * The ocean SURFACE at h = 0 is a render-time sphere (Planet.jsx's
+    OceanSurface), NOT a cell height: negative h is seafloor depth, and the
+    translucent disc at R is what makes deep water read dark and shallow
+    water bright.
+
+
+--------------------------------------------------------------------------------
+4. FREQUENCIES — HEX SIZE, WHAT YOU GET, WHAT IT COSTS
+--------------------------------------------------------------------------------
+  The anchor: one hex ≈ one atom. On the f203 grid the Earth radius is
+  radiusForFrequency(203) = 181.09 u, so
+
+      KM2U = radiusForFrequency(203) / 6371.009 ≈ 0.028424 u/km
+      1 u  ≈ 35,181.6 m        (the world's `scale` — 1000/KM2U)
+
+  Every builder emits h in km × KM2U, so relief is ABSOLUTE at any
+  frequency; and because the world carries `scale`, the surface walker is a
+  real 1.6 m human on an f4 Earth exactly as on an f203 one.
+
+  Measured (this machine; the numbers the generator prints are the same):
+
+      n      cells     hex edge   DEM px/hex   build     land%   peak    deepest
+      ----   -------   --------   ----------   -------   -----   -----   -------
+      203    412,092   21.8 km        361     6.0 s    29.0    7.08    −9.96
+      101    102,012   43.7 km      1,458     4.9 s    29.1    6.62    −9.37
+       50     25,002   88.5 km      5,948     4.5 s    29.0    6.60    −8.91
+       25      6,252  177.0 km     23,786     4.4 s    28.5    6.53    −8.38
+       12      1,442  368.8 km    103,129     4.7 s    27.4    6.48    −8.02
+        6        362  737.4 km    410,805     5.3 s    22.7    6.43    −7.64
+        4        162 1,106.2 km    917,972     5.7 s    22.2    5.92    −7.85
+
+  What the table says:
+
+  * Build time is FLAT (~5 s at every frequency). The cost is the DEM pixel
+    scan, and that work is CONSTANT — every one of the 233 M pixels is
+    visited ~2× no matter how coarse the grid (the scan disc is a 1.4×
+    superset of the cell, and the cells tile the sphere). The per-cell part
+    (lat/lon, noise, colors) is the small term. Coarser is NOT cheaper to
+    generate — it is cheaper to STORE (412k → 25k atoms in the DB),
+    HYDRATE (streaming), and RENDER (LOD chain, GPU memory).
+  * Land fraction drifts as the grid coarsens: 29.0 % at f203 (real:
+    29.2 %) falling to 22.2 % at f4 — coarse hexes straddle coastlines and
+    their pixel mean goes negative, so coastal hexes classify as ocean.
+  * Peak/tread values fall as px/hex grows (the §3.3 blend dilutes): the
+    Sierra crest that is 7.08 km at f203 is 5.92 km at f4.
+  * f203 = MAX_FREQUENCY, the document cap. FINER than f203 is not a
+    document question at all — the document stays the physical truth; the
+    sub-35-km relief is the fine-chunk layer (docs/terrain.txt, stage 2).
+
+
+--------------------------------------------------------------------------------
+5. GENERATING EARTH AT OTHER HEX SIZES
+--------------------------------------------------------------------------------
+5.1  Today: Earth is pinned at f203
+
+  In gen-sol-real.mjs the rocky-terrain dispatch is:
+
+      function buildRockyTerrain(name, rKm, seed) {
+        if (name === 'Earth') {
+          return { freq: MAX_FREQUENCY, elements: buildEarth(MAX_FREQUENCY, etopo, seed) }
+        }
+        const freq = gridFor(rKm)
+        if (name === 'Mars') return { freq, elements: buildMars(freq, seed) }
+        ...
+      }
+
+  so  node scripts/gen-sol-real.mjs  ALWAYS builds Earth at f203 — there is
+  no flag for it. (The other rocky bodies are different: gridFor(rKm)
+  picks the grid whose natural radius is nearest their TRUE radius, scale
+  1. Earth is the only pinned body, because it is the atom anchor.)
+  The trial-world generator (gen-solar-world.mjs) pins the same anchor but
+  is procedural — no DEM.
+
+5.2  The extension — --earth-freq (not in the tree; ~15 lines)
+
+  The pattern already exists for the giants (grid 64 + a `scale` escape
+  hatch) and for tiny bodies (sizeGrid). Earth at a different frequency
+  needs the same two fields: the chosen frequency, and
+
+      scale = km2u(rKm) / radiusForFrequency(freq)
+
+  so the body keeps its TRUE radius and its km-relief on ANY grid.
+  (Geometry treats h as ABSOLUTE — the vertex sits at R_grid·scale + h — so
+  only the grid radius is scaled; the 7 km hex peak is still 7 km.)
+
+  Three edits in scripts/gen-sol-real.mjs:
+
+  1) near the anchors:
+
+      // Earth's document grid. f203 (the default) is scale 1; other
+      // frequencies keep the true radius via the scale escape hatch —
+      // the giants' pattern. Clamped: the document caps at MAX_FREQUENCY.
+      const _ef = process.argv.indexOf('--earth-freq')
+      const EARTH_FREQ = Math.min(
+        _ef >= 0 ? Number(process.argv[_ef + 1]) : MAX_FREQUENCY,
+        MAX_FREQUENCY
+      )
+
+  2) buildRockyTerrain: the Earth branch computes freq + scale; every other
+     branch gains an explicit `scale: 1` (its current behavior):
+
+      if (name === 'Earth') {
+        const freq = EARTH_FREQ
+        const scale = km2u(rKm) / radiusForFrequency(freq) // 1.0 at f203
+        return { freq, scale, elements: buildEarth(freq, etopo, seed) }
+      }
+      const freq = gridFor(rKm)
+      if (name === 'Mars') return { freq, scale: 1, elements: buildMars(freq, seed) }
+      if (name === 'Moon') return { freq, scale: 1, elements: buildMoon(freq, seed) }
+      if (name === 'Mercury') return { freq, scale: 1, elements: buildMercury(freq, seed) }
+      if (name === 'Venus') return { freq, scale: 1, elements: buildVenus(freq, seed) }
+      if (name === 'Pluto')
+        return { freq, scale: 1, elements: buildMoonByPalette(freq, { c: '#cfc2b0', c2: '#8a7d6e', t: 'ice' }, seed, { iceCaps: true }) }
+
+  3) the rocky-planet push uses the returned scale (its `scale: 1` and
+     the `1` in the density call become the variable):
+
+      const { freq, scale, elements } = buildRockyTerrain(d.name, d.rKm, d.seed)
+      ...
+      frequency: freq,
+      scale,
+      density: densityFor(d.mu, freq, scale, elements),
+
+  5.3  Examples (after the extension)
+
+      # the default: byte-identical to today's world (scale = 1.000 at f203)
+      node scripts/gen-sol-real.mjs
+
+      # 43.7 km hexes — 102,012 atoms, scale 2.01
+      node scripts/gen-sol-real.mjs --earth-freq 101
+
+      # 88.5 km hexes — 25,002 atoms, scale 4.06
+      node scripts/gen-sol-real.mjs --earth-freq 50
+
+      # then, as always: a NEW world row per import (no upsert)
+      node scripts/import-db.mjs public/sol-real.json
+      # restart the dev server (or ?refresh=1 — the skeleton cache
+      # is per server process)
+
+  Notes and caveats:
+
+  * The default path is exactly today's world: km2u(6371.009) is
+    radiusForFrequency(203) by construction, so scale is 1.000 and the
+    elements are built at MAX_FREQUENCY as before. The extension cannot
+    change an unflagged run.
+  * --earth-freq above 203 is clamped, not an error: f203 is the document
+    cap, and finer relief is the fine-chunk layer's job (terrain.txt).
+  * The LOD chain follows the document frequency ([101, 50, 25, 12, 6, 4]
+    at f101); bodies below 20,000 cells build their chain synchronously
+    instead of through the worker (ASYNC_MIN_CELLS).
+  * Stubs, previews, hydration and the DB import all carry `scale`
+    verbatim — the giants already ride scale ≠ 1, so nothing downstream
+    needs to change. planetVolume (hence the density that reproduces the
+    true μ) takes scale.
+  * What a coarser Earth loses is quantified in §4: coastline accuracy
+    (land 29.0 → 22.2 %), relief (peak 7.08 → 5.92 km), and the walkable
+    detail of the terrain the walker welds to. There is nothing to gain in
+    generation time — only in storage, hydration and rendering.
+================================================================================
