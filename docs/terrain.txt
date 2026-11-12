@@ -1,0 +1,507 @@
+================================================================================
+  Dynamic Terrain — Fine Chunks
+  Streaming local terrain at DEM resolution around the player
+================================================================================
+  Nov 2026 · companion to design.txt / surface.txt / movement.txt / scaling.txt.
+  DESIGN DOCUMENT — stages 1-2 are not built yet. Stage 0 (the LOD dimension
+  fix, commit 889e9c3) is done and pinned.
+
+  The problem this document solves: on a true-scale body the document grid
+  (f203 on Earth, 22 km hexes) CANNOT show towering relief — the data has
+  real 1-3.6 km walls (verified by cross-section) but the grid averages
+  ~360 DEM pixels per hex, and true-scale curvature eats what remains. The
+  fix is not a bigger MAX_FREQUENCY and not a height blend. It is what every
+  terrain engine does: render a FINE local region, streamed in ahead of the
+  player and evicted behind while the body as a whole stays on its LOD chain
+  in the sky.
+
+
+--------------------------------------------------------------------------------
+1. THE PROBLEM — TRUE-SCALE RELIEF HAS A HORIZON
+--------------------------------------------------------------------------------
+1.1  The numbers (Earth, R = 6371.009 km = 181.09 u, 1 u = 35,181.6 m)
+
+  The ground curves away below your horizontal line by the dip d^2/2R. A
+  relief feature of height H at distance d is above your horizon only while
+  H > d^2/2R — its "relief horizon" is sqrt(2 R H):
+
+      dip d^2/2R:      35 km: 0.1 km     100 km: 0.8 km    300 km: 7.1 km
+                       500 km: 19.6 km   1000 km: 78.5 km
+
+      relief horizon:  H = 0.3 km (cliff face): 62 km
+                       H = 1 km (foothill step): 113 km
+                       H = 3.6 km (Sierra crest): 214 km
+                       H = 8.8 km (Everest):      335 km
+
+      a 3.6 km crest seen above local horizontal:
+                       at 17 km:  11.9 deg   <- THIS is "towering"
+                       at 35 km:   5.7 deg
+                       at 100 km:  1.6 deg   <- "a low sliver on the horizon"
+                       at 300 km:  below the horizon entirely
+
+  The walker's eye (1.6 m) has a visual horizon of 4.5 km. "Towering"
+  (>= 10 deg elevation) of a 300 m face requires standing within 1.7 km of
+  it; of a 3.6 km crest, within 20 km. All of that happens in the NEAR
+  field — the first ~350 km — and the rest of the visible disc is where
+  that near field must not end abruptly.
+
+1.2  The resolution floor
+
+  The stored data is correct: the 37N cross-section across the Sierras is a
+  real staircase (valley ~0.4 km to crest 3.0-3.6 km, 1-1.5 km steps per
+  hex; land p99 neighbor step 1.1 km, max 3.7 km). But:
+
+      f203 document:  412,092 hexes, edge 21.8 km, area 1,238 km^2
+                      = ~362 pixels of the 1.85 km (1 arcmin) DEM per hex.
+
+  Each hex height is the AVERAGE of 362 terrain pixels. The 300 m-1 km
+  cliff faces that live at the DEM's native 1.85 km scale are averaged into
+  the hex top along with the valley floor and the ridge behind. No LOD
+  level can show them (a coarse hex adopts one fine cell's height — the
+  averaging already happened upstream) and no blend weight can un-average
+  them. The relief is not in the document. It is in the DEM.
+
+1.3  Why not a bigger MAX_FREQUENCY
+
+  A whole-planet grid at DEM resolution (hex edge = 1.85 km) is
+  n ~ 2,395 -> 57.4 M cells: ~0.5 GB packed, ~800 M triangles (2.4 B
+  vertices). The
+  document grid is the PHYSICAL truth — mass, volume, anchors, persistence
+  all derive from it — and it is the grid the geometry worker builds a full
+  LOD chain of. 57 M cells is a dead end at the document level, and it
+  would buy nothing: at no camera distance is the whole planet rendered at
+  1.85 km. What is actually rendered at any moment is a REGION of the
+  planet (the cap around the player) plus the LOD chain for the rest. So
+  the fine resolution belongs to the REGION, not to the document:
+
+      fine disc, D = 500 km:  ~88,000 cells  (~1.2 M tris)
+      fine disc, D = 1000 km: ~353,000 cells (~5 M tris)
+
+  trivial. The document stays at f203. The fine region is a presentational
+  layer, exactly like the rings (bodies.rings: drawn, no physics, no
+  document footprint).
+
+
+--------------------------------------------------------------------------------
+2. THE CENTRAL PRINCIPLE — ONE SURFACE OF RECORD, NOW LAYERED
+--------------------------------------------------------------------------------
+  surface.txt's invariant stands and is extended, not weakened:
+
+    The canonical surface of a body is the RENDERED surface. Nothing that
+    walks, picks, parks, lands, or reports altitude may resolve the surface
+    to anything else.
+
+  With fine chunks mounted, the rendered surface has two layers:
+
+      inside the fine region (the union of mounted chunks):
+          the fine chunks ARE the surface of record;
+      outside it:
+          the document mesh (its LOD level) is the surface of record.
+
+  The two layers agree EXACTLY at the boundary by construction: fine cell
+  heights fade to the enclosing document cell's height in a feather band at
+  the region's outer edge (w -> 0 there, §4.3), so the fine region's edge
+  sits on the document surface to sub-meter precision (the residual is the
+  fine chord sag, ~0.1 m, against a seam 500+ km away). There is no visible
+  seam, no floating ceiling, and no double surface — the document mesh is
+  suppressed exactly where the fine region is mounted (§4.4), so the coarse
+  fan can never poke through a valley the fine cells render below it.
+
+  Every consumer dispatches to the surface of record at its position — one
+  dispatch, never a mix:
+
+      * the walker walks the fine fans where the fine region is mounted
+        (it always is, under the player — the player is at the region's
+        center, 500+ km from its edge);
+      * the analytic pick (intersectHeightfield) runs against the fine
+        chunk under the ray, and REMAPS the hit to the enclosing document
+        cell, so applyBrush(planet.id, docCell) is unchanged (§6);
+      * craft altitude (motion.js altitudeOf), the park anchor's r, the
+        HUD's number — all read the fine surface while it is mounted;
+      * a stroke on the fine region updates the document cell as today AND
+        a sparse edit overlay on the fine cell, so both layers stay honest
+        (§5).
+
+  The document grid remains the PHYSICAL truth: mass/radius/volume, orbit
+  elements, anchors, save format. The fine layer is derived (a pure
+  function of DEM + document + edits, §4.2) and disposable — delete every
+  chunk and the body is exactly as it was.
+
+
+--------------------------------------------------------------------------------
+3. THE FINE GRID — A BODY-FIXED CHUNK LATTICE, NOT A PLANET-WIDE FREQUENCY
+--------------------------------------------------------------------------------
+3.1  Why body-fixed chunks and not a moving disc
+
+  The player's request is formulated: "as we traverse forward we load the
+  next couple of kms worth of hexagons, and similarly forget the ones we
+  just walked out of range from." A single disc that follows the player
+  would have to rebuild its whole geometry every time the player crosses a
+  fine hex — 88k-350k cells, ~0.6-2.3 s of worker time per trigger — and at
+  craft speeds (844 km/s) it could never keep up. Instead the fine grid is
+  FIXED TO THE BODY (in its spin frame, so it rides spin/orbit for free,
+  like the document mesh) and is divided into CHUNKS; the player's position
+  selects WHICH chunks are mounted. Moving across the surface then loads
+  and evicts one chunk at a time — a chunk of ~4,000 cells costs ~0.03 s in
+  the worker — and the loaded set slides in ~110 km steps.
+
+3.2  The lattice
+
+  * Fine hex edge a = the terrain catalog's pixel size (1.85 km for Earth;
+    stage 1 runs the machinery at the DOCUMENT's hex size — §9).
+  * The sphere is covered by two antipodal tangent patches (gnomonic from
+    the body's local +Z and -Z). A cap of D <= 1000 km (<= 9 deg) sits
+    wholly inside one patch; the player, at the cap's center, is always in
+    exactly one. Projection distortion at the cap edge is ~1% — invisible,
+    and it lives in the feather band anyway.
+  * A chunk is a 64 x 64 fine-hex block of the lattice (~110 x 96 km),
+    keyed (patch, i, j). Chunks tile each patch seamlessly: adjacent chunks
+    share lattice rows EXACTLY, so the fine surface has no seams anywhere
+    inside the loaded set. The only seam that exists is fine->document at
+    the loaded set's outer edge, and that one is blended to zero (§4.3).
+
+3.3  The loaded set
+
+  loaded = { chunks intersecting the cap of radius D around the focus },
+  where focus = the player's body-local position (foot: the walker; craft:
+  the craft; EVA: the astronaut's dominant-body position). The cap is the
+  coverage contract; the chunking is the streaming unit.
+
+      D = 500 km:  ~21 chunks,  ~88k cells,  ~1.2 M tris,  ~0.6 s to build
+      D = 1000 km: ~86 chunks, ~353k cells, ~5 M tris,    ~2.3 s to build
+
+  (at the measured f203-chain rate of ~6.4 us/cell-level; both are trivial
+  against the f203 document mesh, ~412k cells, already rendered while
+  walking.)
+
+  The worker queue is ordered by player intent, not by distance: chunks
+  AHEAD of the velocity vector first (the player is always looking where
+  they are going), the rest by distance, chunks BEHIND last. When a chunk
+  ceases to intersect the cap it is evicted: GPU buffers disposed, DEM tile
+  cache entries LRU'd. The loaded set is bounded by the cap, never by
+  history.
+
+3.4  What a chunk carries (per build)
+
+  * the fine cells of the block: centers/corners from the lattice (the
+    chord-fan geometry of §surface.txt, at fine scale), heights from the
+    synthesis below;
+  * cellByTri (inert fallback data, as today) and a FINE->DOC map: each
+    fine cell's enclosing document cell index (4,096 x int32 = 16 KB) —
+    this is what makes picking and painting hit the DOCUMENT (§6);
+  * userData: chunk key, frequency (fine n), body id.
+
+
+--------------------------------------------------------------------------------
+4. HEIGHTS — THE FINE SURFACE IS A PURE FUNCTION
+--------------------------------------------------------------------------------
+4.1  Synthesis
+
+  For a fine cell c in chunk k at body-local direction dir(c):
+
+      h_final(c) = w(c) * h_dem(c) + (1 - w(c)) * h_doc(enclosing(c))
+
+  where h_dem is the terrain catalog's pixel under dir(c) (converted to
+  world units via the world's scale — the same conversion that built the
+  document from the same DEM, so the layers share a datum) and h_doc is the
+  stored document cell's height. The edit overlay of §5 replaces h_final
+  cell-by-cell where the player has painted.
+
+  At stage 2 the fine hex edge equals the DEM pixel, so h_dem is the
+  identity sample — no interpolation — and a wall is the DEM's true
+  pixel-to-pixel step: the 300 m-1 km faces that the 362-pixel average
+  destroyed.
+
+4.2  Why a function of three inputs
+
+  DEM, document and edits are the only things a fine height may depend on.
+  That makes chunks reproducible (any chunk, any time, same bytes), evictable
+  without loss (rebuild from the inputs), and safe to build in a worker
+  (no shared mutable state — the same contract as the existing geometry
+  worker, which imports the framework-free core unmodified).
+
+4.3  The feather band (the seam killer)
+
+  w(c) = 1 deep inside the loaded set, and fades smoothly to 0 across the
+  outer feather — the loaded set's outermost ~20% of D (100 km at D = 500).
+  Consequences:
+
+  * at the fine region's edge, h_final = h_doc EXACTLY: the fine edge sits
+    on the document surface, so the seam is invisible at any viewing
+    distance (residual ~0.1 m fine chord sag, at 500+ km);
+  * the fade happens where the curvature dip has already flattened the
+    view (19.6 km dip at 500 km) — the last 100 km of the fine region read
+    as rolling country and then continue as document country; no one can
+    see the blend because the blend is doing the job curvature would do
+    for free;
+  * chunks keep their build until evicted, and every boundary chunk is
+    built with the feather toward its outer edge, so the seam is continuous
+    at ALL times — including mid-stream, while chunks are still landing.
+
+4.4  Suppressing the document mesh under the fine region
+
+  The document mesh (f203 while walking) is rendered whole; where a fine
+  cell is BELOW the enclosing document average (a valley pixel under a
+  362-pixel mean), the coarse fan would float above the fine surface — a
+  ceiling over the walker. Rebuilding the document geometry with holes is
+  out (a 3.5 s chain build per chunk change). Instead the document terrain
+  SHADER discards fragments under mounted chunks:
+
+      discard iff  (fragment inside the fine region's cap circle)
+             &&   (the chunk containing the fragment is mounted)
+
+  The fragment's position is already body-local (the mesh lives in the
+  body's spin frame); the cap circle is two uniforms (center, radius, in
+  the focus's patch tangent plane); "which chunk" is floor-divide
+  arithmetic, and "is it mounted" is one lookup into a small data texture
+  of the mounted-chunk set (<= 86 entries). O(1) per fragment, zero
+  geometry cost, and the suppressed region EQUALS the fine region's extent
+  exactly — no gap, no double surface, no stale hole. (The ocean disc is a
+  smooth sphere at R and is NOT suppressed — it is the sea surface above
+  the fine seafloor, continuous across the region by definition.)
+
+
+--------------------------------------------------------------------------------
+5. EDITS ON THE FINE REGION — THE EDIT OVERLAY
+--------------------------------------------------------------------------------
+  The open question from the mountain investigation, answered:
+
+  A paint stroke on the fine region does FOUR things, in order:
+
+  1. applyBrush(planet.id, docCell) — EXACTLY as today: the stroke hits the
+     enclosing document cell (via the chunk's fine->doc map), so the
+     document — and with it mass, the coarse views, the save, the physics
+     anchors — stays the physical truth and stays consistent.
+  2. records the stroke in the EDIT OVERLAY: a sparse per-fine-cell entry
+     {fine key, h, t, c}. The overlay is tiny (only painted cells) and is
+     part of the world's data (DB table for DB worlds, document field for
+     file worlds — shape is an open question, §10).
+  3. patches the MOUNTED chunk's vertices directly (a stroked cell is ~50
+     non-indexed vertices) — same frame, so the weld invariant holds for the
+     fine layer
+     exactly as it does for the document (surface.txt: "the mesh and the
+     surface re-derive from the new elements — in the same frame").
+  4. re-synthesizes the affected chunk(s) in the background (0.03 s each,
+     async, the old chunk stays visible) — the backstop that keeps the
+     chunk's stored bytes honest after the overlay and the document moved.
+
+  The reverse direction is free: a stroke on the DOCUMENT (coarse view,
+  far view) changes h_doc for the enclosing cell, so any feathered chunk
+  built afterwards blends to the new value; mounted boundary chunks get a
+  background re-synthesis like (4). Edits compose: overlay > blend > DEM.
+
+  What this is NOT: it does not write fine heights into the document (the
+  document stays f203 — 57 M cells is a dead end, §1.3), and it does not
+  fake relief procedurally (the DEM IS the terrain; a procedural
+  micro-relief would be a lie the cross-section probe would catch).
+
+
+--------------------------------------------------------------------------------
+6. PICKING, WALKING, ALTITUDE — THE DISPATCH
+--------------------------------------------------------------------------------
+  "One surface = the rendered surface" requires one dispatch point. A body
+  with fine chunks mounted resolves its surface of record for a position p:
+
+      surface(body, p) =
+          fine chunk under p   if a chunk is mounted at p
+          document surface     otherwise
+
+  and EVERY consumer goes through it:
+
+  * PICK: the analytic heightfield march (core/surface.js) runs against the
+    fine chunk's local fan set. The fine chunk's cells are a lattice block
+    with O(1) axial lookup from the ray's tangent-plane point — no trimesh,
+    no spatial structure, no per-triangle scan (the analytic-picking
+    invariant holds at fine scale). The hit remaps to the enclosing
+    document cell (the chunk's fine->doc map) before anything else sees
+    it — applyBrush, the selection, the brush preview all take a
+    DOCUMENT cell, unchanged.
+  * WALK: the walker's surface object is the fine surface while the player
+    is on the body (the walker is at the region's center, 500+ km from the
+    edge — it never crosses the fine->doc boundary, so the surface object
+    never has to switch mid-stride). Crossing a CHUNK boundary is crossing
+    two seamlessly-tiled lattice blocks: the fine surface is continuous
+    there by construction.
+  * ALTITUDE / PARK / LAUNCH: motion.js altitudeOf, the park anchor's r
+    (terrain-resolved), and the launch pad all read surface(body, p) — so
+    a parked shuttle's anchor sits on the REAL terrain (the DEM pixel under
+    it), and "the terrain under the pad is real" becomes literal.
+  * STUBS: fine chunks require the document (the blend input, the fine->doc
+    map). The session already forces hydration before anything on-body
+    happens — the chunks are downstream of it, never a bypass of it. A
+    body without a terrain catalog gets no fine region: the document mesh
+    renders as today, and nothing else changes.
+
+
+--------------------------------------------------------------------------------
+7. LIFECYCLE — WHEN CHUNKS EXIST AT ALL
+--------------------------------------------------------------------------------
+  The hydration invariant (AGENTS.md: streaming only from user intent,
+  NEVER camera-driven, NEVER at boot) extends to chunks verbatim:
+
+  * MOUNT: a body gets a fine region when the player's SESSION is on it —
+    foot, craft, or EVA with it as dominant body. Selecting a body,
+    landing on it, a paint stroke at it — the same intents that hydrate.
+    A free-cam fly-over does NOT mount chunks (the LOD chain is the
+    free-cam's surface; mounting 2-5 M tris for a glance is the eager-
+    everything behavior the hydration fix removed).
+  * STREAM: while mounted, chunks follow the focus (§3.3): ahead-first
+    streaming, behind-last, eviction at the cap's edge. One worker, the
+    existing seq-supersede contract — a newer chunk job supersedes a stale
+    one at its boundary, and the main thread keeps the previous chunk set
+    visible until replacements land (the existing copy-on-write pattern).
+  * UNMOUNT: the session leaves the body (launch, EVA drift away, lift-off,
+    Esc to free-cam, selecting another body): the fine region unmounts —
+    every chunk's GPU buffers disposed, the data texture cleared, the
+    document shader's discard becomes a no-op (radius 0). The body is back
+    to its LOD chain, byte-identical to a world that never had chunks.
+  * DEM TILE CACHE: the worker holds an LRU of catalog tiles (~50 tiles,
+    ~1.4 MB — a 1000 km cap touches ~100 tiles of 28.1 KiB each) so chunk
+    rebuilds after eviction don't refetch.
+
+  Memory, steady state (D = 1000 km, the big case):
+      ~86 chunks x ~57k tris x 3 verts x 44 B  ~ 0.5-0.6 GB GPU
+      (the same order as the f203 document mesh, ~380 MB, already resident;
+      ocean chunks build fewer walls and cost less)
+      + ~1.4 MB worker tile cache + ~16 KB per chunk of fine->doc maps.
+
+
+--------------------------------------------------------------------------------
+8. WHAT DOES NOT CHANGE
+--------------------------------------------------------------------------------
+  * The document grid, element identity (positional, cells == 10n^2+2),
+    MAX_FREQUENCY = 203 — it caps the DOCUMENT, the physical truth. The
+    fine render grid is a different object and is not capped by it.
+  * Mass / radius / volume derivation (planetMath) — still from the
+    document. The fine layer contributes nothing to physics.
+  * The LOD chain (lod.js) — a body in the sky renders whole at its
+    minimum level. Stage 0 (889e9c3) made that true; chunks never touch
+    it. The f203 document mesh keeps rendering the whole body; chunks only
+    supersede it locally.
+  * Physics — no cannon bodies for chunks (presentational, like the rings
+    and the walker). The walker/craft stay kinematic.
+  * The ocean disc (h 0 sphere), atmosphere, rings, starfield, labels —
+    untouched. The fine water cells are seafloor BELOW the ocean disc, as
+    today.
+  * Serialize/save — the document serializes as today; the edit overlay
+    serializes with the world (§5). Chunks themselves are never persisted
+    (they are derived).
+
+
+--------------------------------------------------------------------------------
+9. STAGES
+--------------------------------------------------------------------------------
+  STAGE 0 — DONE (commit 889e9c3)
+  The LOD dimension fix: level selection compared an R-normalized distance
+  against world-unit thresholds, so giants never coarsened and "a body in
+  the sky renders at its minimum level" never held. Pinned by the new
+  headless LOD test (f12 -> f4 -> f12 with asserted camera distance).
+
+  STAGE 1 — the machinery, at document frequency (engine only, NO new data)
+  The whole architecture of this document, run with the fine grid at the
+  DOCUMENT's own frequency (f203, a = 21.8 km, chunks 32 x 32 doc cells):
+      * core/finedisc.js (framework-free): the two-patch lattice, chunk
+        keys, the cap/loaded-set logic, the ahead-of-velocity queue,
+        the chunk geometry builder (the document's cell builder, applied
+        to a lattice block), the fine->doc map (the identity at document
+        frequency — but built and exercised).
+      * the worker: chunk jobs alongside chain jobs (same seq contract,
+        supersede per chunk key).
+      * Planet.jsx: chunk meshes mounted with the LOD level; the document
+        terrain shader gains the §4.4 discard (data texture + cap
+        uniforms); unmount = dispose + radius 0.
+      * surface.js / motion.js: the surface(body, p) dispatch; walker,
+        pick remap, altitude, park r on chunks; the four-step stroke
+        (§5) with the overlay (an edit at document frequency is just the
+        doc cell again — the overlay path is exercised, the DEM is not).
+      * headless pins: the walker welds on chunks while crossing chunk
+        boundaries; the pick remaps to the document cell; a stroke
+        composites (doc + overlay + same-frame patch); eviction is clean
+        (dispose, no leak, the doc mesh unsuppressed); unmount restores
+        byte-identical LOD rendering.
+  Visually a no-op (same data, same heights) — that is the point: it
+  isolates EVERY mechanism (lattice math, tiling, streaming, eviction,
+  suppression, dispatch, edit compositing) from the data pipeline, so
+  stage 2 cannot hide a machinery bug behind a terrain reveal.
+
+  STAGE 2 — the DEM (this is where the walls become towering)
+  The data pipeline + the real fine grid (n ~ 2,395, a = 1.85 km):
+      * db: terrain catalog table (migration 010) — (catalog, tile_lat,
+        tile_lon, tile_size) natural key, int16 mm payload; the ETOPO2022
+        1-arcmin grid (21,600 x 10,800 px, 933 MB float32 / 467 MB int16,
+        16,200 tiles of 2 deg x 2 deg at 28.1 KiB) imported by
+        `npm run db:terrain` (one-time, ~0.5 GB — DATA.md gets a row).
+      * server: GET /api/terrain/:catalog/... tile endpoint (the app
+        fetches tiles exactly as it fetches atoms — never raw postgres).
+      * worker: the §4.1 synthesis with the real DEM and the real feather;
+        the fine->doc map at fine scale.
+      * constants.json: the dials — fineDisc.radius (D, default 500 km,
+        range to 1000), the feather fraction — resolved like every other
+        tunable; the shaders take float literals as always.
+  The acceptance test is the one the user will run: stand on the Sierra
+  crest in Sol Real and see 300 m-1 km faces at 1.85 km resolution —
+  the real staircase the cross-section probe proved is in the data.
+
+  STAGE 3 — OUT OF SCOPE (named so it can be picked up later)
+  Other bodies with catalogs (the Moon: LRO; Mars: MOLA). User-authored
+  fine terrain (a brush that writes fine cells directly — the overlay
+  already has the shape). Fine-grid LOD (coarser fine levels for fast
+  low flight — probably unnecessary: the cap already bounds the area).
+
+
+--------------------------------------------------------------------------------
+10. OPEN QUESTIONS (for review before stage 1)
+--------------------------------------------------------------------------------
+  1. D default: 500 km (21 chunks / 0.6 s / ~1 MB tiles — covers Earth's
+     entire relief field, Everest horizon 335 km) or 1000 km (86 chunks /
+     2.3 s / ~3 MB — 3x margin)? Proposal: default 500, dial to 1000.
+  2. Feather: outer 20% of D, smoothstep. Wider (30%) hides the blend
+     further from the eye at the cost of flattening more mid-range relief;
+     narrower risks the blend being visible in deep relief. Proposal: 20%.
+  3. Edit overlay persistence: a DB table (sparse, per fine cell) vs a
+     document field (terrainEdits[] per body, rides the save). Proposal:
+     DB table for DB worlds + document field for file worlds — mirrors
+     how models/crafts already split (P3).
+  4. Chunk side: 64 fine hexes (110 km) at stage 2. 32 hexes (55 km)
+     stream more often and evict faster; 128 build more per job. The
+     loaded-set size is set by D either way — only the granularity of
+     streaming changes. Proposal: 64.
+  5. Suppression implementation: fragment discard (this document) vs an
+     early vertex discard (cheaper GPU-wise, but the document mesh's
+     vertices would skip walls at the region edge — the fragment discard
+     keeps every document wall intact up to the boundary). Proposal:
+     fragment discard for stage 1, measure, then decide.
+  6. EVA: the proposal is that an EVA astronaut with a dominant body
+     within D mounts that body's region (the walls under an adrift
+     astronaut are the whole point of the view). Confirm.
+
+
+--------------------------------------------------------------------------------
+11. INVARIANT IMPACT (what this document changes about the engine's laws)
+--------------------------------------------------------------------------------
+  EXTENDED (the law stands, with one word added):
+  * "One surface = the rendered surface" (surface.txt) — the rendered
+    surface is now LAYERED (fine chunks where mounted, document outside,
+    continuous at the boundary by the feather). Every consumer dispatches
+    through surface(body, p); no consumer may mix the layers.
+  * "Picking is analytic" (AGENTS.md) — analytic at fine scale too (local
+    fans + O(1) axial lookup), and it returns the DOCUMENT cell (remapped
+    at the chunk) so the brush pipeline is unchanged.
+  UNCHANGED:
+  * hydration: only from user intent, never camera-driven, never at boot —
+    chunks are downstream of the session, and a free-cam never mounts them;
+  * element identity, mass/volume derivation, MAX_FREQUENCY (document);
+  * the physics registry (60 Hz never through zustand; chunks are not
+    bodies); the worker contract (one worker, seq-supersede, packed
+    transferables — chunk jobs join the same stream);
+  * serializeWorld strips nothing new (chunks are derived; the overlay
+    serializes, §5); normalizeWorld's lenient healing extends to the
+    overlay field.
+  NEW:
+  * a body's fine region is a derived, disposable layer: deleting every
+    chunk must leave the body byte-identical (a test, not an aspiration);
+  * the fine region's extent EQUALS the document mesh's suppressed region
+    exactly (the shader's discard set == the mounted-chunk set) — a leak in
+    either direction (a double surface, or a gap where neither layer
+    renders) is a bug, pin it.
+================================================================================
