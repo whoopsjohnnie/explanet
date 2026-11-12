@@ -481,7 +481,9 @@ test('finedisc: unmount is clean — chunks disposed, no leak, the doc mesh stay
   await w.set({ player: { kind: 'freeCam' } })
   await w.frames(30)
   for (const g of geos) assert.ok(disposed.has(g), 'an evicted chunk geometry must be disposed (no leak)')
-  assert.equal(w.terrainMeshes().filter((m) => !m.suppressed).length, 0, 'no chunk meshes remain after unmount')
+  // chunks are identified by their captured geometries — after unmount the DOC
+  // terrain is also unsuppressed, so a suppressed-flag filter can't tell them apart
+  assert.equal(w.terrainMeshes().filter((m) => geos.includes(m.geometry)).length, 0, 'no chunk meshes remain after unmount')
   assert.ok(w.terrainMeshes().some((m) => m.geometry === docGeo), 'the document terrain mesh must survive the eviction')
   await w.close()
 })
