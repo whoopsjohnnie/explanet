@@ -65,6 +65,7 @@ const EvaCam = (await import('../../src/components/EvaCam.jsx')).default
 const { craftRuntime, eva, resetFlightInput, flightInput, pendingFoot } = await import(
   '../../src/core/motion.js'
 )
+const { resetGeometryWorker } = await import('../../src/three/geometryService.js')
 
 /** Reset the motion framework's module state between boots (it is process-
  *  global: craftRuntime, the adrift astronaut, held keys, foot handoff). */
@@ -660,6 +661,11 @@ export async function bootWorld(opts = {}) {
       await inst.unmount()
     })
     await Promise.all(ops.workers.splice(0).map((wk) => wk.terminate()))
+    // The geometry module worker is a process-global singleton in
+    // geometryService.js: terminating the threads leaves its `worker` ref dead
+    // (posts go to the void — no reply, no error, and chunk jobs have no sync
+    // fallback), so a fresh boot must hand the module a new worker.
+    resetGeometryWorker()
     resetMotionState()
     useStore.setState({
       ready: false,

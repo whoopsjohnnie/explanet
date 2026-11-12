@@ -27,6 +27,20 @@ let workerBroken = false
 let seq = 0
 const jobs = new Map() // key → { seq, slots, onLevels, onError }
 
+/**
+ * Drop the module's worker reference and job table so the NEXT build starts a
+ * fresh worker. The headless harness calls this in close(): it terminates the
+ * worker THREADS itself (through its worker shim), and a boot must not reuse a
+ * dead reference — a chunk build posted to a terminated worker never replies
+ * (and never errors), so the fine region would never mount.
+ */
+export function resetGeometryWorker() {
+  worker = null
+  workerBroken = false
+  seq = 0
+  jobs.clear()
+}
+
 /** One worker batch (raw typed arrays) → an assembled { type, geometry } mesh. */
 function assembleMesh(b, frequency) {
   const g = new THREE.BufferGeometry()
