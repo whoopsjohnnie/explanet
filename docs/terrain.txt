@@ -408,9 +408,11 @@
   the sky renders at its minimum level" never held. Pinned by the new
   headless LOD test (f12 -> f4 -> f12 with asserted camera distance).
 
-  STAGE 1 — the machinery, at document frequency (engine only, NO new data)
+  STAGE 1 — DONE (commits 29cbe47..30a772c) — the machinery, at document
+  frequency (engine only, NO new data)
   The whole architecture of this document, run with the fine grid at the
-  DOCUMENT's own frequency (f203, a = 21.8 km, chunks 32 x 32 doc cells):
+  DOCUMENT's own frequency (f203, a = 21.8 km, chunk side ≈ 5 doc cells —
+  the physical chunk footprint of §10.4, not the draft's fixed 32 x 32):
       * core/finedisc.js (framework-free): the two-patch lattice, chunk
         keys, the cap/loaded-set logic, the ahead-of-velocity queue,
         the chunk geometry builder (the document's cell builder, applied
