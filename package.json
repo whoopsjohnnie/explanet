@@ -14,6 +14,7 @@
     "gen:stars": "node scripts/gen-starfield.mjs",
     "db:import": "node scripts/import-db.mjs",
     "db:stars": "node scripts/import-stars.mjs",
+    "db:terrain": "node scripts/import-terrain.mjs",
     "test:headless": "node --test scripts/test-headless.mjs"
   },
   "dependencies": {

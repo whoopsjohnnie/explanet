@@ -20,13 +20,20 @@
  *                                         (class) summaries + instance counts
  *   GET /api/models/:key                → one craft model: identity, the full
  *                                         design JSON, and its instances
+ *   GET /api/terrain                    → { catalogs: [...], defaultCatalog }
+ *                                         — DEM catalog summaries (tile lattice)
+ *   GET /api/terrain/:catalog/tile/     → one tile's payload as RAW int16-LE
+ *      :tileLat/:tileLon                 elevation bytes (application/octet-
+ *                                        stream); lattice metadata in headers.
+ *                                        (The fine-terrain layer decodes with
+ *                                        new Int16Array(bytes).)
  *
  * The skeleton is the boot payload: bodies with real frequency/density (so
  * derived radius/mass and orbits stay exact) but atoms only for the small
  * bodies; giants arrive as stubs + a preview sample and stream their atoms
  * in later via /api/bodies/:id/elements.
  */
-import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked, craftModels, craftModelByKey } from './db.mjs'
+import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked, craftModels, craftModelByKey, terrainCatalogs, terrainTile } from './db.mjs'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -115,9 +122,32 @@ export async function apiHandler(req, res, next) {
       const model = await craftModelByKey(modelMatch[1])
       return send(res, 200, JSON.stringify(model))
     }
+    // ---- terrain: the DEM catalog tiles (fine-terrain layer, read-only) ----
+    if (path === '/api/terrain') {
+      const catalogs = await terrainCatalogs()
+      return send(res, 200, JSON.stringify({ catalogs, defaultCatalog: catalogs[0]?.catalog ?? null }))
+    }
+    const terrainTileMatch = /^\/api\/terrain\/([\w-]+)\/tile\/(-?\d+)\/(-?\d+)$/.exec(path)
+    if (terrainTileMatch) {
+      const t = await terrainTile(terrainTileMatch[1], terrainTileMatch[2], terrainTileMatch[3])
+      // the body IS the tile: raw int16-LE elevation bytes (decode with
+      // new Int16Array(bytes)); the tile-lattice metadata rides in headers.
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'cache-control': 'no-store',
+        'x-catalog': t.catalog,
+        'x-tile-lat': String(t.tileLat),
+        'x-tile-lon': String(t.tileLon),
+        'x-tile-size': String(t.tileSize),
+        'x-pixel-deg': String(t.pixelDeg),
+        'content-length': String(t.payload.length),
+      })
+      res.end(t.payload)
+      return
+    }
     return send(res, 404, JSON.stringify({ error: `no api route ${path}` }))
   } catch (err) {
-    const status = /no world|no bodies|no star|no craft model/.test(err.message) ? 404 : 500
+    const status = /no world|no bodies|no star|no craft model|no terrain tile/.test(err.message) ? 404 : 500
     return send(res, status, JSON.stringify({ error: err.message }))
   }
 }

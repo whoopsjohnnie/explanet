@@ -403,6 +403,58 @@ export async function skyPacked({ catalog, magMax, refresh = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Terrain catalog — the DEM tiles (read side of migration 010)
+// ---------------------------------------------------------------------------
+// The fine-terrain layer (docs/terrain.txt stage 2) streams local DEM tiles
+// around the player, exactly as it streams atoms — never raw postgres. A body
+// names its catalog in bodies.terrain.{catalog}; these read the catalog's
+// summary (which catalogs exist + their tile lattice) and one tile's payload.
+// The tile payload is returned as raw int16-LE bytes (the body of a binary
+// response) — decode with new Int16Array(bytes).
+
+/** Catalog summaries for GET /api/terrain: which catalogs exist + their extent. */
+export async function terrainCatalogs() {
+  const { rows } = await getPool().query(
+    `SELECT catalog, count(*)::int AS tiles,
+            max(tile_lat)::int AS lat_max, min(tile_lat)::int AS lat_min,
+            max(tile_lon)::int AS lon_max, min(tile_lon)::int AS lon_min,
+            max(tile_size)::int AS tile_size, max(pixel_deg)::float8 AS pixel_deg,
+            max(imported_at) AS imported
+       FROM terrain GROUP BY catalog ORDER BY count(*) DESC, catalog`
+  )
+  return rows.map((r) => ({
+    catalog: r.catalog,
+    tiles: r.tiles,
+    latMax: r.lat_max, latMin: r.lat_min,
+    lonMin: r.lon_min, lonMax: r.lon_max,
+    tileSize: r.tile_size,
+    pixelDeg: r.pixel_deg,
+    imported: r.imported,
+  }))
+}
+
+/** One tile's payload for GET /api/terrain/:catalog/tile/:lat/:lon. */
+export async function terrainTile(catalog, tileLat, tileLon) {
+  const lat = Number(tileLat), lon = Number(tileLon)
+  if (!Number.isInteger(lat) || !Number.isInteger(lon)) throw new Error(`bad terrain tile ${tileLat},${tileLon}`)
+  const { rows } = await getPool().query(
+    `SELECT catalog, tile_lat, tile_lon, tile_size, pixel_deg, payload
+       FROM terrain WHERE catalog = $1 AND tile_lat = $2 AND tile_lon = $3`,
+    [String(catalog), lat, lon]
+  )
+  if (!rows.length) throw new Error(`no terrain tile ${lat},${lon} in catalog '${catalog}' — ${DATABASE}@${HOST}`)
+  const r = rows[0]
+  return {
+    catalog: r.catalog,
+    tileLat: r.tile_lat,
+    tileLon: r.tile_lon,
+    tileSize: r.tile_size,
+    pixelDeg: r.pixel_deg,
+    payload: r.payload,  // Buffer (bytea) — raw int16 LE bytes
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Craft models — the craft classes (read side of migration 009)
 // ---------------------------------------------------------------------------
 // `models` is the CRAFT CLASS: mover identity (kind) + the serialized mesh
@@ -553,6 +605,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     if (b.parent_doc_id) planet.parent = b.parent_doc_id
     if (b.rings) planet.rings = b.rings
     if (b.atmosphere) planet.atmosphere = b.atmosphere
+    if (b.terrain) planet.terrain = b.terrain
     if (b.scripts) planet.scriptsOrbit = b.scripts
     if (b.generation) {
       // generated body (docs/scaling.txt §5): always a stub — there are no

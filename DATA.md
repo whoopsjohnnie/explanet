@@ -16,11 +16,12 @@ docs or commit messages. Schema: `explanet`. DDL: `db/schema.sql` +
 | table     | contents                                                       |
 | --------- | -------------------------------------------------------------- |
 | `worlds`  | one row per world document (name, gravity, scale [meters per world unit], version) |
-| `bodies`  | per-body documents (orbit, spin, presets, rings/scripts/kind/atmosphere/generation) |
+| `bodies`  | per-body documents (orbit, spin, presets, rings/scripts/kind/atmosphere/generation/terrain) |
 | `atoms`   | hex cell elements — the atom model, one row per cell chunk     |
 | `models`  | craft classes — mover kind + serialized mesh design (jsonb)    |
 | `craft`   | craft instances — a named vehicle of a world (pose + realism)  |
 | `stars`   | real-sky reference catalog (Yale BSC v5, `BSC5`, 9,096 rows)   |
+| `terrain` | fine-terrain DEM catalog (NOAA ETOPO2022 60s, `ETOP2022-60s`, 16,200 tiles) |
 | `materials` | material palette rows                                      |
 
 The app never reads files for worlds: the browser talks to `/api` (dev:
@@ -41,7 +42,7 @@ aws s3 sync s3://explanet-seeds/ .
 | `scripts/stars/data/BSC.json`        | Yale Bright Star Catalog v5 (public domain)  | mirrored in the `stars` table; re-export from source |
 | `scripts/sol-real/data/moons.json`   | scraped moon catalog (NASA)                  | `scripts/sol-real/fetch-moons.mjs`                  |
 | `scripts/sol-real/data/orbits.json`  | scraped asteroid/comet osculating elements   | `scripts/sol-real/fetch-small.mjs`                  |
-| `scripts/sol-real/data/etopo2022-60s.f32` | ETOPO2022 60s global DEM — land + seafloor, meters, sea level 0 (21600×10800 float32) | `scripts/sol-real/fetch-terrain.mjs` (NOAA .tif + PIL conversion) |
+| `scripts/sol-real/data/etopo2022-60s.f32` | ETOPO2022 60s global DEM — land + seafloor, meters, sea level 0 (21600×10800 float32) | `scripts/sol-real/fetch-terrain.mjs` (NOAA .tif + PIL conversion); mirrored in the `terrain` table |
 
 All seed reads go through `scripts/seed.mjs`, which fails with a pointer to
 this file instead of a stack trace.

@@ -181,6 +181,14 @@ CREATE TABLE bodies (
   atmosphere     jsonb
                  CHECK (atmosphere IS NULL OR jsonb_typeof(atmosphere) = 'object'),
 
+  -- Terrain catalog descriptor (migration 010). NULL = no fine layer (the
+  -- document mesh is the surface, as today). { catalog } names the DEM the
+  -- body's fine region streams at the player (docs/terrain.txt stage 2); the
+  -- fine-hex edge is the catalog's pixel size, not a dial. Presentational —
+  -- like rings/atmosphere.
+  terrain        jsonb
+                 CHECK (terrain IS NULL OR jsonb_typeof(terrain) = 'object'),
+
   -- Scripted test particle (migration 003). NULL = ordinary N-body body.
   -- { a, e, inc, node, peri, n, m0 } osculating elements in engine units:
   -- the app integrates it analytically (core/kepler.js), no cannon body.
@@ -459,6 +467,67 @@ COMMENT ON TABLE craft IS
 COMMENT ON COLUMN craft.model_id IS
   'The craft class. ON DELETE RESTRICT: a model in use cannot be deleted — '
   'repoint its crafts first (same contract as atoms.material_id).';
+
+-- ---------------------------------------------------------------------------
+-- terrain — the DEM catalog (fine-terrain data, NOT world content)
+-- ---------------------------------------------------------------------------
+-- Stage 2 of the fine-terrain design (docs/terrain.txt §9): a body's FINE
+-- region streams local terrain at the DEM's native pixel size around the
+-- player (1.85 km for ETOPO2022 60s), feathered to the document mesh at the
+-- cap's edge. The document grid stays the physical truth; the fine layer is
+-- presentational — exactly like rings/atmosphere. A body NAMES the catalog it
+-- rides in bodies.terrain ({catalog}); the tiles it streams live here.
+--
+-- Frame / layout (matches the DEM, mapping.txt):
+--   * pixel_deg   = the DEM pixel size in degrees (1/60 = 1 arc-minute). The
+--                   fine-hex edge is derived from it (a = pixel_deg × 111.32
+--                   km at the equator), so it is a CATALOG property, not a dial.
+--   * payload     = the tile's elevations as SIGNED INT16, 1 m steps
+--                   (value = round(elevation_m)), LITTLE-ENDIAN, row-major
+--                   (the tile's own rows, north-first; columns west-first).
+--                   (tile_size / pixel_deg)² values. int16 at 1 m spans
+--                   ±32 km — the DEM is −11…+9 km, 3× headroom.
+--   * tile_lat / tile_lon = the tile's SOUTHWEST corner, in whole degrees.
+--                   tile_lat ∈ {88, 86, …, −90} (90 tiles), tile_lon ∈
+--                   {178, 176, …, −180} (180 tiles) → 16,200 tiles.
+--
+-- The app never reads this table directly: it fetches tiles through
+-- /api/terrain (server/api.mjs), never raw postgres.
+--
+-- Loaded by `npm run db:terrain` (scripts/import-terrain.mjs) from the
+-- etopo2022-60s.f32 S3 seed (DATA.md) — one-time ~0.5 GB, idempotent per
+-- catalog (re-import replaces one catalog's tiles atomically).
+-- ---------------------------------------------------------------------------
+CREATE TABLE terrain (
+  catalog     text    NOT NULL,             -- 'ETOP2022-60s' = NOAA ETOPO2022 60s
+  tile_lat    integer NOT NULL,             -- SW corner latitude, whole degrees
+  tile_lon    integer NOT NULL,             -- SW corner longitude, whole degrees
+  tile_size   integer NOT NULL CHECK (tile_size > 0),  -- tile side, degrees (2)
+  pixel_deg   double precision NOT NULL CHECK (pixel_deg > 0),  -- DEM px, degrees
+  payload     bytea   NOT NULL,             -- int16 LE, 1 m steps, row-major (N-first, W-first)
+  imported_at timestamptz NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (catalog, tile_lat, tile_lon, tile_size)
+);
+
+-- the hot query is "this catalog, one tile" (the PK covers it); the summary
+-- is "which catalogs exist + their extent/pixel" for GET /api/terrain
+CREATE INDEX terrain_catalog_idx ON terrain (catalog);
+
+COMMENT ON TABLE terrain IS
+  'Terrain catalog (a DEM, not world content): one row per 2°×2° tile. '
+  'payload is SIGNED INT16 at 1 m steps (value = round(elevation_m)), '
+  'little-endian, row-major (N-first, W-first), (tile_size/pixel_deg)² values. '
+  'Served read-only by GET /api/terrain* — the fine-terrain layer (docs/'
+  'terrain.txt stage 2) streams these tiles around the player.';
+COMMENT ON COLUMN terrain.catalog IS
+  'Source catalog id, e.g. ETOP2022-60s = NOAA ETOPO2022 60s (public domain). '
+  'Bodies name it via bodies.terrain.{catalog}; groups tiles until other DEMs '
+  '(LRO, MOLA) land beside it.';
+COMMENT ON COLUMN terrain.payload IS
+  'The tile''s elevations: (tile_size/pixel_deg)² SIGNED INT16 values at 1 m '
+  'steps (value = round(elevation_m)), LITTLE-ENDIAN, row-major — the tile''s '
+  'own rows north-first, columns west-first. Decode with new Int16Array(bytes).';
 
 -- ---------------------------------------------------------------------------
 -- Views
