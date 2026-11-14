@@ -7,6 +7,20 @@
   (29cbe47..30a772c) are done and pinned; the Stage 2 design is settled in
   §9/§10 and is what is being built next.
 
+  SUPERSEDED (data direction) — see docs/terrain2.txt:
+  This document's STAGE-2 DATA DIRECTION is replaced. terrain.txt treats the
+  high-resolution (~1.85 km) relief as a PRESENTATIONAL DEM overlay — the
+  document (bounded f203 geodesic) is the stored physical truth and the fine
+  layer samples an external DEM catalog. terrain2.txt INVERTS this: the
+  high-resolution hexes become the STORED data (a new `hexcells` table,
+  position-keyed, world-uniform `worlds.hex_meters`), and the coarsest bounded
+  LOD becomes the "Document" (mass basis). The MACHINERY this document built
+  (the gnomonic two-patch lattice, chunking, the feather, the §4.4 suppression,
+  the §6 surface dispatch, ahead-of-velocity streaming) is REUSED VERBATIM by
+  terrain2.txt — only the fine cell's data source (DEM sample → stored hex row)
+  and the two layers' status are inverted. Read terrain2.txt as the canonical
+  target; this document is kept as the record of the machinery it designed.
+
   The problem this document solves: on a true-scale body the document grid
   (f203 on Earth, 22 km hexes) CANNOT show towering relief — the data has
   real 1-3.6 km walls (verified by cross-section) but the grid averages

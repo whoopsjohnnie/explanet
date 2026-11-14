@@ -1,0 +1,445 @@
+================================================================================
+  Stored Resolution — the Inverted Terrain Model
+  High-resolution hexes are the STORED data; the coarsest LOD is the Document
+================================================================================
+  Nov 2026 · companion to terrain.txt / mapping.txt / surface.txt /
+  movement.txt / scaling.txt. This document REPLACES terrain.txt's Stage-2
+  data direction (the DEM-as-presentational-overlay). The machinery terrain.txt
+  built (finedisc.js / fineTerrain.js / FineRegion.jsx) is REUSED — only the
+  data source and the status of the two layers are inverted.
+
+  STATUS: DESIGN, NOT YET BUILT. Nothing in this doc is code. The decisions in
+  §9 were SETTLED with the user (Nov 2026) — every one resolved to the
+  recommended option — so the design is final; implementation is the next step.
+
+
+--------------------------------------------------------------------------------
+0. THE INVERSION IN ONE PARAGRAPH
+--------------------------------------------------------------------------------
+  Today (terrain.txt): the BOUNDED f203 geodesic grid (412,092 cells) is the
+  STORED physical truth — mass, volume, anchors, the save format all derive
+  from `atoms`. The UNBOUNDED fine layer (~1.85 km DEM pixels) is a
+  PRESENTATIONAL overlay: streamed as gnomonic chunks around the player,
+  synthesized by SAMPLING THE DEM (an external catalog in the `terrain` table),
+  feathered to the doc, shader-discarded under it. The relief lives in the DEM,
+  not in the world.
+
+  New (this doc): the UNBOUNDED high-resolution grid (~1 km hexes, tens of
+  millions of cells per body) is the STORED source of the world's surface —
+  its heights, materials and colors live IN the world (a new `hexcells`
+  table), keyed by POSITION, streamed in ahead of the player and evicted
+  behind. The BOUNDED coarsest LOD (a geodesic grid capped at MAX_FREQUENCY =
+  203) is the "Document": the mass/volume/physics basis, the LOD chain in the
+  sky, the save-format skeleton. Loading or unloading a fine LOD NEVER touches
+  the Document (requirement R5) — because the Document is a separate, bounded,
+  never-streamed table, and the mass derivation reads only it.
+
+  The engine's mass math does not change: it keeps reading the coarsest
+  geodesic document held in `atoms`. What changes is (a) which layer is the
+  stored source, (b) the rendered data source inside the player's cap (DEM-pixel
+  sample → stored high-res hex), and (c) the status of the fine layer
+  (presentational/derived → stored/authoritative).
+
+
+--------------------------------------------------------------------------------
+1. THE REQUIREMENTS (the user's brief, restated)
+--------------------------------------------------------------------------------
+  R1  All hexes are the SAME size across all bodies in a world — EXCEPT bodies
+      that do not store their surface (generated giants, e.g. Jupiter).
+  R2  A world can have ANY hex size; a body can have ANY hex count, regardless
+      of MAX_FREQUENCY.
+  R3  On world load, load ONLY the coarsest LOD → it forms the "Document"
+      (mass basis, LOD chain, save skeleton).
+  R4  On approach, load a finer LOD; it may be EXPUNGED on move-away.
+  R5  Loading / unloading a fine LOD must NOT change the Document (the world).
+  R6  The maximum resolution (the true atoms / stored hexes) is loaded only
+      when close to / on the surface.
+  R7  MAX_FREQUENCY bounds the COARSEST / Document level only. The finest
+      resolution is NOT bound by any MAX_FREQUENCY or "period".
+  R8  The `terrain` table already stores millions of DEM pixels, so storing
+      and streaming millions of hexes must work.
+  Plus: when generating hexes, store POSITIONING (cx/cy/cz or lat/lon); use
+      POSITIONING (not hex index) for real placement and loading order — the
+      index may serve other purposes. Target: Earth with ~1 km hexes showing
+      real mountain / coastline slopes ("might want them smaller — not a hard
+      limit"). NEVER load the full-resolution dataset at once — stream it.
+      Produce a new world (e.g. world 27) with these smaller hexes, stored in
+      the DB.
+
+
+--------------------------------------------------------------------------------
+2. WHAT STAYS (the crux that makes R5 hold)
+--------------------------------------------------------------------------------
+  * Mass / radius / volume derivation — UNCHANGED (core/planetMath.js). It
+    derives from the body's DOCUMENT grid: R = √(cells/4π)·scale, cells =
+    10n²+2 at the document's frequency, volume integrates the document's
+    per-cell relief. The high-res grid is NEVER the mass source. This is the
+    single fact that makes R5 true: the streaming path never writes `atoms`,
+    so the mass basis is untouched by loading or evicting a fine LOD.
+  * Element identity (positional, cells = 10n²+2), the geodesic document grid,
+    MAX_FREQUENCY = 203 — now understood to bound the DOCUMENT, the physical
+    truth, exactly as terrain.txt §8 already says. R7 is already the case; this
+    doc only makes it explicit that the fine layer is unbounded.
+  * The LOD chain (lod.js): the document still builds a coarse→fine geodesic
+    chain for the sky; a body in the sky renders at its minimum level.
+  * The physics registry (60 Hz never through zustand); the geometry worker
+    (one worker, seq-supersede, packed transferables — the fine chunks join the
+    same stream, as today).
+  * Hydration discipline: streaming only from user intent (select / land /
+    paint / save), never camera-driven, never at boot. R3 (coarsest only at
+    load) and R6 (fine only near the surface) are both instances of this.
+  * The gnomonic two-patch lattice, chunk keys, the cap / loaded-set, the
+    ahead-of-velocity queue, the feather, the §4.4 document-mesh suppression,
+    and the §6 surface(body, p) dispatch — REUSED VERBATIM from finedisc.js /
+    fineTerrain.js. The inversion changes the DATA SOURCE of a fine cell's
+    height (DEM sample → stored hex row) and the STATUS of the layers; it does
+    not change the projection, the streaming, or the seam math.
+
+  The one surface of record (surface.txt) is unchanged in form and extended in
+  status: inside the player's cap the fine hexes ARE the surface of record (and
+  now the STORED source); outside it the document LOD is the surface of record
+  (and the mass basis). They agree at the boundary by the feather, as today.
+
+
+--------------------------------------------------------------------------------
+3. THE TWO LAYERS, INVERTED
+--------------------------------------------------------------------------------
+  Level 0 — the DOCUMENT (coarsest, bounded)
+      * A geodesic grid at the body's document frequency, ≤ MAX_FREQUENCY = 203
+        (gridFor(rKm) as today, clamped). Earth: f203, 412,092 cells, 21.8 km.
+      * Stored in `atoms` EXACTLY as today (positional, cell_index = the hex of
+        getHexSphere(frequency)). This is the mass/volume basis, the LOD chain,
+        and the save skeleton. It is streamed at boot/hydrate as it is today —
+        it is the ONLY thing loaded on world load (R3).
+      * Its per-cell height is the mean of the high-res hexes it encloses (§6)
+        — a down-sample, so it and the high-res share a datum and the feather is
+        consistent (both descend from the same DEM source).
+
+  Level F — the HIGH-RES (finest, unbounded)
+      * The stored source. A REGULAR, POSITION-ADDRESSABLE gnomonic lattice
+        (the same two-patch lattice terrain.txt §3.2 built for the DEM), whose
+        hex edge `a` = worlds.hex_meters (in meters) converted to world units.
+        Earth @ 1.85 km: 57.4 M cells; @ 1 km: 196 M cells (§7).
+      * Stored in a NEW table `hexcells`, one row per hex, keyed by POSITION
+        (body_id, patch, q, r) — NOT by a document index, NOT by a geodesic n.
+        Each row: the hex's lat/lon (derived, stored for query/stream order),
+        height, material_id, color.
+      * NOT a getHexSphere(n). A single high-n geodesic grid (n ≈ 2,395) cannot
+        be materialized client-side (~1.4 GB of typed arrays) — that is why the
+        high-res is a position-addressable lattice, streamed chunk by chunk,
+        never held whole (R2, R7).
+      * Loaded only inside the player's cap (R6) and evicted on move-away (R4).
+        It is never the mass basis.
+
+  (Optional) intermediate fine levels (4 km, 10 km …)
+      * Named in §9 as a follow-on, out of initial scope. The doc + the finest
+        is enough for the brief; intermediate levels exist only to make
+        low-altitude flight cheaper, and can be added as more stored levels of
+        the same lattice without touching the doc or the mass basis.
+
+
+--------------------------------------------------------------------------------
+4. THE WORLD-LEVEL HEX SIZE  (R1, R2)
+--------------------------------------------------------------------------------
+  New column: worlds.hex_meters — the edge length, in METERS, of one STORED
+  hex. It is a property of the WORLD, not of a body: every body that stores its
+  surface (every walkable body) uses the SAME `hex_meters`, so hexes are
+  world-uniform (R1). A world is free to pick any value (R2) — 1.85 km
+  (DEM-aligned), 1 km (the target), or smaller.
+
+  * Non-stored bodies (generated giants, e.g. Jupiter with generation != NULL)
+    do NOT carry `hexcells` rows and are EXEMPT from the uniformity rule (R1's
+    carve-out): they stay generated (grid × scale) or DEM-cataloged, as today.
+    The rule binds only bodies whose surface is stored.
+  * A body's high-res cell COUNT is then derived, unbounded:
+        N_hr = 4πR² / hexArea(hex_meters)
+      (hexArea = (3√3/2)·a², a in the body's own units). There is no cap (R7).
+  * `hex_meters` is a WORLD constant in the DB; the app reads it from the
+    skeleton and converts per body to world units:
+        a_u = hex_meters / world.scale            (edge in world units)
+      The gnomonic lattice edge `a` (plane units) = a_u / R_u — the same
+      `fineHexEdge`-style derivation fineTerrain.js already uses.
+
+
+--------------------------------------------------------------------------------
+5. STORAGE — THE SCHEMA
+--------------------------------------------------------------------------------
+  5.1  What changes
+      * `worlds.hex_meters  double precision  (nullable)` — the world's stored
+        hex edge in meters (migration 011). NULL = the world stores no high-res
+        (every body is doc-only / generated) — the pre-inversion behavior.
+      * `hexcells` — the high-res surface (migration 011). One row per stored
+        hex, keyed by POSITION:
+
+            CREATE TABLE hexcells (
+              body_id     bigint NOT NULL REFERENCES bodies (id) ON DELETE CASCADE,
+              patch       smallint NOT NULL CHECK (patch IN (0,1)),  -- gnomonic patch
+              q           integer  NOT NULL,                         -- axial col
+              r           integer  NOT NULL,                         -- axial row
+              lat         double precision,                          -- derived, stored
+              lon         double precision,                          -- derived, stored
+              height      double precision NOT NULL DEFAULT 0,       -- world units
+              material_id bigint REFERENCES materials (id) ON DELETE RESTRICT,
+              color       text CHECK (color IS NULL OR color ~* '#…'),
+              PRIMARY KEY (body_id, patch, q, r)
+            );
+
+        (body_id, patch, q, r) is the covering index for the hot path — "stream
+        this chunk's hexes" — exactly as atoms' (body_id, cell_index) is today.
+        lat/lon are DERIVED from (patch, q, r) + the body radius; they are stored
+        for query/stream ORDER (R: "use positioning for loading order") and as
+        a sanity pin, never authoritative over the lattice key.
+
+      * A body declares that it STORES its surface (a per-body opt-in flag) so
+        the skeleton knows to offer the high-res stream. Re-point
+        `bodies.terrain` (or add a sibling `bodies.highres`) to carry it. The
+        descriptor carries ONLY the opt-in — the hex SIZE is world-level
+        (`worlds.hex_meters`, §9.6), so there is no per-body size. Generated
+        giants (generation != NULL) never set the flag: they are the R1
+        exemption and carry no `hexcells` rows.
+      * `bodies.frequency` CHECK 1..203 is UNCHANGED — it bounds the DOCUMENT
+        (R7). No new cap is added for the high-res; it has no n.
+      * `atoms` is UNCHANGED — it still holds the document (coarsest geodesic
+        LOD). The high-res does not go here (its count is unbounded and
+        position-keyed, not geodesic-indexed).
+
+  5.2  The high-res is NOT the document
+      The document (`atoms`, f203 geodesic, 412,092 rows) and the high-res
+      (`hexcells`, 57.4 M–196 M rows, gnomonic position-keyed) are TWO tables
+      with different keys, different counts, and different roles. The doc is
+      the mass basis and the save skeleton; the high-res is the stored surface
+      the player walks and paints. R5 falls out of the separation: the
+      streaming path reads/writes `hexcells`, never `atoms`.
+
+  5.3  Row-per-hex vs chunked blob  (DECISION — see §9.3)
+      * Row-per-hex (the shape above, mirroring `atoms`): editable per cell,
+        per-hex FK to materials, partial updates — matches the paint brush.
+        Cost ≈ 50–90 B/row → Earth @ 1.85 km ≈ 3–5 GB, @ 1 km ≈ 10–18 GB.
+      * Chunked blob (one row per (body, patch, I, J) chunk with packed
+        int16/uint8 height + material + color arrays, like the `terrain` tiles):
+        ~2–4 B/hex → Earth ≈ 0.1–0.8 GB, but whole-chunk updates only.
+      * R8 is satisfied by either — the `terrain` table already proves the DB
+        holds and streams the pixel count (233 M px = 466 MB). The choice is
+        editability vs size. Recommendation: row-per-hex for stored/walkable
+        bodies (consistency with `atoms`, the brush), chunked-blob as a
+        write-once option for generated giants (which stay generated anyway).
+
+  5.4  The `terrain` catalog stays (for now)
+      The DEM catalog (`terrain` table, migration 010) is the SOURCE the
+      generator reads to BUILD `hexcells` — it is seed/reference data, not the
+      world's stored surface. It is not deleted by this inversion; it is where
+      the high-res hexes come from at generation time (mapping.txt). For a
+      body that stores its surface, the RENDERED data source is `hexcells`, not
+      the catalog — the catalog is upstream of generation.
+
+
+--------------------------------------------------------------------------------
+6. THE DATA PATH — GENERATION, STREAMING, EDIT
+--------------------------------------------------------------------------------
+  6.1  Generation (scripts/gen-sol-real.mjs fork → "world 27")
+      * The DEM is loaded once (as today). For the stored high-res, the
+        generator EMITS one `hexcells` row per high-res hex: for each (patch,
+        q, r) hex, find its direction (lattice → dir), sample the DEM at that
+        lat/lon (identity at 1.85 km — one pixel; a small sub-pixel scan at
+        1 km, ~3.4 px/hex), and store height (m → world units via the world
+        scale, the same datum as the doc), material_id, color (the same
+        terrain.js color rules — per-hex, not per-pixel-averaged, so a
+        coastline hex is land or sea, not a blend).
+      * The DOCUMENT (coarsest) is the down-sample: for each doc cell, mean the
+        `hexcells` rows whose centers fall in the cell (the same Voronoi
+        containment test as mapping.txt §3.2, applied to hexes instead of DEM
+        pixels). This keeps doc and high-res on one datum so the feather is
+        honest. (Equivalently, generate the doc at f203 from the DEM as today
+        AND the high-res from the DEM — the two agree to the feather's
+        sub-meter residual; deriving the doc from the high-res is cleaner and
+        is the recommendation.)
+      * Cost: the DEM scan is CONSTANT work (every pixel visited ~1–2×
+        regardless of hex size, mapping.txt §4) — so generating the 1.85 km
+        high-res is the same ~5 s the f203 doc costs today; the 1 km high-res
+        is a larger row count to write (COPY) but the same scan. Emitting
+        57.4 M–196 M rows is a COPY, not INSERT-per-row (schema cheat-sheet).
+
+  6.2  Streaming (server + app) — the machinery reused, the source swapped
+      * SERVER: a new endpoint streams a chunk (or a lat/lon tile) of `hexcells`
+        rows for a body, mirroring the existing terrain-tile endpoint:
+            GET /api/bodies/:id/hex?patch=..&I=..&J=..      (one chunk)
+            GET /api/bodies/:id/hex/tile?lat=..&lon=..       (or a tile)
+        Returns packed rows (height, material_id, color) in lattice order. The
+        app never reads postgres directly (the standing rule).
+      * APP (FineRegion.jsx): the §4.1 synthesis swaps ONE call —
+            today:  h_dem = sample the DEM int16 tile at the hex's lat/lon
+            new:    h_dem = the hex's stored row (fetched with the chunk)
+        The lattice, the chord-fan geometry, the feather, the §4.4 suppression,
+        the §6 dispatch, the worker chunk jobs, the ahead-of-velocity queue —
+        all unchanged. A fine cell's height is STILL a pure function (now of
+        stored hex + doc + edits), so chunks stay reproducible, evictable,
+        worker-safe.
+      * Loaded set / cap / eviction: unchanged — the cap of radius D (500 km,
+        fineDisc.radius) around the focus selects the chunks; they stream in
+        ahead-of-velocity and evict at the cap edge. R6 (full-res only near the
+        surface) and R4 (evict on move-away) are exactly this existing behavior.
+
+  6.3  The feather (unchanged, now consistent by construction)
+      w(c) = 1 deep inside the loaded set, fading to 0 across the outer feather
+      (the region's outer ~20% of D). h_final(c) = w·h_hr(c) + (1−w)·h_doc
+      (enclosing doc cell). At the region's edge h_final = h_doc EXACTLY, so
+      the seam is invisible — the same math terrain.txt §4.3 proved. It is now
+      consistent by construction because the doc IS the down-sample of the
+      high-res (§6.1): the coarse value a fine hex fades TO is the mean of the
+      fine hexes around it.
+
+  6.4  Edits — the brush targets the STORED hex  (RESOLVED: §9.2 = high-res
+      cell only)
+      A paint stroke inside the cap, the four steps (terrain.txt §5 re-pointed):
+        1. applyBrush on the HIGH-RES cell (the (patch,q,r) under the ray — the
+           §6 dispatch's fine hex), NOT on the enclosing doc cell. The high-res
+           is the stored source, so it is what the brush writes.
+        2. record the stroke in the sparse EDIT OVERLAY (keyed by the fine hex,
+           as today) — the in-session compositing layer.
+        3. patch the MOUNTED chunk's vertices the same frame (weld invariant).
+        4. re-synthesize the chunk in the background (the backstop).
+      The doc cell is NOT rewritten by a high-res stroke — mass stays on the
+      doc (§9.1), and a 10 km mountain painted on a 22 km doc cell would barely
+      move the mean anyway. If a future need arises for large edits to shift
+      the mass, the doc cell is re-averaged lazily / on save (a named
+      follow-on, not part of this build). The reverse direction (a doc-level
+      stroke from a coarse/far view) still writes the doc cell as today; any
+      feathered chunk built afterwards blends to it.
+
+
+--------------------------------------------------------------------------------
+7. THE WORKED EXAMPLE — "WORLD 27", ~1 KM EARTH
+--------------------------------------------------------------------------------
+  Earth: R = 6371.009 km = 181.09 u (1 u = 35,181.6 m). hexArea(a) =
+  (3√3/2)·a². N_hr = 4πR² / hexArea.
+
+      hex_meters   a (u)      N_hr (cells)   rows ≈    storage (row-per-hex)
+      ----------   --------   ------------   --------   ----------------------
+      1.85 km      0.0526     57.4 M         57.4 M     ~3–5 GB
+      1.0 km       0.0284     196 M          196 M      ~10–18 GB
+      0.5 km       0.0142     784 M          784 M      ~40–70 GB  ("smaller")
+
+  * 1.85 km is DEM-ALIGNED: one high-res hex = one ETOPO2022-60s pixel (identity
+    sample, no interpolation) — the cheapest to generate and it reproduces the
+    real 300 m–1 km cliff faces the f203 average destroyed (terrain.txt §1.2).
+    RECOMMENDED as the first world 27.
+  * 1.0 km is the user's stated target ("~1 km hexes showing real mountain /
+    coastline slopes"); it is a sub-pixel scan (~3.4 DEM px/hex) and a 3.4×
+    larger row count. Same architecture, larger COPY.
+  * "Might want them smaller" (0.5 km) is a free knob — `hex_meters` is a world
+    constant, not a hard limit (R2/R7); the table simply grows. The streaming
+    cap (D = 500 km) bounds what is EVER loaded at once (~88k hexes at 1.85 km,
+    ~353k at 1 km — §8), so the in-memory cost is flat in hex_meters; only the
+    DB row count grows.
+  * The DOCUMENT is unchanged in every row: f203, 412,092 `atoms`, ~36 MB, the
+    mass basis. World 27 differs from today's Sol Real ONLY by the added
+    `hexcells` rows and `worlds.hex_meters` — the bodies, orbits, masses are
+    the same.
+
+  Streaming cost (in memory at any moment) is independent of the total row
+  count — it is the cap's hex count, as today (terrain.txt §3.3):
+      D = 500 km:  ~88,000 high-res hexes  (~1.2 M tris)
+      D = 1000 km: ~353,000 high-res hexes (~5 M tris)
+  The worker builds one ~4,000-hex chunk in ~0.03 s; the loaded set is ~21
+  chunks (500 km). This is the number that must stay small, and it does —
+  hex_meters only changes the DB size, never the in-memory footprint.
+
+
+--------------------------------------------------------------------------------
+8. LIFECYCLE — WHEN THE HIGH-RES EXISTS AT ALL  (R3, R4, R6)
+--------------------------------------------------------------------------------
+  * BOOT / LOAD: only the DOCUMENT is loaded (the skeleton + the coarsest
+    geodesic atoms, streamed as today). NO high-res at boot (R3). A body
+    renders its LOD chain in the sky exactly as today.
+  * MOUNT: a body's high-res region mounts when the player's SESSION is on it
+    (foot / craft / EVA with it as the dominant body) — the same intents that
+    hydrate. A free-cam fly-over does NOT mount it (the LOD chain is the
+    free-cam's surface; mounting 1–5 M tris for a glance is the eager-
+    everything behavior the hydration fix removed).
+  * STREAM: while mounted, the high-res chunks follow the focus (ahead-first,
+    behind-last, eviction at the cap edge). Full resolution only inside the cap
+    (R6). One worker, the existing seq-supersede contract; the main thread
+    keeps the previous chunk set visible until replacements land.
+  * EVICT: a chunk that leaves the cap is dropped — GPU buffers disposed, the
+    hex-row cache LRU'd (R4). The loaded set is bounded by the cap, never by
+    history. The Document is untouched at every step (R5).
+  * UNMOUNT: the session leaves the body (launch, EVA drift, lift-off, Esc,
+    selecting another body): the high-res region unmounts — every chunk
+    disposed, the data texture cleared, the doc shader's discard a no-op. The
+    body is back to its LOD chain, byte-identical to a world that never had
+    high-res (the delete-every-chunk law, now against the stored source).
+
+
+--------------------------------------------------------------------------------
+9. DECISIONS (SETTLED with the user, Nov 2026)
+--------------------------------------------------------------------------------
+  9.1  RESOLVED — the mass basis.  (a) Mass stays on the DOCUMENT.
+      The body's mass is the COARSE grid's mean-relief mass, and painting the
+      high-res does not (by itself) change the mass. This is what makes R5 hold
+      (streaming never touches the mass basis) and keeps the two layers
+      decoupled.
+
+  9.2  RESOLVED — the brush writes the STORED HIGH-RES CELL ONLY.
+      A stroke writes the `hexcells` row under the ray (the §6 fine hex), not
+      the enclosing doc cell. The doc cell — and with it the mass — is
+      re-averaged lazily / on save if it ever matters (§6.4). The two layers
+      stay decoupled; R5 stays clean.
+
+  9.3  RESOLVED — row-per-hex storage.
+      `hexcells` is row-per-hex (mirrors `atoms`): (body_id, patch, q, r) PK,
+      height / material_id / color per row — editable, per-hex FK to materials,
+      partial updates. ~3–5 GB for Earth @ 1.85 km (9.5). The chunked-blob
+      layout remains the write-once option for generated giants (which stay
+      generated — §3), not for stored walkable bodies.
+
+  9.4  RESOLVED — doc + finest only (initial scope).
+      Two stored levels: the bounded Document and the finest high-res.
+      Intermediate fine levels (4 km, 10 km …) are a named FOLLOW-ON for
+      cheaper low-alt flight — they would be more stored levels of the same
+      lattice, with no change to the doc or the mass basis.
+
+  9.5  RESOLVED — world 27 at 1.85 km (DEM-aligned).
+      The first generated world stores Earth's high-res at the DEM pixel size:
+      57.4 M cells, one hex = one ETOPO2022-60s pixel (identity sample), ~3–5 GB
+      row-per-hex. It reproduces the real 300 m–1 km cliff faces the f203
+      average destroyed. 1.0 km / 0.5 km are free follow-ons (`hex_meters` is a
+      world constant, not a hard limit — R2/R7); they only grow the DB.
+
+  9.6  RESOLVED — world-level hex size only.
+      `worlds.hex_meters`; every stored body shares it (this IS R1). No per-body
+      override. Generated giants are the only exemption (they store no
+      `hexcells` rows at all).
+
+
+--------------------------------------------------------------------------------
+10. INVARIANT IMPACT (what this doc changes about the engine's laws)
+--------------------------------------------------------------------------------
+  CHANGED:
+  * "The fine layer is presentational / derived / disposable" (terrain.txt) →
+    the fine layer is the STORED SOURCE. The disposable/derived status now
+    belongs to the RENDERED CHUNKS (the streamed, evicted, in-memory copies of
+    the stored high-res) — the delete-every-chunk law still holds (evicting a
+    chunk loses nothing, because the hexes are in `hexcells`).
+  * "The brush writes the document cell" (terrain.txt §5) → the brush writes
+    the STORED high-res cell (9.2); the doc cell's write is now optional.
+  * "The relief is in the DEM, not in the world" (terrain.txt §1.2) → the
+    relief is in the WORLD (`hexcells`); the DEM is the generation source.
+  EXTENDED:
+  * "One surface = the rendered surface" (surface.txt) — unchanged in form
+    (layered: high-res inside the cap, document outside, feathered at the
+    boundary); every consumer dispatches through surface(body, p) as today.
+  * "Picking is analytic" (AGENTS.md) — analytic at high-res scale (local fans
+    + O(1) axial lookup). The hit now reports the HIGH-RES hex (the stored
+    cell); the brush pipeline takes a high-res cell (9.2).
+  * "Element identity is positional" — EXTENDED: the high-res identity IS the
+    position (patch, q, r); there is no geodesic index for it (R: positioning
+    authoritative, index optional).
+  UNCHANGED:
+  * mass/radius/volume derivation (from the document), the document grid and
+    MAX_FREQUENCY = 203 (now explicitly the document bound), the LOD chain, the
+    physics registry, the worker contract, hydration-from-intent,
+    serializeWorld (the doc serializes as today; the high-res is in the DB —
+    for file worlds the high-res is a separate streamed payload, §9),
+    normalizeWorld's lenient healing (extends to the high-res descriptor).
+
+================================================================================
