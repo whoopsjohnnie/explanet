@@ -75,7 +75,21 @@ export function horizonGap(a, chunkSide, maxTexSide = 4096) {
 
 /** The largest polar angle (radians, from the focus's patch pole) a focus may have. */
 export function safeFocusAngle(capAngle, a, chunkSide, maxTexSide = 4096) {
-  return Math.PI / 2 - capAngle - horizonGap(a, chunkSide, maxTexSide)
+  // TWO independent bounds on the focus's polar angle, both keeping the cap's
+  // PLANE extent finite (the gnomonic plane point diverges at the patch
+  // horizon), and the tighter one wins:
+  //   (1) the §4.4 discard texture stays within maxTexSide² (horizonGap); and
+  //   (2) the fine lattice's HEX COUNT stays bounded. The lattice is
+  //       plane-uniform (edge a = the catalog pixel), so a fixed ANGLE cap
+  //       covers a growing number of hexes as the focus drifts toward the
+  //       horizon, where the plane stretches — the streaming work per focus
+  //       move would diverge. Capping the cap's far-edge polar angle
+  //       (focusPolar + capAngle <= maxCapPolarDeg) bounds the plane extent
+  //       and thus the hex count, regardless of body or drive (constants.json
+  //       fineDisc.maxCapPolarDeg). Beyond it the document surface renders —
+  //       the gnomonic distortion is large there anyway.
+  const maxCapPolar = (C.fineDisc.maxCapPolarDeg * Math.PI) / 180
+  return Math.min(Math.PI / 2 - capAngle - horizonGap(a, chunkSide, maxTexSide), maxCapPolar - capAngle)
 }
 
 /** True if the cap around body-local `dir` can be streamed (see horizonGap). */

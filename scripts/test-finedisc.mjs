@@ -8,6 +8,7 @@
  */
 
 import { getHexSphere } from '../src/core/hexsphere.js'
+import { C } from '../src/core/constants.js'
 import { radiusForFrequency, planetRadius } from '../src/core/planetMath.js'
 import { buildPlanetGeometryData } from '../src/core/geometry.js'
 import { makeStarterWorld } from '../src/core/starter.js'
@@ -326,10 +327,17 @@ function mulberry32(seed) {
   const gap = horizonGap(a, chunkSide)
   const safe = safeFocusAngle(capAngle, a, chunkSide)
 
-  // the formula: safe = 90° − capAngle − gap, gap = atan(2/(4096·side·a))
+  // safe = the TIGHTER of two bounds, both keeping the cap's plane extent
+  // finite (the gnomonic plane point diverges at the patch horizon): the §4.4
+  // texture bound (90° − capAngle − gap) and the fine lattice's HEX-COUNT
+  // bound (maxCapPolarDeg − capAngle — a plane-uniform lattice makes a fixed
+  // ANGLE cap cover a growing hex count toward the horizon). The hex-count
+  // bound is always tighter (maxCapPolarDeg < 90°), so it is the one that wins.
+  const safeTexture = Math.PI / 2 - capAngle - gap
+  const safeHex = (C.fineDisc.maxCapPolarDeg * Math.PI) / 180 - capAngle
   const okFormula =
     Math.abs(gap - Math.atan(2 / (4096 * chunkSide * a))) < 1e-12 &&
-    Math.abs(safe - (Math.PI / 2 - capAngle - gap)) < 1e-12
+    Math.abs(safe - Math.min(safeTexture, safeHex)) < 1e-12
 
   // a body-local direction at polar angle φ from the +Z pole
   const dirAt = (phi) => [Math.sin(phi), 0, Math.cos(phi)]
