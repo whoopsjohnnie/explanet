@@ -133,6 +133,7 @@ export function createPlanet(opts = {}) {
     ...(opts.parent ? { parent: String(opts.parent) } : {}),
     ...(opts.rings ? { rings: normalizeRings(opts.rings) } : {}),
     ...(atmosphere ? { atmosphere } : {}),
+    ...(opts.terrain ? { terrain: normalizeTerrain(opts.terrain) } : {}),
     elements: opts.elements || generateElements(preset, frequency, seed),
   }
 }
@@ -217,6 +218,21 @@ export function normalizeAtmosphere(a) {
     ...(horizon ? { horizon } : {}),
     ...(glow ? { glow } : {}),
   }
+}
+
+/**
+ * Validate/repair a terrain-catalog descriptor (docs/terrain.txt stage 2):
+ * `{ catalog }` names the DEM the body's fine region streams at the player.
+ * The fine-hex edge is the catalog's pixel size — a CATALOG property, not a
+ * dial — so the descriptor carries only the catalog id. Returns null when
+ * unusable (no fine layer: the document mesh is the surface, as today).
+ * Like rings/atmosphere: a presentational field, healed leniently.
+ */
+export function normalizeTerrain(t) {
+  if (!t || typeof t !== 'object') return null
+  const catalog = typeof t.catalog === 'string' && t.catalog.trim() ? t.catalog.trim() : null
+  if (!catalog) return null
+  return { catalog }
 }
 
 function clamp01(v) {
@@ -407,6 +423,8 @@ export function normalizeWorld(raw) {
     if (rings) planet.rings = rings
     const atmosphere = normalizeAtmosphere(p.atmosphere)
     if (atmosphere) planet.atmosphere = atmosphere
+    const terrain = normalizeTerrain(p.terrain)
+    if (terrain) planet.terrain = terrain
     const so = normalizeScriptsOrbit(p.scriptsOrbit)
     if (so) planet.scriptsOrbit = so
     if (stub) {

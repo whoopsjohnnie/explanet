@@ -106,6 +106,7 @@ const bodyRows = world.planets.map((p, i) => {
     p.generation ? cop(JSON.stringify(p.generation)) : '\\N',
     p.rings ? cop(JSON.stringify(p.rings)) : '\\N',
     p.atmosphere ? cop(JSON.stringify(p.atmosphere)) : '\\N',
+    p.terrain ? cop(JSON.stringify(p.terrain)) : '\\N',
     p.scriptsOrbit ? cop(JSON.stringify(p.scriptsOrbit)) : '\\N',
     p.parent ? cop(String(p.parent)) : '\\N',
   ].join('\t')
@@ -167,7 +168,7 @@ CREATE TEMP TABLE st_bodies (
   velocity_x double precision, velocity_y double precision, velocity_z double precision,
   spin_x double precision, spin_y double precision, spin_z double precision,
   density double precision, gravity_immune boolean, sort_order integer,
-  generation text, rings text, atmosphere text, scripts text, parent text
+  generation text, rings text, atmosphere text, terrain text, scripts text, parent text
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE st_atoms (
@@ -180,7 +181,7 @@ CREATE TEMP TABLE st_crafts (
   sort_order integer
 ) ON COMMIT DROP;
 
-COPY st_bodies (${bodyCols}, generation, rings, atmosphere, scripts, parent) FROM stdin;
+COPY st_bodies (${bodyCols}, generation, rings, atmosphere, terrain, scripts, parent) FROM stdin;
 ${bodyRows}
 \\.
 ${craftRows ? `
@@ -195,10 +196,11 @@ WITH w AS (
     ${num(world.scale)})
   RETURNING id
 )
-INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, atmosphere, scripts, parent_body_id)
+INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, atmosphere, terrain, scripts, parent_body_id)
 SELECT w.id, ${bodyCols.split(',').map((c) => `s.${c.trim()}`).join(', ')},
        NULLIF(s.generation, '')::jsonb, NULLIF(s.rings, '')::jsonb,
-       NULLIF(s.atmosphere, '')::jsonb, NULLIF(s.scripts, '')::jsonb, NULL
+       NULLIF(s.atmosphere, '')::jsonb, NULLIF(s.terrain, '')::jsonb,
+       NULLIF(s.scripts, '')::jsonb, NULL
 FROM st_bodies s, w;
 
 -- moons → parents: resolve doc_id references inserted by the generator

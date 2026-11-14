@@ -289,6 +289,10 @@ for (const d of PLANETS) {
     density: densityFor(d.mu, freq, 1, elements),
     isStatic: false,
     ...(atmo ? { atmosphere: atmo } : {}),
+    // Earth is the only body with a real DEM: its fine region streams the
+    // ETOPO2022 60s catalog (docs/terrain.txt stage 2). The fine-hex edge is
+    // the catalog's pixel size (1.85 km); the document stays f203.
+    ...(d.name === 'Earth' ? { terrain: { catalog: 'ETOP2022-60s' } } : {}),
     elements,
     center: orb.center,
     velocity: orb.velocity,
