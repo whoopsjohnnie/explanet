@@ -91,10 +91,13 @@ CREATE TABLE worlds (
   scale         double precision NOT NULL CHECK (scale > 0),
 
   -- The world's stored high-res hex edge, in METERS (migration 011,
-  -- docs/terrain2.txt). One value per world: every body that stores its
-  -- surface (bodies.highres) uses the same size (R1). NULL = no high-res
-  -- stored (doc-only / generated bodies — the pre-inversion behavior). A body's
-  -- cell count is unbounded (4πR²/hexArea); MAX_FREQUENCY bounds only the doc.
+  -- docs/terrain2.txt). Resolution is a WORLD property: when set, EVERY body
+  -- in the world that stores its surface (generation IS NULL) stores its
+  -- hexcells at this same size (R1) — there is no per-body flag or override.
+  -- Generated bodies (generation IS NOT NULL) are the exemption: they store no
+  -- surface at all. NULL = no high-res stored anywhere (the pre-inversion
+  -- behavior). A body's cell count is unbounded (4πR²/hexArea);
+  -- MAX_FREQUENCY bounds only the document.
   hex_meters    double precision
                 CHECK (hex_meters IS NULL OR hex_meters > 0),
 
@@ -196,12 +199,6 @@ CREATE TABLE bodies (
   -- like rings/atmosphere.
   terrain        jsonb
                  CHECK (terrain IS NULL OR jsonb_typeof(terrain) = 'object'),
-
-  -- Stored high-res opt-in (migration 011, docs/terrain2.txt). TRUE = this
-  -- body stores its surface in hexcells at the world's hex_meters (walkable at
-  -- high resolution). FALSE = doc-only or generated (giants are the R1
-  -- exemption). Generated bodies (generation IS NOT NULL) are always FALSE.
-  highres        boolean NOT NULL DEFAULT false,
 
   -- Scripted test particle (migration 003). NULL = ordinary N-body body.
   -- { a, e, inc, node, peri, n, m0 } osculating elements in engine units:

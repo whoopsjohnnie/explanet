@@ -50,15 +50,16 @@ import { loadEtopo } from './sol-real/etopo.mjs'
 
 // ---------------------------------------------------------------------------
 // CLI options — the stored high-res (docs/terrain2.txt)
-//   --hex-meters <m>    set worlds.hex_meters (the world's stored hex edge, m)
-//   --highres <a,b,..>  flag those bodies as highres (they store hexcells)
-//   --out <path>        write the world doc here (default public/sol-real.json)
+//   --hex-meters <m>  set worlds.hex_meters (the world's stored hex edge, m)
+//   --out <path>      write the world doc here (default public/sol-real.json)
 //
-// A doc built with --hex-meters/--highres is a NORMAL world document: it
-// carries only the world-level hex size and the per-body opt-in. The actual
-// hexcells (tens of millions of rows) are streamed into the DB by
-// scripts/import-hexcells.mjs AFTER the world is imported — a JSON doc never
-// holds them (large worlds are DB-only).
+// Resolution is a WORLD property: when hex_meters is set, EVERY non-generated
+// body stores its hexcells at that size (there is no per-body flag — the rule
+// is derived, docs/terrain2.txt §4). A doc built with --hex-meters is a NORMAL
+// world document carrying only the world-level hex size. The actual hexcells
+// (hundreds of millions of rows across the stored bodies) are streamed into
+// the DB by scripts/import-hexcells.mjs AFTER the world is imported — a JSON
+// doc never holds them (large worlds are DB-only).
 // ---------------------------------------------------------------------------
 const args = process.argv.slice(2)
 const argOpt = (f, d = undefined) => {
@@ -66,7 +67,6 @@ const argOpt = (f, d = undefined) => {
   return i >= 0 ? args[i + 1] : d
 }
 const HEX_METERS = Number(argOpt('--hex-meters')) || null
-const HIGHRES = new Set((argOpt('--highres', '') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
 const OUT_PATH = argOpt('--out', '../public/sol-real.json')
 
 // ---------------------------------------------------------------------------
@@ -569,10 +569,6 @@ const SHUTTLE_BODIES = [
   ['m-earth-moon', 'Moon'],
   ['p-mars', 'Mars'],
 ]
-// flag the highres bodies (they store their surface in hexcells — the doc
-// carries only the per-body opt-in; the hexes are streamed by import-hexcells)
-for (const p of planets) if (HIGHRES.has(String(p.name).toLowerCase())) p.highres = true
-
 const world = {
   version: 1,
   name: 'Sol Real',
@@ -632,14 +628,15 @@ for (const p of planets) {
           : 'planet/dwarf'
   byKind[kind] = (byKind[kind] || 0) + 1
 }
-const highresNames = planets.filter((p) => p.highres).map((p) => p.name)
 console.log(
   `Wrote ${OUT_PATH.replace(/^\.\.\//, '')} — ${planets.length} bodies (${scripted} scripted), ` +
     `${storedAtoms.toLocaleString('en-US')} stored atoms, unit ≈ ${(1 / KM2U).toFixed(1)} km, M☉ = ${mSun.toExponential(3)}`
 )
 console.log('  ' + Object.entries(byKind).map(([k, v]) => `${k}=${v}`).join('  '))
-if (HEX_METERS || highresNames.length)
+if (HEX_METERS) {
+  const stored = planets.filter((p) => !p.generation)
   console.log(
-    `  high-res: hex_meters=${HEX_METERS ?? '—'}m, highres bodies: ${highresNames.join(', ') || '—'} ` +
-      `(hexcells streamed in by scripts/import-hexcells.mjs after the import)`
+    `  high-res: hex_meters=${HEX_METERS}m — all ${stored.length} stored (non-generated) bodies ` +
+      `store their hexcells at that size (hexcells streamed in by scripts/import-hexcells.mjs after the import)`
   )
+}

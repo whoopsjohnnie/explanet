@@ -606,7 +606,6 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     if (b.rings) planet.rings = b.rings
     if (b.atmosphere) planet.atmosphere = b.atmosphere
     if (b.terrain) planet.terrain = b.terrain
-    if (b.highres) planet.highres = true
     if (b.scripts) planet.scriptsOrbit = b.scripts
     if (b.generation) {
       // generated body (docs/scaling.txt §5): always a stub — there are no
@@ -661,8 +660,10 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     // real human in meters (core/surface.js SURFACE_REAL).
     scale: w[0].scale,
     // the world's stored high-res hex edge, in METERS (migration 011,
-    // docs/terrain2.txt §4): every highres body shares it (R1). NULL = no
-    // stored high-res (the pre-inversion world — the app never mounts a region).
+    // docs/terrain2.txt §4). Resolution is a WORLD property: when set, every
+    // STORED body (generation == null) carries hexcells at this size — the
+    // app derives that, no per-body flag. NULL = no stored high-res (the
+    // pre-inversion world — the app never mounts a region).
     ...(w[0].hex_meters != null ? { hex_meters: Number(w[0].hex_meters) } : {}),
     source: `db:${DATABASE}@${HOST} · ${w[0].name}`,
     ...(crafts.length ? { crafts } : {}),

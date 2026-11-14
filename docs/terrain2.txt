@@ -207,13 +207,18 @@
         for query/stream ORDER (R: "use positioning for loading order") and as
         a sanity pin, never authoritative over the lattice key.
 
-      * A body declares that it STORES its surface (a per-body opt-in flag) so
-        the skeleton knows to offer the high-res stream. Re-point
-        `bodies.terrain` (or add a sibling `bodies.highres`) to carry it. The
-        descriptor carries ONLY the opt-in — the hex SIZE is world-level
-        (`worlds.hex_meters`, §9.6), so there is no per-body size. Generated
-        giants (generation != NULL) never set the flag: they are the R1
-        exemption and carry no `hexcells` rows.
+      * WHICH BODIES STORE hexcells is DERIVED, not flagged (REVISION — an
+        earlier draft added a per-body `bodies.highres` opt-in; that was wrong
+        and the column was dropped in migration 011's revision). Resolution is
+        a WORLD property (§4, §9.6): when `worlds.hex_meters` is set, EVERY
+        body in the world that stores its surface (generation IS NULL) stores
+        its hexcells at that same size (R1) — Earth, Mars, the Moon, all of
+        them, no per-body flag or override. Generated giants
+        (generation IS NOT NULL, e.g. Jupiter) are the exemption: they store no
+        surface at all and carry no `hexcells` rows. The skeleton carries only
+        the world-level `hex_meters`; the app derives the per-body rule (and a
+        body with no hexcells simply streams no tiles — the same graceful
+        absence as a missing DEM catalog).
       * `bodies.frequency` CHECK 1..203 is UNCHANGED — it bounds the DOCUMENT
         (R7). No new cap is added for the high-res; it has no n.
       * `atoms` is UNCHANGED — it still holds the document (coarsest geodesic

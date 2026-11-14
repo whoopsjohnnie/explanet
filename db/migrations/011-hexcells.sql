@@ -6,10 +6,14 @@
 -- (the `atoms` document, ≤ MAX_FREQUENCY) is the mass/physics basis. This
 -- migration adds the two pieces that model that:
 --
---   * worlds.hex_meters — the WORLD's stored hex edge, in METERS. One value
---     per world: every body that stores its surface uses the same size (R1).
---     NULL = the world stores no high-res (every body is doc-only / generated)
---     — the pre-inversion behavior (terrain.txt stage 2's DEM overlay).
+--   * worlds.hex_meters — the WORLD's stored hex edge, in METERS. Resolution
+--     is a WORLD property, not a per-body one: when set, EVERY body in the
+--     world that stores its surface (generation IS NULL) stores its hexcells
+--     at this same size (R1). There is no per-body flag and no per-body
+--     override — the rule is derived (hex_meters + generation). Generated
+--     bodies (generation IS NOT NULL, e.g. the gas giants) are the exemption:
+--     they store no surface at all. NULL = the world stores no high-res
+--     anywhere (the pre-inversion behavior).
 --
 --   * hexcells — the high-res surface, one row per stored hex, keyed by
 --     POSITION in the latitude-row grid (docs/terrain2.txt §3/§5):
@@ -19,12 +23,6 @@
 --     key the design requires — never a global sequential index). A lat/lon
 --     TILE (a lat_row × lon_col rectangle) is the streaming unit, the same
 --     shape as the DEM tiles in `terrain` (migration 010).
---
---   * bodies.highres — a per-body opt-in flag: TRUE = this body stores its
---     surface in hexcells (it is walkable at the world's hex_meters). FALSE =
---     doc-only or generated (giants are the R1 exemption — they carry no
---     hexcells rows). Generated bodies (generation IS NOT NULL) are always
---     FALSE by construction.
 --
 -- What does NOT change: `bodies.frequency` CHECK 1..203 still bounds the
 -- DOCUMENT (the mass basis, R7); `atoms` still holds the document; the mass /
@@ -50,22 +48,22 @@ ALTER TABLE worlds ADD COLUMN IF NOT EXISTS hex_meters double precision
   CHECK (hex_meters IS NULL OR hex_meters > 0);
 
 COMMENT ON COLUMN worlds.hex_meters IS
-  'The world''s stored high-res hex edge, in METERS (docs/terrain2.txt). One '
-  'value per world: every stored body uses the same size (R1). NULL = no '
-  'high-res stored (doc-only / generated bodies — the pre-inversion behavior). '
-  'A body''s cell count is unbounded (4πR²/hexArea); MAX_FREQUENCY bounds only '
-  'the document.';
+  'The world''s stored high-res hex edge, in METERS (docs/terrain2.txt). '
+  'Resolution is a WORLD property: when set, every body that stores its '
+  'surface (generation IS NULL) stores hexcells at this same size (R1) — no '
+  'per-body flag or override, the rule is derived. Generated bodies are the '
+  'exemption (they store no surface). NULL = no high-res stored (the '
+  'pre-inversion behavior). A body''s cell count is unbounded (4πR²/hexArea); '
+  'MAX_FREQUENCY bounds only the document.';
 
 -- ---------------------------------------------------------------------------
--- bodies.highres — per-body opt-in: does this body store its surface?
+-- (Revised) no per-body highres flag.
 -- ---------------------------------------------------------------------------
-ALTER TABLE bodies ADD COLUMN IF NOT EXISTS highres boolean NOT NULL DEFAULT false;
-
-COMMENT ON COLUMN bodies.highres IS
-  'TRUE = this body stores its surface in hexcells at the world''s hex_meters '
-  '(docs/terrain2.txt, Level F) — it is walkable at high resolution. FALSE = '
-  'doc-only or generated (giants are the R1 exemption). Generated bodies '
-  '(generation IS NOT NULL) are always FALSE by construction.';
+-- An earlier revision of this migration added bodies.highres (a per-body
+-- opt-in). That was wrong: resolution is world-level and the stored-surface
+-- rule is DERIVED (worlds.hex_meters set + body not generated). Drop the
+-- column if a prior revision created it; fresh installs never had it.
+ALTER TABLE bodies DROP COLUMN IF EXISTS highres;
 
 -- ---------------------------------------------------------------------------
 -- hexcells — the stored high-res surface, one row per hex
@@ -83,9 +81,10 @@ COMMENT ON COLUMN bodies.highres IS
 --
 -- Row-per-hex (docs/terrain2.txt §9.3) mirrors atoms: editable per cell,
 -- per-hex FK to materials, partial updates. At the design's 1.85 km target a
--- body like Earth holds ~57 M rows — COPY, never INSERT-per-row; the table
--- can be PARTITION BY HASH (body_id) if a single partition outgrows
--- maintenance (the PK/FK syntax is unchanged — see the schema NOTES).
+-- body like Earth holds ~57 M rows (all of world 27's stored bodies hold
+-- ~202 M) — COPY, never INSERT-per-row; the table can be PARTITION BY HASH
+-- (body_id) if a single partition outgrows maintenance (the PK/FK syntax is
+-- unchanged — see the schema NOTES).
 CREATE TABLE IF NOT EXISTS hexcells (
   body_id     bigint NOT NULL REFERENCES bodies (id) ON DELETE CASCADE,
   lat_row     integer  NOT NULL CHECK (lat_row >= 0),
@@ -108,7 +107,9 @@ COMMENT ON TABLE hexcells IS
   'hex of the latitude-row grid, keyed by POSITION (body_id, lat_row, '
   'lon_col). height is world units; material_id/color mirror atoms. The '
   'streaming unit is a lat/lon tile. Served by GET /api/bodies/:id/hex/... — '
-  'the app never reads it directly.';
+  'the app never reads it directly. Every stored (non-generated) body of a '
+  'world with worlds.hex_meters set has rows here — the rule is derived, '
+  'there is no per-body flag.';
 COMMENT ON COLUMN hexcells.lat IS
   'The hex''s center latitude in degrees, derived from (lat_row, lon_col) + '
   'the grid (body radius + worlds.hex_meters). Stored for query/stream ORDER; '
