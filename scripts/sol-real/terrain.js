@@ -181,6 +181,79 @@ export function hexDemStats(hex, i, geo, trig) {
   return count ? { mean: sum / count, min, max, count } : null
 }
 
+/**
+ * Earth's per-hex material + color from latitude, longitude and one
+ * representative elevation in METERS (sea level = 0). This is the f203
+ * document's climate-belt + elevation + ocean-depth color rules, factored out
+ * so the STORED HIGH-RES hexes (docs/terrain2.txt) share EXACTLY the same
+ * rules as the document — a coastline hex is land or sea, never a blend.
+ *
+ * `dir` is the hex's body-local unit direction (drives the fbm noise field):
+ * the document passes its cell center, the high-res passes its own center.
+ * The land/ocean split follows the sign of `hM` (which mirrors the document's
+ * `st.mean >= 0` split — see buildEarth).
+ */
+export function earthHex(latDeg, lonDeg, hM, dir, seed = 42) {
+  const lat = latDeg
+  const lon = lonDeg
+  const nx = dir[0] * 3.1
+  const ny = dir[1] * 3.1
+  const nz = dir[2] * 3.1
+  const detail = fbm(nx, ny, nz, seed, 5)
+  const rough = fbm(nx * 2.7, ny * 2.7, nz * 2.7, seed + 99, 4)
+  let c, t
+  if (hM >= 0) {
+    // land: climate belt + elevation modifiers
+    const al = Math.abs(lat)
+    const dry = fbm(nx * 1.4 + 11, ny * 1.4, nz * 1.4, seed + 55, 3)
+    let desert = 0
+    for (const ds of DESERTS) {
+      const dlat = (lat - ds.lat) / ds.rLat
+      let dlon = ((lon - ds.lon + 540) % 360) - 180
+      dlon /= ds.rLon
+      const e = dlat * dlat + dlon * dlon
+      if (e < 1.6) desert = Math.max(desert, 1 - e / 1.6)
+    }
+    desert = clamp(desert + (dry - 0.5) * 0.9, 0, 1)
+    if (al < 13) c = mix('#2f6d2a', '#4a7d32', detail) // rainforest/jungle
+    else if (al < 26) c = mix('#7d7a4a', '#a99a5e', detail) // savanna/steppe belt
+    else if (al < 40) c = mix('#5d7a3e', '#7c8a4c', detail) // temperate
+    else if (al < 55) c = mix('#4a6b3c', '#6d7f52', detail) // mixed forest
+    else c = mix('#5b6f52', '#8a947f', rough) // boreal/tundra
+    c = mix(c, '#d2b078', desert * 0.85)
+    t = hM < 80 && al < 30 ? 'sand' : 'grass'
+    if (hM > 2800) c = mix(c, '#8d8d93', clamp((hM - 2800) / 2200, 0, 1) * 0.75) // rock
+    const snowline = 4600 - 42 * al
+    if (hM >= snowline) {
+      t = 'snow'
+      c = mix('#e8eef4', '#b9c4cc', clamp((hM - snowline) / 3000, 0, 1) * 0.5)
+    } else if (al > 66 + detail * 6) {
+      t = 'snow'
+      c = mix('#dde6ea', '#9fb2a8', detail)
+    }
+    for (const lk of LAKES) {
+      const dlat = (lat - lk.lat) / lk.rLat
+      let dl = ((lon - lk.lon + 540) % 360) - 180
+      dl /= lk.rLon
+      if (dlat * dlat + dl * dl < 1) {
+        t = 'water'
+        c = '#175fa0'
+        break
+      }
+    }
+  } else {
+    // ocean: depth ramp, sea ice at high latitude (t stays 'water')
+    const depth = -hM
+    c = mix('#2f8fc4', '#1c64a4', clamp(depth / 1500, 0, 1)) // shelf → slope
+    c = mix(c, '#123f7c', clamp((depth - 1500) / 2500, 0, 1)) // slope → abyssal
+    c = mix(c, '#0a2548', clamp((depth - 4000) / 3000, 0, 1)) // abyssal → hadal
+    t = 'water'
+    const iceEdge = lat > 0 ? 74 - 6 * detail : 60 + 12 * detail
+    if (Math.abs(lat) > iceEdge) c = mix('#dfeaf2', '#ffffff', detail)
+  }
+  return { t, c }
+}
+
 export function buildEarth(frequency, dem, seed = 42) {
   const hex = getHexSphere(frequency)
   const trig = trigTables(dem)
@@ -189,73 +262,14 @@ export function buildEarth(frequency, dem, seed = 42) {
     const p = latLon(hex, i)
     const lat = p.lat / DEG
     const lon = p.lon / DEG
-    const nx = p.x * 3.1
-    const ny = p.y * 3.1
-    const nz = p.z * 3.1
-    const detail = fbm(nx, ny, nz, seed, 5)
-    const rough = fbm(nx * 2.7, ny * 2.7, nz * 2.7, seed + 99, 4)
-
     // a cell that scans to zero pixels (degenerate) falls back to its center
     const st = hexDemStats(hex, i, dem, trig) || { mean: sampleAt(dem, lat, lon), min: 0, max: 0 }
-    // meters; sea level = 0, the DEM's own convention
-    const meanM = st.mean
-    let hM, t, c
-    if (meanM >= 0) {
-      // land: the hex's peak gets half credit (real relief, no exaggeration)
-      hM = 0.5 * (st.mean + st.max)
-      const al = Math.abs(lat)
-      // climate belts
-      const dry = fbm(nx * 1.4 + 11, ny * 1.4, nz * 1.4, seed + 55, 3)
-      let desert = 0
-      for (const ds of DESERTS) {
-        const dlat = (lat - ds.lat) / ds.rLat
-        let dlon = ((lon - ds.lon + 540) % 360) - 180
-        dlon /= ds.rLon
-        const e = dlat * dlat + dlon * dlon
-        if (e < 1.6) desert = Math.max(desert, 1 - e / 1.6)
-      }
-      desert = clamp(desert + (dry - 0.5) * 0.9, 0, 1)
-      if (al < 13) c = mix('#2f6d2a', '#4a7d32', detail) // rainforest/jungle
-      else if (al < 26) c = mix('#7d7a4a', '#a99a5e', detail) // savanna/steppe belt
-      else if (al < 40) c = mix('#5d7a3e', '#7c8a4c', detail) // temperate
-      else if (al < 55) c = mix('#4a6b3c', '#6d7f52', detail) // mixed forest
-      else c = mix('#5b6f52', '#8a947f', rough) // boreal/tundra
-      c = mix(c, '#d2b078', desert * 0.85)
-      t = hM < 80 && al < 30 ? 'sand' : 'grass'
-      // elevation modifiers on top of the belt color
-      if (hM > 2800) c = mix(c, '#8d8d93', clamp((hM - 2800) / 2200, 0, 1) * 0.75) // rock
-      // snowline falls with |lat|
-      const snowline = 4600 - 42 * al
-      if (hM >= snowline) {
-        t = 'snow'
-        c = mix('#e8eef4', '#b9c4cc', clamp((hM - snowline) / 3000, 0, 1) * 0.5)
-      } else if (al > 66 + detail * 6) {
-        t = 'snow'
-        c = mix('#dde6ea', '#9fb2a8', detail)
-      }
-      // lakes (freshwater ellipses punched into land)
-      for (const lk of LAKES) {
-        const dlat = (lat - lk.lat) / lk.rLat
-        let dl = ((lon - lk.lon + 540) % 360) - 180
-        dl /= lk.rLon
-        if (dlat * dlat + dl * dl < 1) {
-          t = 'water'
-          c = '#175fa0'
-          break
-        }
-      }
-    } else {
-      // ocean: the hex's deepest point gets half credit (negative h = depth)
-      hM = 0.5 * (st.mean + st.min)
-      const depth = -hM
-      c = mix('#2f8fc4', '#1c64a4', clamp(depth / 1500, 0, 1)) // shelf → slope
-      c = mix(c, '#123f7c', clamp((depth - 1500) / 2500, 0, 1)) // slope → abyssal
-      c = mix(c, '#0a2548', clamp((depth - 4000) / 3000, 0, 1)) // abyssal → hadal
-      t = 'water'
-      // sea ice (t stays 'water' — the stats count it as sea)
-      const iceEdge = lat > 0 ? 74 - 6 * detail : 60 + 12 * detail
-      if (Math.abs(lat) > iceEdge) c = mix('#dfeaf2', '#ffffff', detail)
-    }
+    // meters; sea level = 0, the DEM's own convention. Land: the hex's peak
+    // gets half credit; ocean: its trench does — the f203 down-sample (§6.1).
+    // The sign of hM mirrors st.mean >= 0, so earthHex's split agrees with
+    // the document's land/ocean split exactly.
+    const hM = st.mean >= 0 ? 0.5 * (st.mean + st.max) : 0.5 * (st.mean + st.min)
+    const { t, c } = earthHex(lat, lon, hM, [p.x, p.y, p.z], seed)
     els[i] = { t, h: (hM / 1000) * KM2U, c }
   }
   return els

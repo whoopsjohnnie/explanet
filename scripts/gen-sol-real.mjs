@@ -49,6 +49,27 @@ import {
 import { loadEtopo } from './sol-real/etopo.mjs'
 
 // ---------------------------------------------------------------------------
+// CLI options — the stored high-res (docs/terrain2.txt)
+//   --hex-meters <m>    set worlds.hex_meters (the world's stored hex edge, m)
+//   --highres <a,b,..>  flag those bodies as highres (they store hexcells)
+//   --out <path>        write the world doc here (default public/sol-real.json)
+//
+// A doc built with --hex-meters/--highres is a NORMAL world document: it
+// carries only the world-level hex size and the per-body opt-in. The actual
+// hexcells (tens of millions of rows) are streamed into the DB by
+// scripts/import-hexcells.mjs AFTER the world is imported — a JSON doc never
+// holds them (large worlds are DB-only).
+// ---------------------------------------------------------------------------
+const args = process.argv.slice(2)
+const argOpt = (f, d = undefined) => {
+  const i = args.indexOf(f)
+  return i >= 0 ? args[i + 1] : d
+}
+const HEX_METERS = Number(argOpt('--hex-meters')) || null
+const HIGHRES = new Set((argOpt('--highres', '') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
+const OUT_PATH = argOpt('--out', '../public/sol-real.json')
+
+// ---------------------------------------------------------------------------
 // anchors (identical to the Sol Trial)
 // ---------------------------------------------------------------------------
 const G = 40
@@ -548,11 +569,16 @@ const SHUTTLE_BODIES = [
   ['m-earth-moon', 'Moon'],
   ['p-mars', 'Mars'],
 ]
+// flag the highres bodies (they store their surface in hexcells — the doc
+// carries only the per-body opt-in; the hexes are streamed by import-hexcells)
+for (const p of planets) if (HIGHRES.has(String(p.name).toLowerCase())) p.highres = true
+
 const world = {
   version: 1,
   name: 'Sol Real',
   gravity: G,
   scale: 1000 / KM2U,
+  ...(HEX_METERS ? { hex_meters: HEX_METERS } : {}),
   planets,
   crafts: SHUTTLE_BODIES.filter(([id]) => planets.some((p) => p.id === id)).map(([id, name]) =>
     createCraft({
@@ -564,7 +590,7 @@ const world = {
     })
   ),
 }
-writeFileSync(new URL('../public/sol-real.json', import.meta.url), JSON.stringify(world))
+writeFileSync(new URL(OUT_PATH, import.meta.url), JSON.stringify(world))
 
 // Earth verification: the DEM integration must read like the real world
 {
@@ -606,8 +632,14 @@ for (const p of planets) {
           : 'planet/dwarf'
   byKind[kind] = (byKind[kind] || 0) + 1
 }
+const highresNames = planets.filter((p) => p.highres).map((p) => p.name)
 console.log(
-  `Wrote public/sol-real.json — ${planets.length} bodies (${scripted} scripted), ` +
+  `Wrote ${OUT_PATH.replace(/^\.\.\//, '')} — ${planets.length} bodies (${scripted} scripted), ` +
     `${storedAtoms.toLocaleString('en-US')} stored atoms, unit ≈ ${(1 / KM2U).toFixed(1)} km, M☉ = ${mSun.toExponential(3)}`
 )
 console.log('  ' + Object.entries(byKind).map(([k, v]) => `${k}=${v}`).join('  '))
+if (HEX_METERS || highresNames.length)
+  console.log(
+    `  high-res: hex_meters=${HEX_METERS ?? '—'}m, highres bodies: ${highresNames.join(', ') || '—'} ` +
+      `(hexcells streamed in by scripts/import-hexcells.mjs after the import)`
+  )

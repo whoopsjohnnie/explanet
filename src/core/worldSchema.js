@@ -396,6 +396,12 @@ export function normalizeWorld(raw) {
       'world has no scale (meters per world unit) — every world needs one; set "scale" in the document or re-import it (scripts/import-db.mjs)'
     )
   world.scale = wScale
+  // the world's stored high-res hex edge, in METERS (docs/terrain2.txt §4):
+  // one value per world, every highres body shares it (R1). NULL = no stored
+  // high-res (the pre-inversion world). A body's highres flag is only
+  // meaningful WITH a hex_meters, so both heal together below.
+  const hexMeters = positive(raw.hex_meters, null)
+  if (hexMeters) world.hex_meters = hexMeters
 
   const planets = Array.isArray(raw.planets) ? raw.planets : []
   for (const p of planets) {
@@ -425,6 +431,11 @@ export function normalizeWorld(raw) {
     if (atmosphere) planet.atmosphere = atmosphere
     const terrain = normalizeTerrain(p.terrain)
     if (terrain) planet.terrain = terrain
+    // stored high-res opt-in (docs/terrain2.txt): this body stores its surface
+    // in hexcells at the world's hex_meters. Healed leniently — it only
+    // survives with a world hex_meters, and never on a generated body (the R1
+    // exemption, which stores no hexcells rows).
+    if (p.highres === true && hexMeters && !p.generation) planet.highres = true
     const so = normalizeScriptsOrbit(p.scriptsOrbit)
     if (so) planet.scriptsOrbit = so
     if (stub) {
@@ -458,6 +469,10 @@ export function serializeWorld(world) {
     name: world.name,
     gravity: world.gravity,
     scale: world.scale ?? ATOM_M_PER_UNIT,
+    // the world's stored high-res hex edge round-trips with the document
+    // (docs/terrain2.txt §4); a per-body `highres` flag rides in the planet
+    // spread above. Absent = the pre-inversion world.
+    ...(positive(world.hex_meters, null) ? { hex_meters: positive(world.hex_meters, null) } : {}),
     ...(Array.isArray(world.crafts) && world.crafts.length ? { crafts: world.crafts } : {}),
     planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, ...doc }) => doc),
   }

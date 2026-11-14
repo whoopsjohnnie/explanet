@@ -90,7 +90,7 @@ console.error(`importing ${src}: "${world.name ?? 'Untitled World'}", ` +
 // ---------------------------------------------------------------------------
 const bodyCols = `doc_id, name, preset, kind, seed, frequency, scale,
   center_x, center_y, center_z, velocity_x, velocity_y, velocity_z,
-  spin_x, spin_y, spin_z, density, gravity_immune, sort_order`
+  spin_x, spin_y, spin_z, density, gravity_immune, sort_order, highres`
 
 const bodyRows = world.planets.map((p, i) => {
   p.__docId = p.id ?? `p-import-${i}`
@@ -103,6 +103,7 @@ const bodyRows = world.planets.map((p, i) => {
     Math.round(Number(p.seed) || 1), Math.round(Number(p.frequency) || 6), num(p.scale, 1),
     num(c.x), num(c.y), num(c.z), num(v.x), num(v.y), num(v.z), num(s.x), num(s.y), num(s.z),
     num(p.density, 0.05), p.isStatic ? 't' : 'f', i,
+    p.highres ? 't' : 'f',
     p.generation ? cop(JSON.stringify(p.generation)) : '\\N',
     p.rings ? cop(JSON.stringify(p.rings)) : '\\N',
     p.atmosphere ? cop(JSON.stringify(p.atmosphere)) : '\\N',
@@ -167,7 +168,7 @@ CREATE TEMP TABLE st_bodies (
   center_x double precision, center_y double precision, center_z double precision,
   velocity_x double precision, velocity_y double precision, velocity_z double precision,
   spin_x double precision, spin_y double precision, spin_z double precision,
-  density double precision, gravity_immune boolean, sort_order integer,
+  density double precision, gravity_immune boolean, sort_order integer, highres boolean,
   generation text, rings text, atmosphere text, terrain text, scripts text, parent text
 ) ON COMMIT DROP;
 
@@ -191,9 +192,9 @@ ${craftRows}
 ` : ''}
 
 WITH w AS (
-  INSERT INTO worlds (name, gravity, doc_version, scale)
+  INSERT INTO worlds (name, gravity, doc_version, scale, hex_meters)
   VALUES (${q(world.name ?? 'Untitled World')}, ${num(world.gravity, 40)}, ${num(world.version, 1)},
-    ${num(world.scale)})
+    ${num(world.scale)}, ${Number.isFinite(Number(world.hex_meters)) ? num(world.hex_meters) : 'NULL'})
   RETURNING id
 )
 INSERT INTO bodies (world_id, ${bodyCols}, generation, rings, atmosphere, terrain, scripts, parent_body_id)

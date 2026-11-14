@@ -566,7 +566,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
   if (!refresh && cached && Date.now() - cached.at < SKELETON_TTL_MS) return cached
 
   const { rows: w } = await getPool().query(
-    `SELECT id, name, gravity, doc_version, scale FROM worlds WHERE id = $1`,
+    `SELECT id, name, gravity, doc_version, scale, hex_meters FROM worlds WHERE id = $1`,
     [id]
   )
   if (!w.length) throw new Error(`no world ${id} in ${DATABASE}@${HOST}`)
@@ -606,6 +606,7 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     if (b.rings) planet.rings = b.rings
     if (b.atmosphere) planet.atmosphere = b.atmosphere
     if (b.terrain) planet.terrain = b.terrain
+    if (b.highres) planet.highres = true
     if (b.scripts) planet.scriptsOrbit = b.scripts
     if (b.generation) {
       // generated body (docs/scaling.txt §5): always a stub — there are no
@@ -659,6 +660,10 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
     // unit, in METERS. Every world carries it, so the surface walker is a
     // real human in meters (core/surface.js SURFACE_REAL).
     scale: w[0].scale,
+    // the world's stored high-res hex edge, in METERS (migration 011,
+    // docs/terrain2.txt §4): every highres body shares it (R1). NULL = no
+    // stored high-res (the pre-inversion world — the app never mounts a region).
+    ...(w[0].hex_meters != null ? { hex_meters: Number(w[0].hex_meters) } : {}),
     source: `db:${DATABASE}@${HOST} · ${w[0].name}`,
     ...(crafts.length ? { crafts } : {}),
     planets,

@@ -19,5 +19,7 @@ scripts/sol-real/data/
 # generated trial artifact (scripts/gen-solar-world.mjs regenerates it)
 public/solar-trial.json
 public/sol-real.json
+# the stored high-res world doc (scripts/gen-sol-real.mjs --out regenerates it)
+public/sol-real-hex.json
 scripts/sol-real/data/orbits-cache.json
 scripts/sol-real/data/Moons_of_*.json
