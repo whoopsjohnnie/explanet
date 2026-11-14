@@ -116,18 +116,33 @@
         consistent (both descend from the same DEM source).
 
   Level F — the HIGH-RES (finest, unbounded)
-      * The stored source. A REGULAR, POSITION-ADDRESSABLE gnomonic lattice
-        (the same two-patch lattice terrain.txt §3.2 built for the DEM), whose
-        hex edge `a` = worlds.hex_meters (in meters) converted to world units.
-        Earth @ 1.85 km: 57.4 M cells; @ 1 km: 196 M cells (§7).
+      * The stored source. A REGULAR, POSITION-ADDRESSABLE latitude-row hex
+        grid: rows of hexes at fixed latitudes (spaced by the hex's vertical
+        extent), each row holding just enough hexes to span the latitude circle
+        at the hex's physical width. Every hex has the SAME physical edge
+        `a` = worlds.hex_meters (R1), and the count is area-uniform,
+        N_hr = 4πR² / hexArea (unbounded — R2, R7). Earth @ 1.85 km: 57.4 M
+        cells; @ 1 km: 196 M cells (§7).
       * Stored in a NEW table `hexcells`, one row per hex, keyed by POSITION
-        (body_id, patch, q, r) — NOT by a document index, NOT by a geodesic n.
-        Each row: the hex's lat/lon (derived, stored for query/stream order),
-        height, material_id, color.
+        (body_id, lat_row, lon_col) with the derived (lat, lon) stored for
+        query/stream ORDER — NOT by a document index, NOT by a global n. Each
+        row: the hex's lat/lon (derived, stored), height, material_id, color.
+      * WHY a lat/lon grid and NOT the gnomonic two-patch lattice (terrain.txt
+        §3.2): the gnomonic lattice is a LOCAL tool — its tangent plane stretches
+        without bound toward the patch horizon, so it cannot tile a whole sphere
+        (the equator IS the plane's infinity; a bounded (q,r) range leaves the
+        equatorial band uncovered). A latitude-row grid tiles the sphere cleanly,
+        is position-addressable (the brief's requirement), and streams by lat/lon
+        TILES exactly like the DEM catalog does today (migration 010).
       * NOT a getHexSphere(n). A single high-n geodesic grid (n ≈ 2,395) cannot
-        be materialized client-side (~1.4 GB of typed arrays) — that is why the
-        high-res is a position-addressable lattice, streamed chunk by chunk,
-        never held whole (R2, R7).
+        be materialized (~7 GB of typed arrays: icosphere 20n² faces + the dual)
+        — that is why the high-res is a position-addressable lat/lon grid,
+        streamed tile by tile, never held whole (R2, R7).
+      * The RENDERER samples a stored hex by NEAREST POINT — exactly as it
+        samples the DEM today (fineTerrain.js `demElevationAt`). The gnomonic
+        cap's fine hexes read the stored hex under them, feathered to the
+        document. No change to the render machinery: only the data source
+        (DEM-pixel sample → stored-hex sample) and the layers' status.
       * Loaded only inside the player's cap (R6) and evicted on move-away (R4).
         It is never the mass basis.
 
@@ -157,8 +172,10 @@
   * `hex_meters` is a WORLD constant in the DB; the app reads it from the
     skeleton and converts per body to world units:
         a_u = hex_meters / world.scale            (edge in world units)
-      The gnomonic lattice edge `a` (plane units) = a_u / R_u — the same
-      `fineHexEdge`-style derivation fineTerrain.js already uses.
+      The grid's row spacing and per-row column count are derived from `a` and
+      the body radius (core/hexlattice.js `highResGrid`): rows spaced by the
+      hex's vertical extent (1.5·a / R), each row holding
+      round(2πR·cos(lat) / (√3·a)) columns so every hex keeps its physical edge.
 
 
 --------------------------------------------------------------------------------
@@ -169,24 +186,24 @@
         hex edge in meters (migration 011). NULL = the world stores no high-res
         (every body is doc-only / generated) — the pre-inversion behavior.
       * `hexcells` — the high-res surface (migration 011). One row per stored
-        hex, keyed by POSITION:
+        hex, keyed by POSITION (the latitude-row grid, §3):
 
             CREATE TABLE hexcells (
               body_id     bigint NOT NULL REFERENCES bodies (id) ON DELETE CASCADE,
-              patch       smallint NOT NULL CHECK (patch IN (0,1)),  -- gnomonic patch
-              q           integer  NOT NULL,                         -- axial col
-              r           integer  NOT NULL,                         -- axial row
-              lat         double precision,                          -- derived, stored
-              lon         double precision,                          -- derived, stored
+              lat_row     integer  NOT NULL,   -- 0 = the north polar row
+              lon_col     integer  NOT NULL,   -- 0 .. colCount(lat_row)-1
+              lat         double precision,    -- derived, stored (deg) for stream order
+              lon         double precision,    -- derived, stored (deg)
               height      double precision NOT NULL DEFAULT 0,       -- world units
               material_id bigint REFERENCES materials (id) ON DELETE RESTRICT,
               color       text CHECK (color IS NULL OR color ~* '#…'),
-              PRIMARY KEY (body_id, patch, q, r)
+              PRIMARY KEY (body_id, lat_row, lon_col)
             );
 
-        (body_id, patch, q, r) is the covering index for the hot path — "stream
+        (body_id, lat_row, lon_col) is the covering index for the hot path — "stream
         this chunk's hexes" — exactly as atoms' (body_id, cell_index) is today.
-        lat/lon are DERIVED from (patch, q, r) + the body radius; they are stored
+        lat/lon are DERIVED from (lat_row, lon_col) + the grid (body radius +
+        hex_meters); they are stored
         for query/stream ORDER (R: "use positioning for loading order") and as
         a sanity pin, never authoritative over the lattice key.
 
@@ -205,7 +222,7 @@
 
   5.2  The high-res is NOT the document
       The document (`atoms`, f203 geodesic, 412,092 rows) and the high-res
-      (`hexcells`, 57.4 M–196 M rows, gnomonic position-keyed) are TWO tables
+      (`hexcells`, 57.4 M–196 M rows, latitude-row position-keyed) are TWO tables
       with different keys, different counts, and different roles. The doc is
       the mass basis and the save skeleton; the high-res is the stored surface
       the player walks and paints. R5 falls out of the separation: the
@@ -215,7 +232,7 @@
       * Row-per-hex (the shape above, mirroring `atoms`): editable per cell,
         per-hex FK to materials, partial updates — matches the paint brush.
         Cost ≈ 50–90 B/row → Earth @ 1.85 km ≈ 3–5 GB, @ 1 km ≈ 10–18 GB.
-      * Chunked blob (one row per (body, patch, I, J) chunk with packed
+      * Chunked blob (one row per (body, tile_lat, tile_lon) lat/lon tile with packed
         int16/uint8 height + material + color arrays, like the `terrain` tiles):
         ~2–4 B/hex → Earth ≈ 0.1–0.8 GB, but whole-chunk updates only.
       * R8 is satisfied by either — the `terrain` table already proves the DB
@@ -238,8 +255,9 @@
 --------------------------------------------------------------------------------
   6.1  Generation (scripts/gen-sol-real.mjs fork → "world 27")
       * The DEM is loaded once (as today). For the stored high-res, the
-        generator EMITS one `hexcells` row per high-res hex: for each (patch,
-        q, r) hex, find its direction (lattice → dir), sample the DEM at that
+        generator EMITS one `hexcells` row per high-res hex: it walks the latitude-row grid
+        (core/hexlattice.js) row by row — for each (lat_row, lon_col) hex,
+        compute its (lat, lon) and body-local direction, and sample the DEM at that
         lat/lon (identity at 1.85 km — one pixel; a small sub-pixel scan at
         1 km, ~3.4 px/hex), and store height (m → world units via the world
         scale, the same datum as the doc), material_id, color (the same
@@ -262,13 +280,14 @@
   6.2  Streaming (server + app) — the machinery reused, the source swapped
       * SERVER: a new endpoint streams a chunk (or a lat/lon tile) of `hexcells`
         rows for a body, mirroring the existing terrain-tile endpoint:
-            GET /api/bodies/:id/hex?patch=..&I=..&J=..      (one chunk)
-            GET /api/bodies/:id/hex/tile?lat=..&lon=..       (or a tile)
-        Returns packed rows (height, material_id, color) in lattice order. The
+            GET /api/bodies/:id/hex/tile?lat=..&lon=..         (one lat/lon tile)
+            GET /api/bodies/:id/hex/tiles?lat0=..&lat1=..&lon0=..&lon1=..  (a range)
+        Returns the tile's rows (height, material_id, color) in (lat_row, lon_col)
+         order. The
         app never reads postgres directly (the standing rule).
       * APP (FineRegion.jsx): the §4.1 synthesis swaps ONE call —
             today:  h_dem = sample the DEM int16 tile at the hex's lat/lon
-            new:    h_dem = the hex's stored row (fetched with the chunk)
+            new:    h = the stored hex's row (fetched with the tile, nearest point)
         The lattice, the chord-fan geometry, the feather, the §4.4 suppression,
         the §6 dispatch, the worker chunk jobs, the ahead-of-velocity queue —
         all unchanged. A fine cell's height is STILL a pure function (now of
@@ -291,7 +310,7 @@
   6.4  Edits — the brush targets the STORED hex  (RESOLVED: §9.2 = high-res
       cell only)
       A paint stroke inside the cap, the four steps (terrain.txt §5 re-pointed):
-        1. applyBrush on the HIGH-RES cell (the (patch,q,r) under the ray — the
+        1. applyBrush on the HIGH-RES cell (the (lat_row,lon_col) under the ray — the
            §6 dispatch's fine hex), NOT on the enclosing doc cell. The high-res
            is the stored source, so it is what the brush writes.
         2. record the stroke in the sparse EDIT OVERLAY (keyed by the fine hex,
@@ -386,7 +405,7 @@
       stay decoupled; R5 stays clean.
 
   9.3  RESOLVED — row-per-hex storage.
-      `hexcells` is row-per-hex (mirrors `atoms`): (body_id, patch, q, r) PK,
+      `hexcells` is row-per-hex (mirrors `atoms`): (body_id, lat_row, lon_col) PK,
       height / material_id / color per row — editable, per-hex FK to materials,
       partial updates. ~3–5 GB for Earth @ 1.85 km (9.5). The chunked-blob
       layout remains the write-once option for generated giants (which stay
@@ -431,8 +450,8 @@
   * "Picking is analytic" (AGENTS.md) — analytic at high-res scale (local fans
     + O(1) axial lookup). The hit now reports the HIGH-RES hex (the stored
     cell); the brush pipeline takes a high-res cell (9.2).
-  * "Element identity is positional" — EXTENDED: the high-res identity IS the
-    position (patch, q, r); there is no geodesic index for it (R: positioning
+  * "Element identity is positional" — EXTENDED: the high-res identity IS the position (lat_row, lon_col) — the
+    lat/lon grid; there is no geodesic index for it (R: positioning
     authoritative, index optional).
   UNCHANGED:
   * mass/radius/volume derivation (from the document), the document grid and
