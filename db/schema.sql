@@ -90,6 +90,14 @@ CREATE TABLE worlds (
   -- core/surface.js SURFACE_REAL). Distinct from bodies.scale (size factor).
   scale         double precision NOT NULL CHECK (scale > 0),
 
+  -- The world's stored high-res hex edge, in METERS (migration 011,
+  -- docs/terrain2.txt). One value per world: every body that stores its
+  -- surface (bodies.highres) uses the same size (R1). NULL = no high-res
+  -- stored (doc-only / generated bodies — the pre-inversion behavior). A body's
+  -- cell count is unbounded (4πR²/hexArea); MAX_FREQUENCY bounds only the doc.
+  hex_meters    double precision
+                CHECK (hex_meters IS NULL OR hex_meters > 0),
+
   -- document bookkeeping
   doc_version   integer      NOT NULL DEFAULT 1,   -- mirrors "version" in world.json
   is_public     boolean      NOT NULL DEFAULT false,
@@ -188,6 +196,12 @@ CREATE TABLE bodies (
   -- like rings/atmosphere.
   terrain        jsonb
                  CHECK (terrain IS NULL OR jsonb_typeof(terrain) = 'object'),
+
+  -- Stored high-res opt-in (migration 011, docs/terrain2.txt). TRUE = this
+  -- body stores its surface in hexcells at the world's hex_meters (walkable at
+  -- high resolution). FALSE = doc-only or generated (giants are the R1
+  -- exemption). Generated bodies (generation IS NOT NULL) are always FALSE.
+  highres        boolean NOT NULL DEFAULT false,
 
   -- Scripted test particle (migration 003). NULL = ordinary N-body body.
   -- { a, e, inc, node, peri, n, m0 } osculating elements in engine units:
@@ -325,6 +339,49 @@ COMMENT ON TABLE atoms IS
   'Hex cells, one row per cell of getHexSphere(body.frequency). '
   'cell_index is positional identity: a body needs exactly '
   'cell_count_for_frequency(frequency) rows.';
+
+-- ---------------------------------------------------------------------------
+-- hexcells — the stored high-res surface (docs/terrain2.txt, Level F)
+-- ---------------------------------------------------------------------------
+-- The inverted terrain model (migration 011): the high-resolution hexes are
+-- the STORED data of a body's surface, keyed by POSITION in the latitude-row
+-- grid (core/hexlattice.js). This is the UNBOUNDED finest LOD; the document
+-- (atoms, ≤ MAX_FREQUENCY) is the BOUNDED coarsest LOD / mass basis. Loading
+-- or evicting a fine LOD never touches atoms (R5) — the mass derivation reads
+-- only the document.
+--
+--   (body_id, lat_row, lon_col)  the positional key; lat/lon derived + stored
+--                                for query/stream ORDER (never authoritative)
+--   height                       world units (relief above the core)
+--   material_id / color          mirror atoms (per-hex appearance)
+--
+-- Row-per-hex (like atoms): editable per cell, per-hex FK, partial updates.
+-- At the 1.85 km target Earth holds ~57 M rows — COPY, never INSERT-per-row;
+-- PARTITION BY HASH (body_id) if a single partition outgrows maintenance.
+-- The streaming unit is a lat/lon tile; served by GET /api/bodies/:id/hex/...
+-- (the app never reads it directly).
+-- ---------------------------------------------------------------------------
+CREATE TABLE hexcells (
+  body_id     bigint NOT NULL REFERENCES bodies (id) ON DELETE CASCADE,
+  lat_row     integer  NOT NULL CHECK (lat_row >= 0),
+  lon_col     integer  NOT NULL CHECK (lon_col >= 0),
+
+  lat         double precision,   -- derived, stored (deg) for stream order
+  lon         double precision,   -- derived, stored (deg) for stream order
+
+  height      double precision NOT NULL DEFAULT 0,   -- world units
+  material_id bigint REFERENCES materials (id) ON DELETE RESTRICT,
+  color       text CHECK (color IS NULL OR color ~* '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$'),
+
+  PRIMARY KEY (body_id, lat_row, lon_col)
+);
+
+COMMENT ON TABLE hexcells IS
+  'The stored high-res surface (docs/terrain2.txt, Level F): one row per hex '
+  'of the latitude-row grid, keyed by POSITION (body_id, lat_row, lon_col). '
+  'height is world units; material_id/color mirror atoms. The streaming unit '
+  'is a lat/lon tile. Served by GET /api/bodies/:id/hex/... — never read '
+  'directly. The unbounded finest LOD; the mass basis stays on atoms.';
 
 -- ---------------------------------------------------------------------------
 -- stars — the real-sky catalog (astronomy, NOT world content)
