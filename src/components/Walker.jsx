@@ -305,8 +305,15 @@ export default function Walker({ planetId }) {
         if (tmp.planetPos.distanceToSquared(camera.position) < 1e-6) tmp.dirW.set(0, 1, 0)
         tmp.dirW.normalize().applyQuaternion(tmp.qInv)
       }
+      const spawnDir = [tmp.dirW.x, tmp.dirW.y, tmp.dirW.z]
       s = {
-        walker: createWalker(surface, [tmp.dirW.x, tmp.dirW.y, tmp.dirW.z]),
+        // §6 dispatch: spawn on the surface of RECORD at the handoff dir —
+        // the composite fine surface while a chunk is mounted underfoot, the
+        // document elsewhere. The fall below targets that same surface of
+        // record, so the spawn→land gap is exactly the spawnHover; a document
+        // spawn against a divergent fine surface (a newer DEM than the doc)
+        // would leave the walker falling for minutes, never grounded.
+        walker: createWalker(surfaceOfRecord(surface, planetId, spawnDir).surface, spawnDir),
         fwdL: new THREE.Vector3(),
         lastFwd: new THREE.Vector3(0, 0, -1),
         placed: false,

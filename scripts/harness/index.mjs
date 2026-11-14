@@ -94,6 +94,13 @@ export const SOL_REAL_MAJOR = [
  *    worlds get it right but a real fall there takes minutes of sim time.
  *  - one static, spinless freq-12 earthlike body of TUNED mass so local
  *    gravity is strong: a few-unit EVA fall completes in ~1–3 s of frames.
+ *    Its relief is RESCALED so the doc-faithful TEST-DEM (int16 METERS)
+ *    represents the document everywhere: at the atom scale (~386 km/u) the
+ *    preset's ~1 u mountains are ~380 km — far past the int16 pixel range,
+ *    where a clamped pixel would leave the fine surface a continent below
+ *    the document (the drive chain ends in high terrain, not the basins).
+ *    The rescale keeps the flat basins flat (h = 0 stays 0) and shifts the
+ *    tuned mass by <0.01% (relief is ~3% of the volume integral).
  *  - one arcade shuttle parked on it — the full P1 chain (board → launch →
  *    fly → park → eject-on-foot; eject-flying → EVA → fall → land-on-foot)
  *    is deterministic here.
@@ -115,6 +122,16 @@ export function makeTestballWorld() {
     // tuned mass (≈120): v_esc ≈ 30 u/s ≈ 2× arcade cruise, g ≈ 40 u/s²
     density: 120 / ((4 / 3) * Math.PI * radiusForFrequency(FREQ) ** 3),
   })
+  // The TEST-DEM stores int16 METERS: the fixture's relief must fit the
+  // pixel range (|h·scale + 140 m perturbation| ≤ 32767) so the synthetic
+  // DEM is doc-faithful over the WHOLE body — the drive chain ends in high
+  // terrain, where a clamped pixel would put the fine surface hundreds of
+  // km below the document (and the ejected walker falls forever).
+  const maxDemM = 32000 // int16 headroom over the ±140 m perturbation
+  let maxH = 0
+  for (const el of planet.elements) maxH = Math.max(maxH, Math.abs(el.h || 0))
+  const k = maxDemM / (maxH * ATOM_M_PER_UNIT)
+  if (k < 1) for (const el of planet.elements) if (el.h) el.h *= k
   return {
     version: 1,
     name: 'Testball',
