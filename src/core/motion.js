@@ -197,9 +197,10 @@ export function altitudeOf(p, body, planet) {
   const cell = cellAtDirection(hex, dir)
   const h = (planet.elements[cell] && planet.elements[cell].h) || 0
   const docRadius = fanRadiusAt(hex, cell, body.radius + h, dir)
-  // §6 dispatch: altitude reads the surface of record (stage 1: fine == doc,
-  // so the record radius is the document fan radius — the check is real).
-  return d - recordSurfaceRadius(docRadius, planet.id, cell).radius
+  // §6 dispatch: altitude reads the surface of record — the fine hex's chord
+  // fan when a chunk is mounted under dir (stage 2), the document fan radius
+  // otherwise.
+  return d - recordSurfaceRadius(docRadius, planet.id, dir).radius
 }
 
 /**
@@ -212,13 +213,15 @@ export function altitudeOf(p, body, planet) {
 export function heightAtDir(planet, dirLocal) {
   if (!planet || !planet.elements) return 0
   const hex = getHexSphere(planet.frequency)
-  const cell = cellAtDirection(hex, dirLocal)
+  const dir = norm3(dirLocal)
+  const cell = cellAtDirection(hex, dir)
   const h = (planet.elements[cell] && planet.elements[cell].h) || 0
   const R = planetRadius(planet)
-  const docRadius = fanRadiusAt(hex, cell, R + h, norm3(dirLocal))
+  const docRadius = fanRadiusAt(hex, cell, R + h, dir)
   // §6 dispatch: the park anchor's terrain-resolved r (and the launch pad)
-  // read the surface of record — stage 1: fine == doc, the check is real.
-  return recordSurfaceRadius(docRadius, planet.id, cell).radius - R
+  // read the surface of record — the fine hex's chord fan when a chunk is
+  // mounted under dir (stage 2), the document fan otherwise.
+  return recordSurfaceRadius(docRadius, planet.id, dir).radius - R
 }
 
 /**

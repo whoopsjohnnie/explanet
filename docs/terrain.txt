@@ -3,8 +3,9 @@
   Streaming local terrain at DEM resolution around the player
 ================================================================================
   Nov 2026 · companion to design.txt / surface.txt / movement.txt / scaling.txt.
-  DESIGN DOCUMENT — stages 1-2 are not built yet. Stage 0 (the LOD dimension
-  fix, commit 889e9c3) is done and pinned.
+  DESIGN DOCUMENT — Stage 0 (commit 889e9c3) and Stage 1
+  (29cbe47..30a772c) are done and pinned; the Stage 2 design is settled in
+  §9/§10 and is what is being built next.
 
   The problem this document solves: on a true-scale body the document grid
   (f203 on Earth, 22 km hexes) CANNOT show towering relief — the data has
@@ -438,9 +439,11 @@
   stage 2 cannot hide a machinery bug behind a terrain reveal.
 
   STAGE 2 — the DEM (this is where the walls become towering)
-  The data pipeline + the real fine grid (n ~ 2,395, a = 1.85 km):
+  The data pipeline + the real fine grid (a = 1.85 km = the catalog pixel —
+  the fine hex edge is a CATALOG property, not a dial; the body's terrain
+  descriptor below names the catalog):
       * db: terrain catalog table (migration 010) — (catalog, tile_lat,
-        tile_lon, tile_size) natural key, int16 mm payload; the ETOPO2022
+        tile_lon, tile_size) natural key, int16 payload at 1 m steps; the ETOPO2022
         1-arcmin grid (21,600 x 10,800 px, 933 MB float32 / 467 MB int16,
         16,200 tiles of 2 deg x 2 deg at 28.1 KiB) imported by
         `npm run db:terrain` (one-time, ~0.5 GB — DATA.md gets a row).
@@ -451,6 +454,16 @@
       * constants.json: the dials — fineDisc.radius (D, default 500 km,
         range to 1000), the feather fraction — resolved like every other
         tunable; the shaders take float literals as always.
+      * body: the terrain descriptor — a new optional field
+        terrain: { catalog } (NULL = no fine layer, doc-only), passed
+        through by the skeleton and healed by normalizeWorld, exactly
+        like atmosphere/rings. The fine-hex edge is read from the
+        catalog's pixel size, so no new constants.json dial.
+      * scope: MAX_FREQUENCY is UNCHANGED and the Earth document STAYS
+        f203 — the fine layer is presentational and carries the relief;
+        a finer document is the §1.3 dead end. The document downgrade
+        (f203 -> f101, cheaper atoms/chain, the fine layer owning
+        relief) is a named FOLLOW-ON, out of Stage 2 scope.
   The acceptance test is the one the user will run: stand on the Sierra
   crest in Sol Real and see 300 m-1 km faces at 1.85 km resolution —
   the real staircase the cross-section probe proved is in the data.
@@ -496,6 +509,15 @@
      document surface renders in that band — byte-identical at stage 1).
      Found stage 1: a craft driving a focus across a patch horizon made the
      plane point 1e9 and the texture box 1e20 bytes.
+  8. STAGE 2 (settled Nov 2026): the terrain catalog payload is int16 at
+     1 m steps (value = round(elevation_m), signed — the draft's "mm"
+     can't fit int16; 28.1 KiB/tile = 14,400 px x 2 B confirms int16).
+     A body carries its catalog in a new optional terrain: { catalog }
+     field (NULL = doc-only), like atmosphere/rings; the fine-hex edge is
+     the catalog's pixel size, not a dial. MAX_FREQUENCY is unchanged and
+     the Earth document stays f203 — the fine layer is presentational and
+     carries the relief (a finer document is the §1.3 dead end); the
+     f203 -> f101 document downgrade is a named follow-on, out of scope.
 
 
 --------------------------------------------------------------------------------

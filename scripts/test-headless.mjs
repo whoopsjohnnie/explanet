@@ -35,14 +35,17 @@
  *  - LOD level selection against WORLD-unit thresholds (the R-normalized
  *    comparison made giants never coarsen): close → full resolution, far →
  *    coarsest level, back close → full again
- *  - the fine-terrain region (docs/terrain.txt, stage 1 — the machinery at
- *    document frequency, a visual no-op): the on-foot focus body publishes its
- *    mounted chunks to the §6 dispatch and the walker welds to the surface of
- *    record; the pick remap routes a fine hit to the document cell; a stroke
- *    composites (doc + edit overlay + same-frame chunk patch); unmounting is
- *    clean (every chunk geometry disposed, no leak, the doc mesh survives) and
- *    restores byte-identical LOD rendering (doc terrain unsuppressed, same
- *    level, no chunks)
+ *  - the fine-terrain region (docs/terrain.txt, stage 2 — the fine grid IS
+ *    the DEM pixel): the on-foot focus body streams its cap's DEM-pixel chunks
+ *    and publishes the mounted set to the §6 dispatch; the walker welds to the
+ *    FINE surface of record (the composite, not the document); the pick
+ *    remap routes a fine hit to the document cell; a stroke composites
+ *    (doc + edit overlay + same-frame chunk patch); the fine layer carries the
+ *    DEM's relief (deep inside it is the DEM pixel exactly, at the cap edge it
+ *    is the document exactly, and the chunk mesh carries the blended height);
+ *    unmounting is clean (every chunk geometry disposed, no leak, the doc mesh
+ *    survives) and restores byte-identical LOD rendering (doc terrain
+ *    unsuppressed, same level, no chunks)
  */
 
 import { test } from 'node:test'
@@ -50,16 +53,100 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { act } from '@react-three/test-renderer'
 import { bootWorld, SOL_REAL_MAJOR } from './harness/index.mjs'
-import { walkReadout, walkerLocation, makeSurface } from '../src/core/surface.js'
+import { walkReadout, walkerLocation, makeSurface, cellAtDirection } from '../src/core/surface.js'
 import { craftRuntime, eva } from '../src/core/motion.js'
 import { useStore } from '../src/state/store.js'
+import { getHexSphere } from '../src/core/hexsphere.js'
+import { C } from '../src/core/constants.js'
+import {
+  setTerrainProviders,
+  dirToLatLon,
+  fineHexDirs,
+  demElevationAt,
+  tileKeyFor,
+} from '../src/core/fineTerrain.js'
 import {
   fineRegionOf,
   isFine,
   remapToDoc,
   fineEditFor,
+  fineHexUnder,
+  capRadiusU,
   surfaceOfRecord,
 } from '../src/core/finedisc.js'
+
+// ---------------------------------------------------------------------------
+// The synthetic DEM for the 'testball' fixture (docs/terrain.txt stage 2).
+//
+// The fine-terrain pins need a DEM whose relief the document hexes smooth
+// away — the whole point of stage 2. The harness has no world database, so the
+// catalog ('TEST-DEM': 1° pixels, 120° tiles) is synthesized in code and
+// swapped in through the provider seam (setTerrainProviders). The elevation is
+// doc-faithful + a 140 m perturbation (a real mountain the f12 document
+// averages out):
+//
+//     elev(lat,lon) = clamp_i16( round( hDoc(lat,lon)·scale + 140·cos2lat·cos2lon ) )
+//
+// (lat/lon in radians; hDoc is the live testball's document cell under
+// (lat,lon)). The perturbation's worst-case spawn fall (120 + 140 = 260 m)
+// stays inside the real-human 20 s landWalker budget. The fixture's relief is
+// RESCALED (makeTestballWorld) so |hDoc·scale + 140 m| never reaches the int16
+// clamp over the WHOLE body — at the atom scale the preset's ~1 u mountains
+// are ~380 km, and a clamped pixel would leave the fine surface a continent
+// below the document exactly where the drive chain ends (high terrain, far
+// from the flat basins). No clamp is ever READ, so the w=1 identity pin below
+// is exact everywhere. The provider is module-global (it persists across
+// harness boots in one process) and reads the CURRENT boot's testball lazily;
+// a boot without a testball yields no tile, so the synthesis falls back to
+// the document height there.
+// ---------------------------------------------------------------------------
+const DEM_CATALOG = 'TEST-DEM'
+const DEM_PIXEL_DEG = 1
+const DEM_TILE_SIZE = 120
+
+/** One DEM pixel (meters, int16) at (lat, lon), from the live testball. */
+function testDemPixel(planet, scale, latDeg, lonDeg) {
+  const lat = (latDeg * Math.PI) / 180
+  const lon = (lonDeg * Math.PI) / 180
+  const dir = [Math.cos(lat) * Math.cos(lon), Math.sin(lat), -Math.cos(lat) * Math.sin(lon)]
+  const cell = cellAtDirection(getHexSphere(planet.frequency), dir)
+  const hDoc = (planet.elements[cell] && planet.elements[cell].h) || 0
+  const v = Math.round(hDoc * scale + 140 * Math.cos(2 * lat) * Math.cos(2 * lon))
+  return Math.max(-32768, Math.min(32767, v))
+}
+
+/** One synthetic DEM tile (int16 meters), row 0 = the tile's north edge. */
+const DEM_TILE = async (catalog, tileLat, tileLon) => {
+  if (catalog !== DEM_CATALOG) return null
+  const s = useStore.getState()
+  const planet = s.world.planets.find((p) => p.id === 'p-testball')
+  if (!planet || !Array.isArray(planet.elements)) return null
+  const n = DEM_TILE_SIZE
+  const arr = new Int16Array(n * n)
+  const tileTop = tileLat + n * DEM_PIXEL_DEG
+  for (let r = 0; r < n; r++) {
+    const lat = tileTop - (r + 0.5) * DEM_PIXEL_DEG
+    for (let c = 0; c < n; c++) {
+      const lon = tileLon + (c + 0.5) * DEM_PIXEL_DEG
+      arr[r * n + c] = testDemPixel(planet, s.world.scale, lat, lon)
+    }
+  }
+  return arr
+}
+
+setTerrainProviders({
+  catalogs: async () => ({
+    catalogs: [{ catalog: DEM_CATALOG, pixelDeg: DEM_PIXEL_DEG, tileSize: DEM_TILE_SIZE }],
+  }),
+  tiles: DEM_TILE,
+})
+
+// The stage-2 fine pins spawn the walker at the shuttle's flat-basin anchor
+// (document cell 849 center, h = 0 over ~9°). The boot camera points along
+// this dir, so the Walker's camera-facing spawn lands there — the focus, the
+// cap and every spawn fall are pinned to a known, flat, in-budget point.
+const ANCHOR_DIR = [0.5, -0.309017, 0.809017]
+const FINE_CAM = [ANCHOR_DIR[0] * 32, ANCHOR_DIR[1] * 32, ANCHOR_DIR[2] * 32]
 
 /**
  * Settle the on-foot spawn fall (real human: a fixed 120 m drop at the
@@ -70,6 +157,21 @@ import {
 async function landWalker(w) {
   await w.frames(1200)
   assert.ok(walkReadout.grounded, 'the on-foot walker must land its spawn fall')
+}
+
+/**
+ * Pump frames until a fine chunk is MOUNTED under the walker's direction (the
+ * region publishes + its chunks stream in asynchronously through the worker;
+ * landWalker's 1200 frames are more than enough, this is just belt-and-braces
+ * so a slow worker reply never reads as a dispatch bug).
+ */
+async function waitForFine(w, bodyId, maxFrames = 600) {
+  for (let i = 0; i < maxFrames; i++) {
+    const region = fineRegionOf(bodyId)
+    if (region && region.byHex.size > 0 && isFine(bodyId, walkerLocation.dir)) return true
+    await w.frames(1)
+  }
+  return false
 }
 
 const SOL_REAL_PRESENT = existsSync(new URL('../public/sol-real.json', import.meta.url))
@@ -360,27 +462,33 @@ test('lod: the mounted level coarsens with distance and refines up close', { tim
 })
 
 // ---------------------------------------------------------------------------
-// The fine-terrain region (docs/terrain.txt, stage 1). The fine grid IS the
-// document grid, so every assertion below is a visual no-op — the point is to
-// pin the MACHINERY (lattice, streaming, dispatch, the stroke, clean
-// teardown) so stage 2 cannot hide a machinery bug behind a terrain reveal.
-// The 'testball' fixture boots on foot: the real FineRegion streams the cap's
-// chunks and publishes the mounted set to core/finedisc.js.
+// The fine-terrain region (docs/terrain.txt, stage 2). The fine grid IS the
+// DEM pixel, so the fine surface is a COMPOSITE that differs from the document
+// mesh — the pins below verify the machinery (lattice, streaming, dispatch,
+// the stroke, clean teardown) AND the terrain reveal (the fine layer carries
+// the DEM's relief, not the document's smoothed hexes). The 'testball' fixture
+// boots on foot with a synthetic DEM (TEST-DEM, above): the real FineRegion
+// streams the cap's DEM-pixel chunks and publishes the mounted set to
+// core/finedisc.js. Every pin boots the camera along ANCHOR_DIR so the walker
+// spawns at the flat-basin anchor (a known, in-budget focus).
 // ---------------------------------------------------------------------------
 
-test('finedisc: the walker welds to the surface of record (chunks mounted)', { timeout: 300_000 }, async () => {
-  const w = await bootWorld({ world: 'testball' })
+test('finedisc: the walker welds to the fine surface of record (chunks mounted)', {
+  timeout: 300_000,
+}, async () => {
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
   await landWalker(w)
   const bodyId = w.planet('p-testball').id
   // the real FineRegion published its mounted set to the core dispatch
   assert.ok(fineRegionOf(bodyId), 'the on-foot focus body must publish a fine region')
-  assert.ok(isFine(bodyId, walkerLocation.cell), 'a chunk must be mounted under the walker')
-  // §6 dispatch: the surface of record at the walker's cell is the fine surface
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the walker')
+  assert.ok(fineRegionOf(bodyId).byHex.size > 0, 'the published region must carry landed fine hexes')
+  // §6 dispatch: the surface of record at the walker's dir is the FINE composite
   const surface = makeSurface(w.planet(bodyId), w.world.scale)
-  const rec = surfaceOfRecord(surface, bodyId, walkerLocation.cell)
+  const rec = surfaceOfRecord(surface, bodyId, walkerLocation.dir)
   assert.equal(rec.fine, true, 'the dispatch must report the fine branch under the walker')
-  assert.equal(rec.surface, surface, 'stage 1: the fine surface IS the document surface')
-  // the weld: the walker's radius equals the surface-of-record radius at its dir
+  assert.notEqual(rec.surface, surface, 'stage 2: the fine surface is a COMPOSITE, not the document')
+  // the weld: the walker's radius equals the fine surface-of-record radius at its dir
   const q = rec.surface.heightAt(walkerLocation.dir)
   assert.ok(
     Math.abs(walkerLocation.r - q.radius) < 1e-6,
@@ -397,28 +505,35 @@ test('finedisc: the walker welds to the surface of record (chunks mounted)', { t
 })
 
 test('finedisc: the pick remaps a fine hit to the document cell', { timeout: 300_000 }, async () => {
-  const w = await bootWorld({ world: 'testball' })
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
   await landWalker(w)
   const bodyId = w.planet('p-testball').id
   const region = fineRegionOf(bodyId)
-  assert.ok(region, 'the fine region must be published (the pick remap consults it)')
-  // a mounted (fine) cell remaps to its document cell — stage 1: the identity
-  const fineCell = walkerLocation.cell
-  assert.ok(isFine(bodyId, fineCell), 'the underfoot cell is under a mounted chunk')
-  assert.equal(remapToDoc(bodyId, fineCell), fineCell, 'stage 1: the fine→doc map is the identity')
-  // a document cell OUTSIDE the region passes through unchanged
-  const cellCount = w.planet(bodyId).elements.length
-  let outside = -1
-  for (let i = 0; i < cellCount; i++) if (!region.byCell.has(i)) { outside = i; break }
-  assert.ok(outside >= 0, 'there must be a document cell outside the fine region')
-  assert.equal(remapToDoc(bodyId, outside), outside, 'a document cell outside the region passes through')
+  assert.ok(region, 'the fine region must be published (the pick dispatch consults it)')
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the walker')
+  // the fine hex under the walker's dir maps to the DOCUMENT cell under the
+  // same dir — the fine→doc map is exact (the composite sample reports the
+  // enclosing document cell, the brush/selection contract)
+  const grid = getHexSphere(w.planet(bodyId).frequency)
+  const e = fineHexUnder(region, walkerLocation.dir)
+  assert.ok(e, 'a fine hex must be mounted under the walker')
+  assert.equal(
+    e.docCell,
+    cellAtDirection(grid, walkerLocation.dir),
+    'the fine→doc map must agree with the document Voronoi lookup'
+  )
+  // the pick remap is the pass-through contract point: with the stage-2
+  // dispatch the hit's cell is ALREADY the document cell (the composite
+  // applies the fine→doc map at the sample), so the remap is the identity
+  assert.equal(remapToDoc(bodyId, e.docCell), e.docCell, 'remapToDoc is the identity pass-through')
   await w.close()
 })
 
 test('finedisc: a stroke composites — doc + overlay + same-frame chunk patch', { timeout: 300_000 }, async () => {
-  const w = await bootWorld({ world: 'testball' })
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
   await landWalker(w)
   const bodyId = w.planet('p-testball').id
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the walker')
   const cell = walkerLocation.cell
   // the chunk mesh(es) covering the underfoot cell (before the stroke)
   const coveringBefore = w
@@ -457,13 +572,20 @@ test('finedisc: a stroke composites — doc + overlay + same-frame chunk patch',
   let changed = posBefore.length !== posAfter.length
   if (!changed) for (let i = 0; i < posBefore.length; i++) if (posBefore[i] !== posAfter[i]) { changed = true; break }
   assert.ok(changed, 'step 3: the rebuilt chunk must carry the new height in its vertices')
+  // stage 2: the published region's underfoot fine hex carries the painted
+  // height too — the patcher re-synthesized the covering chunk (the edit
+  // overlay is the synthesis input) and mutated the region's e in place, so
+  // the dispatch reads the painted height on its next query
+  const e = fineHexUnder(fineRegionOf(bodyId), walkerLocation.dir)
+  assert.ok(e && e.h === hAfter, 'the region\'s underfoot fine hex must carry the painted height')
   await w.close()
 })
 
 test('finedisc: unmount is clean — chunks disposed, no leak, the doc mesh stays', { timeout: 300_000 }, async () => {
-  const w = await bootWorld({ world: 'testball' })
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
   await landWalker(w)
   const bodyId = w.planet('p-testball').id
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the on-foot walker')
   // the mounted chunk meshes + their geometries (wrap dispose to count teardown)
   const chunks = w.terrainMeshes().filter((m) => !m.suppressed)
   assert.ok(chunks.length >= 1, 'chunks must be mounted under the on-foot walker')
@@ -491,9 +613,10 @@ test('finedisc: unmount is clean — chunks disposed, no leak, the doc mesh stay
 test('finedisc: unmount restores byte-identical LOD rendering (unsuppressed, same level)', {
   timeout: 300_000,
 }, async () => {
-  const w = await bootWorld({ world: 'testball' })
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
   await landWalker(w)
   const bodyId = w.planet('p-testball').id
+  assert.ok(await waitForFine(w, bodyId), 'chunks must be mounted while walking')
   const lvlBefore = w.mountedFrequency('Testball')
   assert.ok(lvlBefore != null, 'a LOD level must be mounted while walking')
   const before = w.terrainMeshes()
@@ -514,5 +637,90 @@ test('finedisc: unmount restores byte-identical LOD rendering (unsuppressed, sam
   assert.ok(docAfter, 'the doc terrain mesh is back — the SAME geometry object (byte-identical)')
   assert.equal(docAfter.geometry.userData.frequency, docFreq, 'the LOD level is unchanged')
   assert.equal(w.mountedFrequency('Testball'), lvlBefore, 'the mounted LOD level is byte-identical')
+  await w.close()
+})
+
+test('finedisc: the fine layer carries the DEM relief (blended, not the document)', {
+  timeout: 300_000,
+}, async () => {
+  const w = await bootWorld({ world: 'testball', camera: { position: FINE_CAM } })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the walker')
+  const planet = w.planet(bodyId)
+  const region = fineRegionOf(bodyId)
+  const R = region.R
+  const scale = w.world.scale
+  const capAngle = capRadiusU(scale) / R
+  const inner = (1 - C.fineDisc.feather) * capAngle
+  const focus = walkerLocation.dir
+
+  // the DEM tile under the focus (the whole cap sits in one 120° tile) — the
+  // SAME pixels the synthesis sampled, so the identity below is exact
+  const fLL = dirToLatLon(focus)
+  const [tl, ln] = tileKeyFor(fLL.latDeg, fLL.lonDeg, DEM_TILE_SIZE, DEM_PIXEL_DEG)
+  const tile = await DEM_TILE(DEM_CATALOG, tl, ln)
+  assert.ok(tile, 'the synthetic DEM tile under the focus must be present')
+  const tileMap = new Map([[tl + ',' + ln, tile]])
+
+  // (a) deep inside (w = 1): the fine hex's height IS the DEM pixel, exactly —
+  // the int16 identity through the feather (1·x + 0·y, no interpolation)
+  // (b) outside the cap (w = 0): the fine hex sits on the document, exactly —
+  // the full blocks extend past the cap, so these hexes exist and must be the
+  // document's own height (the seam is invisible there)
+  let nW1 = 0
+  let nW0 = 0
+  for (const e of region.byHex.values()) {
+    const c3 = fineHexDirs(region.patch, e.q, e.r, region.a).c3
+    const { latDeg, lonDeg } = dirToLatLon(c3)
+    const cosD = c3[0] * focus[0] + c3[1] * focus[1] + c3[2] * focus[2]
+    const d = Math.acos(Math.min(1, Math.max(-1, cosD)))
+    if (d <= inner) {
+      const elev = demElevationAt(latDeg, lonDeg, tileMap, DEM_PIXEL_DEG, DEM_TILE_SIZE)
+      assert.ok(elev != null, 'the DEM must answer for a deep-inside pixel')
+      assert.equal(e.h, elev / scale, `w=1 hex (${e.q},${e.r}) must carry the DEM pixel exactly`)
+      nW1++
+    } else if (d >= capAngle) {
+      assert.equal(e.h, (planet.elements[e.docCell].h || 0), `w=0 hex (${e.q},${e.r}) must sit on the document exactly`)
+      nW0++
+    }
+  }
+  assert.ok(nW1 > 0, 'there must be deep-inside (w=1) hexes in the region')
+  assert.ok(nW0 > 0, 'there must be out-of-cap (w=0) hexes in the region (full blocks)')
+
+  // (c) at the walker's dir the fine surface differs from the document — the
+  // DEM's relief is on the surface of record, not the document's smoothed hex
+  const surface = makeSurface(planet, scale)
+  const qf = surfaceOfRecord(surface, bodyId, focus).surface.heightAt(focus)
+  const qd = surface.heightAt(focus)
+  assert.ok(
+    Math.abs(qf.h - qd.h) > 1e-4,
+    `the fine relief must differ from the document at the walker dir (got ${Math.abs(qf.h - qd.h)})`
+  )
+
+  // (d) the chunk MESH carries it: a top vertex sits at radius R + the fine
+  // height (the chord-fan top is at R + h exactly, quantized to float32)
+  const cell = qf.cell
+  const covering = w
+    .terrainMeshes()
+    .filter((m) => !m.suppressed)
+    .filter((m) => m.geometry.userData.cellByTri.includes(cell))
+  assert.ok(covering.length >= 1, 'a chunk must cover the underfoot document cell')
+  const target = R + qf.h
+  let found = false
+  for (const cm of covering) {
+    const pos = cm.geometry.attributes.position
+    for (let i = 0; i < pos.count; i++) {
+      const vx = pos.getX(i)
+      const vy = pos.getY(i)
+      const vz = pos.getZ(i)
+      if (Math.abs(Math.hypot(vx, vy, vz) - target) < 1e-4) {
+        found = true
+        break
+      }
+    }
+    if (found) break
+  }
+  assert.ok(found, `the chunk mesh must carry a top vertex at R + the fine height (${target})`)
   await w.close()
 })

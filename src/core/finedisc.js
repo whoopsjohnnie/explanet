@@ -7,14 +7,14 @@
  * node tests and the geometry worker import it unmodified, exactly like the
  * rest of core/.
  *
- * STAGE 1 (this file, today): the fine grid IS the document grid. Every
- * mechanism below is real and exercised, but the heights are the document's —
- * a visual no-op. That isolates the mechanism from the data pipeline, so
- * stage 2 cannot hide a machinery bug behind a terrain reveal.
+ * STAGE 1 (done, pinned): the whole machinery ran at DOCUMENT frequency
+ * (a visual no-op that isolated the mechanism from the data pipeline).
  *
- * STAGE 2 (later): the fine cells become the DEM pixels — a regular gnomonic
- * lattice at the catalog's pixel size. The projection / chunk / queue code
- * here is reused verbatim; only the cell source and the fine->doc map change.
+ * STAGE 2 (this file, now): the fine cells are the DEM pixels — a regular
+ * gnomonic lattice at the catalog's pixel size (fineTerrain.js supplies the
+ * lattice math, the DEM sampling, the feather and the chord-fan geometry).
+ * The projection / chunk / queue code here is reused verbatim; the cell
+ * source, the heights and the fine->doc map are the DEM's.
  *
  * THE CHUNK LATTICE
  *   The sphere is covered by two antipodal gnomonic tangent patches, at the
@@ -39,6 +39,7 @@
 import { dotCenter } from './hexsphere.js'
 import { cellAtDirection } from './surface.js'
 import { buildPlanetGeometryData } from './geometry.js'
+import { fineHexDirs, fineFanTables, fineFanRadius } from './fineTerrain.js'
 import { C } from './constants.js'
 
 const SQRT3 = Math.sqrt(3)
@@ -423,97 +424,149 @@ export function notifyFineEdit(bodyId, cells, planet) {
 // ---------------------------------------------------------------------------
 // "One surface = the rendered surface" needs one dispatch point: a body with
 // fine chunks mounted resolves its surface of record for a position p — the
-// fine chunk under p if a chunk is mounted there, the document surface
+// fine hex under p if a chunk is mounted there, the document surface
 // otherwise — and EVERY consumer (walk, pick, altitude, park r, launch) goes
 // through it.
 //
 // The MOUNTED SET lives in the THREE-side FineRegion (it owns the chunk
 // meshes). It publishes it here, imperatively, on mount/evict/unmount — the
 // same 60 Hz rule as the patcher above (never React state, never zustand).
-// The published value is the region's FINE→DOC map (§3.4) flattened over the
-// loaded set: a Map from each mounted chunk's fine cell to its enclosing
-// document cell. Stage 1 the fine grid IS the document grid, so the map is
-// the IDENTITY (cell -> cell) — but it is built and consulted for real, and
-// the dispatch below branches on it. Stage 2 keys the map by the fine lattice
-// hex and the branches return genuinely different values.
+// The published region is the mounted chunks' FINE HEXES (the DEM pixel
+// lattice, stage 2), each carrying its enclosing DOCUMENT cell (the fine→doc
+// map, §3.4) and its composited height:
+//
+//   region = { a, patch, R, maxH, byHex, fanCache }
+//     a, patch, R     the fine hex edge (plane units), the region's patch and
+//                     the body radius — the lattice the byHex keys live in
+//     byHex           Map `${q},${r}` → { q, r, docCell, h }
+//     fanCache        Map `${q},${r}` → the hex's chord-fan table (lazy — a
+//                     hex's fan planes are orientation-only, so the per-query
+//                     radius is a rescale, the surface.js fanRadiusAt rule)
+//
+// The region object is MUTATED in place as chunks land/evict (the same object
+// stays published); the dispatch reads it fresh on every query.
 
-/** bodyId → { byCell: Map<fineCell, docCell> } — the mounted region's fine→doc map. */
+/** bodyId → the mounted fine region (see above) — the published mounted set. */
 const fineRegions = new Map()
 
 /**
- * Publish the body's mounted fine region (the flattened fine→doc map over its
- * mounted chunks), or null to clear it (the session left the body). Called by
- * FineRegion on every mount, evict and unmount.
+ * Publish the body's mounted fine region (the mutated region object), or null
+ * to clear it (the session left the body). FineRegion calls it when the
+ * region (re)appears and on unmount; it then mutates the object on every
+ * chunk land/evict, which the dispatch sees immediately.
  */
-export function publishFineRegion(bodyId, byCell) {
-  if (byCell == null) fineRegions.delete(bodyId)
-  else fineRegions.set(bodyId, { byCell })
+export function publishFineRegion(bodyId, region) {
+  if (region == null) fineRegions.delete(bodyId)
+  else fineRegions.set(bodyId, region)
 }
 
-/** The body's mounted region ({ byCell }) or null (no fine region mounted). */
+/** The body's mounted region or null (no fine region mounted). */
 export function fineRegionOf(bodyId) {
   return fineRegions.get(bodyId) || null
 }
 
-/** Is a fine chunk mounted at fine cell `cell` of body `bodyId`? */
-export function isFine(bodyId, cell) {
+/**
+ * The mounted fine hex under a body-LOCAL unit `dir`, or null (no chunk
+ * mounted there — or the dir is on the other patch). O(1): the gnomonic
+ * projection, the cube-round, one Map lookup.
+ */
+export function fineHexUnder(region, dir) {
+  const p = projectToPlane(dir)
+  if (p.patch !== region.patch) return null
+  const h = planeToHex(region.a, p.x, p.y)
+  return region.byHex.get(h.q + ',' + h.r) || null
+}
+
+/** Is a fine chunk mounted under body-LOCAL unit direction `dir` of `bodyId`? */
+export function isFine(bodyId, dir) {
   const r = fineRegions.get(bodyId)
-  return !!r && r.byCell.has(cell)
+  return !!r && !!fineHexUnder(r, dir)
+}
+
+/** The fine hex's chord-fan table, cached on the region (orientation-only). */
+function fanFor(region, e) {
+  const k = e.q + ',' + e.r
+  let fan = region.fanCache.get(k)
+  if (!fan) {
+    const d = fineHexDirs(region.patch, e.q, e.r, region.a)
+    fan = fineFanTables(d.c3, d.corners)
+    region.fanCache.set(k, fan)
+  }
+  return fan
 }
 
 /**
- * §6 dispatch, surface-object form: the surface of record at (body, position).
- * `docSurface` is the caller's memoized document surface (makeSurface result);
- * `cell` is the cell under the position (the caller's Voronoi lookup).
- *
- * Stage 1: the fine cells ARE the document cells and the heights agree exactly
- * (the fine grid is the document grid), so BOTH branches resolve to the SAME
- * `docSurface` object — the branch is real (checked against the published
- * mounted set) and the value is the identity. Stage 2: the fine branch returns
- * the chunk's fine surface (DEM blend + overlay heights), a different object.
+ * §6 dispatch: the composite surface of record for a body — the FINE surface
+ * where a chunk is mounted under the queried direction, the document surface
+ * elsewhere, continuous at the boundary by the feather (§4.3). Shape-
+ * compatible with makeSurface: { hex, R, hs, maxH, metrics, heightAt } — and
+ * `heightAt(dir, hint) → { cell, h, radius }` ALWAYS reports the DOCUMENT cell
+ * (the fine→doc map is applied here), so every downstream consumer — the
+ * brush, the selection, the HUD — takes a document cell, unchanged.
+ */
+export function makeFineSurface(docSurface, region) {
+  const heightAt = (dir, hint) => {
+    const e = fineHexUnder(region, dir)
+    if (e) {
+      return {
+        cell: e.docCell,
+        h: e.h,
+        radius: fineFanRadius(fanFor(region, e), region.R + e.h, dir),
+      }
+    }
+    return docSurface.heightAt(dir, hint)
+  }
+  return {
+    hex: docSurface.hex,
+    R: docSurface.R,
+    hs: docSurface.hs,
+    maxH: Math.max(docSurface.maxH, region.maxH),
+    metrics: docSurface.metrics,
+    heightAt,
+    fine: true,
+  }
+}
+
+/**
+ * §6 dispatch, surface-object form: the surface of record at (body, dir),
+ * where `dir` is the body-LOCAL unit direction of the position. A chunk
+ * mounted under `dir` → the composite fine surface; otherwise the document
+ * surface (the caller's own object — nothing is built on the doc path).
  *
  * @returns {{ surface: object|null, fine: boolean }}
  */
-export function surfaceOfRecord(docSurface, bodyId, cell) {
-  const fine = isFine(bodyId, cell)
-  // Stage 1: one object serves both branches (fine == doc). Stage 2: the fine
-  // branch returns the per-chunk fine surface from the region.
-  return { surface: docSurface, fine }
+export function surfaceOfRecord(docSurface, bodyId, dir) {
+  const region = fineRegions.get(bodyId)
+  if (region && fineHexUnder(region, dir)) return { surface: makeFineSurface(docSurface, region), fine: true }
+  return { surface: docSurface, fine: false }
 }
 
 /**
  * §6 dispatch, raw-height form: the surface radius (from the body's center)
- * along a body-LOCAL direction, from the surface of record. The raw-height
- * consumers (craft altitude, the park anchor's terrain-resolved r, the launch
- * pad) route through this. `docRadius` is the fan radius the caller computed
- * from the document grid; `cell` is the cell under the direction.
- *
- * Stage 1: the fine surface's heights agree with the document's exactly, so
- * the fine and document branches return the SAME value — `docRadius` — and the
- * region check is real. Stage 2: the fine branch returns the chunk's fine fan
- * radius (DEM blend + overlay), which differs.
+ * along a body-LOCAL unit direction, from the surface of record. The raw-
+ * height consumers (craft altitude, the park anchor's terrain-resolved r, the
+ * launch pad) route through this. `docRadius` is the fan radius the caller
+ * computed from the document grid; the fine branch returns the fine hex's
+ * chord-fan radius (the composited height), which differs.
  *
  * @returns {{ radius: number, fine: boolean }}
  */
-export function recordSurfaceRadius(docRadius, bodyId, cell) {
-  const fine = isFine(bodyId, cell)
-  return { radius: docRadius, fine }
+export function recordSurfaceRadius(docRadius, bodyId, dir) {
+  const region = fineRegions.get(bodyId)
+  if (region) {
+    const e = fineHexUnder(region, dir)
+    if (e) return { radius: fineFanRadius(fanFor(region, e), region.R + e.h, dir), fine: true }
+  }
+  return { radius: docRadius, fine: false }
 }
 
 /**
- * §6 pick remap: a fine-region hit → the DOCUMENT cell BEFORE anything
- * downstream (applyBrush, the selection, the brush preview) sees it — they all
- * take a document cell, unchanged. Routes through the published region's
- * byCell (the fine→doc map): Stage 1 the identity (a hit's cell is already a
- * document cell), Stage 2 the enclosing document cell. A cell outside the
- * region (or on a body with no region) is already a document cell and passes
- * through.
+ * §6 pick remap — the single remap point the pick routes through. With the
+ * stage-2 dispatch the hit's cell is ALREADY the document cell (the composite
+ * surface applies the fine→doc map at the sample), so this passes through; it
+ * stays as the named contract point so the pick code reads the same as it did
+ * when the remap did the work.
  */
 export function remapToDoc(bodyId, cell) {
-  const r = fineRegions.get(bodyId)
-  if (r) {
-    const doc = r.byCell.get(cell)
-    if (doc !== undefined) return doc
-  }
   return cell
 }

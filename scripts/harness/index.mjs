@@ -65,16 +65,21 @@ const EvaCam = (await import('../../src/components/EvaCam.jsx')).default
 const { craftRuntime, eva, resetFlightInput, flightInput, pendingFoot } = await import(
   '../../src/core/motion.js'
 )
+const { walkerLocation } = await import('../../src/core/surface.js')
 const { resetGeometryWorker } = await import('../../src/three/geometryService.js')
 
 /** Reset the motion framework's module state between boots (it is process-
- *  global: craftRuntime, the adrift astronaut, held keys, foot handoff). */
+ *  global: craftRuntime, the adrift astronaut, held keys, foot handoff, and
+ *  the on-foot walker's body-fixed location — the last one outlives a boot,
+ *  so a fresh boot's FineRegion could read a PREVIOUS session's dir on frame
+ *  1, before the new Walker has written its own). */
 function resetMotionState() {
   craftRuntime.clear()
   eva.state = null
   resetFlightInput()
   pendingFoot.bodyId = null
   pendingFoot.dir = null
+  walkerLocation.bodyId = null
 }
 
 const h = React.createElement
@@ -106,6 +111,13 @@ export const SOL_REAL_MAJOR = [
  *    is deterministic here.
  *  - one drive rover parked on the opposite side — the full P2 chain
  *    (board → drive → stay welded → eject-on-foot) is deterministic here.
+ *  - a synthetic terrain catalog ('TEST-DEM', docs/terrain.txt stage 2): the
+ *    fine-terrain pins need a DEM whose relief the document hexes smooth
+ *    away. The catalog is synthetic (the harness has no world database); the
+ *    elevation is doc-faithful + a 140 m perturbation (see test-headless.mjs,
+ *    which registers the provider through setTerrainProviders). The parked
+ *    anchors sit in FLAT basins (document h = 0 over ~9°) so the spawn falls
+ *    stay inside the real-human 20 s budget.
  */
 export function makeTestballWorld() {
   const FREQ = 12
@@ -121,6 +133,8 @@ export function makeTestballWorld() {
     isStatic: true,
     // tuned mass (≈120): v_esc ≈ 30 u/s ≈ 2× arcade cruise, g ≈ 40 u/s²
     density: 120 / ((4 / 3) * Math.PI * radiusForFrequency(FREQ) ** 3),
+    // stage 2: the fine layer streams this catalog's DEM pixels
+    terrain: { catalog: 'TEST-DEM' },
   })
   // The TEST-DEM stores int16 METERS: the fixture's relief must fit the
   // pixel range (|h·scale + 140 m perturbation| ≤ 32767) so the synthetic
@@ -142,12 +156,15 @@ export function makeTestballWorld() {
     scale: ATOM_M_PER_UNIT,
     planets: [planet],
     crafts: [
+      // the shuttle parks in the flat basin at lat −18°, lon −58.28° (the
+      // document's cell 849 center, h = 0) — the stage-2 fine pins spawn the
+      // walker there (the boot camera points along this dir)
       createCraft({
         id: 'c-testball-shuttle',
         name: 'Shuttle',
         kind: 'shuttle',
         realism: 'arcade',
-        pose: { anchor: { bodyId: 'p-testball', dir: [0, 0.7, 0.7], r: null } },
+        pose: { anchor: { bodyId: 'p-testball', dir: [0.5, -0.309017, 0.809017], r: null } },
       }),
       // the P2 drive chain testbed: a ground-locked rover parked on the
       // opposite side of the ball (board → drive → stay welded → eject)
@@ -155,7 +172,7 @@ export function makeTestballWorld() {
         id: 'c-testball-rover',
         name: 'Rover',
         kind: 'drive',
-        pose: { anchor: { bodyId: 'p-testball', dir: [0, -0.7, 0.7], r: null } },
+        pose: { anchor: { bodyId: 'p-testball', dir: [-0.5, 0.309017, -0.809017], r: null } },
       }),
     ],
   }

@@ -12,6 +12,7 @@ import { C } from '../src/core/constants.js'
 import { radiusForFrequency, planetRadius } from '../src/core/planetMath.js'
 import { buildPlanetGeometryData } from '../src/core/geometry.js'
 import { makeStarterWorld } from '../src/core/starter.js'
+import { fineHexDirs } from '../src/core/fineTerrain.js'
 import {
   patchOf,
   projectToPlane,
@@ -245,70 +246,102 @@ function mulberry32(seed) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. the §6 dispatch: surface(body, p) + pick remap (stage 1 = the identity,
-//    but the branch is real — it consults the published mounted set)
+// 8. the §6 dispatch (stage 2): dir-based, against the published region
+//    object — the fine hex under a body-LOCAL direction resolves the
+//    composite surface (the FINE surface, always reporting the DOCUMENT cell
+//    via the fine→doc map), the document surface elsewhere
 // ---------------------------------------------------------------------------
 {
-  const freq = 24
-  const grid = getHexSphere(freq)
-  const R = radiusForFrequency(freq)
-  const aU = fineHexEdge(grid, R)
-  const ls = loadedSet(grid, [0, 0, 1], 8 * aU, R, 4)
-  // the mounted set's fine→doc map, flattened (stage 1: the identity)
-  const byCell = new Map()
-  for (const i of ls.byCell.keys()) byCell.set(i, i)
-  const inCell = ls.focusCell // a cell index, in the cap
-  // a cell guaranteed OUTSIDE the cap: the one whose center is nearest the
-  // -Z pole (the cap sits at the +Z pole, far from the far hemisphere)
-  let outCell = 0
-  let minDot = Infinity
-  for (let i = 0; i < grid.cellCount; i++) {
-    const d = grid.centers[i * 3 + 2] // z component: nearest the -Z pole
-    if (d < minDot) { minDot = d; outCell = i }
+  const R = radiusForFrequency(24)
+  const a = 0.05 // the fine hex edge (plane units) — arbitrary for the dispatch
+  const patch = 0
+  // a handful of "landed" fine hexes around the patch pole, each carrying its
+  // enclosing DOCUMENT cell (the fine→doc map) and its composited height
+  const byHex = new Map()
+  let docCell = 0
+  let maxH = 0
+  for (const [q, r] of [
+    [0, 0],
+    [1, 0],
+    [0, 1],
+    [2, 0],
+    [-1, 1],
+  ]) {
+    const h = 0.1 + 0.01 * ++docCell
+    if (h > maxH) maxH = h
+    byHex.set(q + ',' + r, { q, r, docCell, h })
   }
-  if (ls.byCell.has(outCell)) throw new Error('test setup: outCell unexpectedly in the cap')
-  const docSurface = { sentinel: 'doc' }
+  const region = { a, patch, R, maxH, byHex, fanCache: new Map() }
+  const docSurface = {
+    hex: null,
+    R,
+    hs: 0,
+    maxH: 0.05,
+    metrics: null,
+    heightAt: () => ({ cell: 999, h: 0.03, radius: R + 0.03 }),
+  }
   const bodyId = 'body-A'
+  // a body-local dir in the region (the center of fine hex (1,0)) and one
+  // guaranteed outside it (the antipodal patch, and a far-away plane point)
+  const inDir = fineHexDirs(patch, 1, 0, a).c3
+  const otherPatchDir = [0, 0, -1]
+  const farDir = dirFromPlane(0, 40 * a, 0)
+  const e10 = byHex.get('1,0')
 
   // no region yet: every query is the document, nothing is fine
   const okNoRegion =
     fineRegionOf(bodyId) === null &&
-    !isFine(bodyId, inCell) &&
-    surfaceOfRecord(docSurface, bodyId, inCell).fine === false &&
-    surfaceOfRecord(docSurface, bodyId, inCell).surface === docSurface &&
-    remapToDoc(bodyId, inCell) === inCell
+    !isFine(bodyId, inDir) &&
+    surfaceOfRecord(docSurface, bodyId, inDir).fine === false &&
+    surfaceOfRecord(docSurface, bodyId, inDir).surface === docSurface &&
+    recordSurfaceRadius(42.5, bodyId, inDir).fine === false &&
+    remapToDoc(bodyId, 7) === 7
 
   // publish the region: the mounted set is the record
-  publishFineRegion(bodyId, byCell)
-  const recIn = surfaceOfRecord(docSurface, bodyId, inCell)
-  const recOut = surfaceOfRecord(docSurface, bodyId, outCell)
-  const radIn = recordSurfaceRadius(42.5, bodyId, inCell)
-  const radOut = recordSurfaceRadius(42.5, bodyId, outCell)
+  publishFineRegion(bodyId, region)
+  const recIn = surfaceOfRecord(docSurface, bodyId, inDir)
+  const recOut = surfaceOfRecord(docSurface, bodyId, otherPatchDir)
+  const sample = recIn.surface.heightAt(inDir, -1)
+  const radIn = recordSurfaceRadius(42.5, bodyId, inDir)
+  const radOut = recordSurfaceRadius(42.5, bodyId, otherPatchDir)
   const okRegion =
-    fineRegionOf(bodyId) !== null &&
-    isFine(bodyId, inCell) &&
-    !isFine(bodyId, outCell) &&
+    fineRegionOf(bodyId) === region &&
+    isFine(bodyId, inDir) &&
+    !isFine(bodyId, otherPatchDir) &&
+    !isFine(bodyId, farDir) &&
     recIn.fine === true &&
-    recIn.surface === docSurface && // stage 1: fine == doc, same object
+    recIn.surface !== docSurface && // the composite, not the document
     recOut.fine === false &&
+    recOut.surface === docSurface &&
+    sample.cell === e10.docCell && // the fine→doc map: the DOCUMENT cell
+    sample.h === e10.h &&
+    Math.abs(sample.radius - (R + e10.h)) < 1e-9 && // the fine fan at its center
+    recIn.surface.maxH === Math.max(docSurface.maxH, maxH) &&
     radIn.fine === true &&
-    radIn.radius === 42.5 &&
+    Math.abs(radIn.radius - (R + e10.h)) < 1e-9 &&
     radOut.fine === false &&
     radOut.radius === 42.5 &&
-    remapToDoc(bodyId, inCell) === inCell && // stage 1: the identity
-    remapToDoc(bodyId, outCell) === outCell // passes through outside the region
+    recIn.surface.heightAt(otherPatchDir, -1).cell === 999 && // fall-through to the document
+    remapToDoc(bodyId, e10.docCell) === e10.docCell // the named pass-through contract
+
+  // the region is MUTATED in place: the dispatch reads it fresh per query
+  e10.h = 0.77
+  const mutated = recordSurfaceRadius(42.5, bodyId, inDir)
+  const okMutation = Math.abs(mutated.radius - (R + 0.77)) < 1e-9
 
   // clear the region: back to the document, nothing fine
   publishFineRegion(bodyId, null)
   const okCleared =
     fineRegionOf(bodyId) === null &&
-    !isFine(bodyId, inCell) &&
-    surfaceOfRecord(docSurface, bodyId, inCell).fine === false &&
-    remapToDoc(bodyId, inCell) === inCell
+    !isFine(bodyId, inDir) &&
+    surfaceOfRecord(docSurface, bodyId, inDir).fine === false &&
+    surfaceOfRecord(docSurface, bodyId, inDir).surface === docSurface &&
+    remapToDoc(bodyId, 7) === 7
 
-  check('dispatch: no region → document, not fine', okNoRegion)
-  check('dispatch: published region → fine branch, identity surface (stage 1)', okRegion)
-  check('dispatch: cleared region → document again', okCleared)
+  check('dispatch (stage 2): no region → document, not fine', okNoRegion)
+  check('dispatch (stage 2): published region → fine surface reporting the doc cell', okRegion)
+  check('dispatch (stage 2): the in-place mutation is read fresh', okMutation)
+  check('dispatch (stage 2): cleared region → document again', okCleared)
 }
 
 // ---------------------------------------------------------------------------

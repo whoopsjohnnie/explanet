@@ -422,8 +422,10 @@ export function aheadDirection(dir, tangent, angle) {
  * Ray → heightfield intersection in the planet-LOCAL frame: origin and dir
  * are number[3] arrays (dir any nonzero length; normalized here), no
  * triangle mesh involved — the surface is the rendered chord fans, queried
- * analytically (fanRadiusAt). The signed penetration function
- *   f(t) = |origin + t·dir| − (fan radius at the direction of that point)
+ * analytically through `surface.heightAt` (the surface of record, §6: the
+ * plain document surface, or the fine composite dispatching per point). The
+ * signed penetration function
+ *   f(t) = |origin + t·dir| − (surface radius at the direction of that point)
  * is negative inside the planet; the hit is its first zero, found by
  * marching the enclosing sphere's chord and bisecting. This handles relief
  * WALLS (jumps between cell heights) exactly, which sphere-column fixed
@@ -440,9 +442,7 @@ export function aheadDirection(dir, tangent, angle) {
  */
 export function intersectHeightfield(surface, origin, dir) {
   const d = norm3(dir)
-  const hex = surface.hex
   const R = surface.R
-  const hs = surface.hs
   const maxR = R + surface.maxH
   const oc = dot(origin, origin)
   let hint = -1
@@ -451,7 +451,11 @@ export function intersectHeightfield(surface, origin, dir) {
   // the hot loop — this runs ~1000× per pointer event across the scene).
   const dirS = [0, 0, 0]
 
-  // Signed penetration f(t): < 0 inside the planet. Mutates `hint`.
+  // Signed penetration f(t): < 0 inside the planet. The SAMPLE goes through
+  // surface.heightAt — the surface of record (the plain document surface, or
+  // the fine composite with its per-point fine/doc dispatch, §6) — so the
+  // march sees exactly what renders. Mutates `hint` (the doc cell of the
+  // last sample).
   const evalAt = (t) => {
     const px = origin[0] + d[0] * t
     const py = origin[1] + d[1] * t
@@ -460,8 +464,9 @@ export function intersectHeightfield(surface, origin, dir) {
     dirS[0] = px / len
     dirS[1] = py / len
     dirS[2] = pz / len
-    hint = cellAtDirection(hex, dirS, hint)
-    return len - fanRadiusAt(hex, hint, R + hs[hint], dirS)
+    const q = surface.heightAt(dirS, hint)
+    hint = q.cell
+    return len - q.radius
   }
 
   // Bisect f between an outside sample (lo) and an inside one (hi).
@@ -471,24 +476,23 @@ export function intersectHeightfield(surface, origin, dir) {
       if (evalAt(mid) <= 0) hi = mid
       else lo = mid
     }
-    evalAt(hi) // leaves the cell under `hi` in `hint`
-    const h = hs[hint]
-    // f(t) jumps where the ray crosses a boundary between cells of unequal
-    // height, and the bisection can land exactly on such a jump: the point at
-    // `hi` may then sit above the surface of the cell the funnel reports.
-    // Snap it radially onto that cell's RENDERED surface (its chord fan at
-    // the hit direction) so a hit never floats, while `distance` keeps the
-    // ray parameter of the entry itself.
+    // The surface at the hit point (dirS still holds the direction at `hi`
+    // from the last evalAt). f(t) jumps where the ray crosses a boundary
+    // between cells of unequal height and the bisection can land exactly on
+    // such a jump: the point at `hi` may then sit above the surface the
+    // funnel reports. Snap it radially onto that cell's RENDERED surface (its
+    // chord fan at the hit direction) so a hit never floats, while `distance`
+    // keeps the ray parameter of the entry itself.
+    const q = surface.heightAt(dirS, hint)
     const point = [origin[0] + d[0] * hi, origin[1] + d[1] * hi, origin[2] + d[2] * hi]
     const len = Math.sqrt(point[0] * point[0] + point[1] * point[1] + point[2] * point[2])
-    const radius = len > 0 ? fanRadiusAt(hex, hint, R + h, [point[0] / len, point[1] / len, point[2] / len]) : R + h
     if (len > 0) {
-      const s = radius / len
+      const s = q.radius / len
       point[0] *= s
       point[1] *= s
       point[2] *= s
     }
-    return { cell: hint, h, radius, distance: hi, point }
+    return { cell: q.cell, h: q.h, radius: q.radius, distance: hi, point }
   }
 
   if (oc <= maxR * maxR) {

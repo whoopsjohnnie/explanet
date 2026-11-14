@@ -1,22 +1,41 @@
 /**
  * FineRegion.jsx — the streamed fine-terrain region for ONE body
- * (docs/terrain.txt, stage 1: the fine grid IS the document grid).
+ * (docs/terrain.txt, stage 2: the fine grid IS the DEM-pixel grid).
  *
- * Two collaborators, split by ownership:
- *   • useIsFocus(planet)  — the coarse "is this the body the player is ON"
- *     fact, derived from the zustand session (changes only when the session
- *     changes bodies, so it is safe as React state).
- *   • <FineRegion>        — the fine-grained streaming: while focused it
- *     streams the cap's chunks (ahead-first, behind-last), mounts/evicts their
- *     meshes in a spin-frame group, and mutates the shared suppression handle
- *     (the §4.4 cap + mounted-chunk texture). All of this is IMPERATIVE (60 Hz
- *     rule) — never through React state or zustand.
+ * The fine hex is the terrain catalog's pixel (fineTerrain.js): a body-fixed
+ * gnomonic lattice at the catalog's pixel size (1.85 km for Earth), chunked
+ * on finedisc.js's chunk lattice (reused verbatim), streamed ahead of the
+ * player and feathered to the document mesh at the cap's edge (§4.3).
  *
- * The DOCUMENT mesh's suppression material is owned by PlanetSim (it applies
- * it to TerrainMeshes); FineRegion only fills the handle's uniforms. When the
- * session leaves the body, PlanetSim drops the material and FineRegion's
- * unmount disposes every chunk + zeroes the cap — the body is back to its LOD
- * chain, byte-identical to a world that never had chunks (§7, §11).
+ * Ownership, by data:
+ *   • the MAIN THREAD owns the §4.1 synthesis — per fine hex the final
+ *     height h_final (overlay > feather blend > DEM > document), the fine→doc
+ *     map (cellAtDirection) and the terrain look (the document cell's
+ *     type/color). It sees the DEM tiles (it fetched them, LRU + dedupe) and
+ *     the document grid, so the worker stays pure vertex math
+ *     (fineTerrain.buildFineGeometryData — no DEM, no atoms in the payload).
+ *   • the WORKER builds one chunk's chord-fan geometry (the 'finechunk' job,
+ *     the same seq-supersede contract as the LOD chain and stage-1 chunks).
+ *   • the MOUNTED SET is published to the core dispatch (finedisc §6): ONE
+ *     region object, mutated in place as chunks land/evict (byHex → the
+ *     landed hexes' {docCell, h} + the fan cache); the dispatch reads it
+ *     fresh on every query. Never through React state or zustand (60 Hz).
+ *
+ * THE FEATHER MOVES WITH THE FOCUS. A chunk's blend weights are a function
+ * of the focus at synthesis time, so when the focus crosses a chunk boundary
+ * every mounted chunk is re-synthesized (re-requested; seq-supersede drops
+ * the stale in-flight job, the old geometry stays visible until its
+ * replacement lands — the seam stays continuous at all times, §4.3). A chunk
+ * whose heights are focus-INDEPENDENT (fully inside the feather: h = h_dem;
+ * fully outside: h = h_doc; painted cells are independent too) keeps its
+ * build — only the feather-ring chunks re-synthesize on a focus move.
+ *
+ * The DOCUMENT mesh's suppression material is owned by the Planet component
+ * (it applies it to TerrainMeshes); FineRegion only fills the handle's
+ * uniforms and the mounted-chunk data texture. When the session leaves the
+ * body the Planet drops the material and the unmount disposes every chunk +
+ * zeroes the cap — the body is back to its LOD chain, byte-identical to a
+ * world that never had chunks (§7, §11).
  */
 
 import { useEffect, useRef } from 'react'
@@ -28,32 +47,54 @@ import { getHexSphere } from '../core/hexsphere.js'
 import { planetRadius } from '../core/planetMath.js'
 import {
   capRadiusU,
-  chunkSideFor,
-  fineHexEdge,
   focusSafe,
-  loadedSet,
-  orderQueue,
   projectToPlane,
+  hexToPlane,
   planeToHex,
   chunkOfHex,
-  buildChunkGeometryData,
+  chunkKey,
+  parseChunkKey,
+  orderQueue,
   setFinePatcher,
   clearFineEdits,
   publishFineRegion,
+  fineEditFor,
 } from '../core/finedisc.js'
+import {
+  fineLatticeEdge,
+  fineChunkSide,
+  fineHexDirs,
+  dirToLatLon,
+  tileKeyFor,
+  demElevationAt,
+  enumerateFineHexes,
+  featherWeight,
+  buildFineGeometryData,
+  elementType,
+  elementColor,
+  getTerrainCatalogProvider,
+  getTerrainTileProvider,
+} from '../core/fineTerrain.js'
+import { cellAtDirection } from '../core/surface.js'
 import { computeFaceNormals } from '../core/geometry.js'
-import { buildChunkAsync } from '../three/geometryService.js'
+import { buildFineChunkAsync } from '../three/geometryService.js'
 import { getTerrainMaterials } from '../three/materials.js'
 import { setMountedTexture } from '../three/fineMaterial.js'
 import { walkerLocation } from '../core/surface.js'
 import { craftRuntime, eva } from '../core/motion.js'
+import { C } from '../core/constants.js'
+
+/** The DEM tile LRU cap (~2.7 MB of 28 KiB int16 tiles) + the tile-range
+ *  corner margin (deg) — the block spans ~1.9° and a tile is 2°, so the
+ *  center tile alone is never guaranteed. */
+const TILE_CACHE_MAX = 96
+const TILE_MARGIN_DEG = 0.05
 
 /**
  * The coarse focus fact: is `planet` the body the player is currently ON?
  * Derived from the zustand session (foot: the walker's body; craft: a craft
  * anchored to it). Changes only when the session changes bodies — safe as
- * React state. Adrift craft/EVA (dominant-body-within-D) is a refinement; the
- * stage-1 pins exercise the on-foot walker.
+ * React state.
  */
 export function useIsFocus(planet) {
   const player = useStore((s) => s.player)
@@ -122,14 +163,202 @@ function fineFocusFor(planetId) {
 
 export default function FineRegion({ planet, renderPlanet, supp }) {
   const groupRef = useRef(null)
-  const mountedRef = useRef(new Map()) // chunk key → { meshes, geos, cancel, I, J, pending }
-  const pendingRef = useRef(new Set())
+  const mountedRef = useRef(new Map()) // chunk key → entry (see requestChunk)
+  const regionRef = useRef(null) // the published region object (mutated in place)
   const lastFocusChunkRef = useRef(null)
+  const focusRef = useRef(null) // the latest body-local focus {dir, vel}
+  const ctxRef = useRef(null) // the latest synthesis context (useFrame refreshes it)
+  const catalogRef = useRef(null) // { pixelDeg, tileSize } once the summary arrives
+  const catalogFailedRef = useRef(false)
+  const tilesRef = useRef(new Map()) // LRU: `${tileLat},${tileLon}` → Int16Array
+  const inflightRef = useRef(new Map()) // tile key → in-flight Promise
+  const genRef = useRef(0) // bumped per focus-chunk move (supersedes stale tile waits)
   const materials = getTerrainMaterials()
 
-  // `batches` are ASSEMBLED { type, geometry } meshes (geometryService's
-  // assembleMesh — the same path the LOD levels take): each geometry already
-  // carries position/color/uv/normal + cellByTri + its build frequency.
+  // ------------------------------------------------------------------ tiles
+  /**
+   * One DEM tile (int16 meters), from the LRU or the provider (deduped by
+   * key; a failed/absent tile resolves to null — the synthesis falls back to
+   * the document height there). The LRU persists across band exits (the
+   * cache is per §7, not per region) and is cleared only on unmount.
+   */
+  const getTile = (tl, ln) => {
+    const k = tl + ',' + ln
+    let t = tilesRef.current.get(k)
+    if (t) {
+      tilesRef.current.delete(k)
+      tilesRef.current.set(k, t) // refresh the LRU position
+      return Promise.resolve(t)
+    }
+    let p = inflightRef.current.get(k)
+    if (!p) {
+      const catalog = planet.terrain.catalog
+      p = getTerrainTileProvider()(catalog, tl, ln)
+        .then((arr) => {
+          if (arr) {
+            tilesRef.current.set(k, arr)
+            while (tilesRef.current.size > TILE_CACHE_MAX) tilesRef.current.delete(tilesRef.current.keys().next().value)
+          }
+          return arr
+        })
+        .catch(() => null)
+        .finally(() => inflightRef.current.delete(k))
+      inflightRef.current.set(k, p)
+    }
+    return p
+  }
+
+  // The catalog summary (GET /api/terrain shape, through the provider seam
+  // the headless harness swaps for synthetic DEMs). Fetched once per session
+  // mount; a failure (or a catalog absent from the DB) is remembered, so the
+  // region simply never appears and the fetch is not spammed.
+  useEffect(() => {
+    let alive = true
+    // the getter returns the provider FUNCTION (the tile call below invokes it
+    // the same way); invoke it here to get the catalog-summary Promise
+    getTerrainCatalogProvider()()
+      .then((summary) => {
+        if (!alive) return
+        const row = (summary.catalogs || []).find((c) => c.catalog === planet.terrain.catalog)
+        if (row) catalogRef.current = { pixelDeg: row.pixelDeg, tileSize: row.tileSize }
+        else catalogFailedRef.current = true
+      })
+      .catch(() => {
+        if (alive) catalogFailedRef.current = true
+      })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planet.id])
+
+  // --------------------------------------------------------------- synthesis
+  /**
+   * The §4.1 synthesis of one chunk: the FULL block (chunkSide² fine hexes)
+   * plus its one-hex HALO ring — the neighbour heights a boundary wall closes
+   * against. h_final is a pure function of (DEM, document, overlay, focus),
+   * so adjacent chunks agree on the shared boundary, and a re-synthesis at a
+   * new focus is the only thing that moves a chunk's bytes:
+   *
+   *     h_final = edit.h                       (the §5 overlay, where painted)
+   *             = w · (elev_m / scale) + (1−w) · h_doc   (the feather blend)
+   *             = h_doc                        (no DEM tile, or w = 0)
+   *
+   * The fine→doc map (docCell) is cellAtDirection with the hint carried
+   * across the block (adjacent hexes → a 1-2 step greedy climb); the look
+   * (type/rgb) is the document cell's own (§3.4 — the fine layer shows the
+   * DEM's relief but keeps the document's look). `allIndep` marks a chunk
+   * whose heights are focus-INDEPENDENT (no unpainted hex in the feather
+   * band) — such a chunk keeps its build across focus moves (see useFrame).
+   */
+  const synthesizeChunk = (ctx, I, J) => {
+    const n = ctx.chunkSide
+    const q0 = I * n
+    const r0 = J * n
+    const hexes = []
+    const halo = []
+    const docCells = new Set()
+    const haloDocCells = new Set()
+    let maxH = -Infinity
+    let allIndep = true
+    let hint = -1
+    for (let dr = -1; dr <= n; dr++) {
+      for (let dq = -1; dq <= n; dq++) {
+        const Q = q0 + dq
+        const Rr = r0 + dr
+        const c3 = fineHexDirs(ctx.patch, Q, Rr, ctx.a).c3
+        const docCell = cellAtDirection(ctx.grid, c3, hint)
+        hint = docCell
+        const el = ctx.elements[docCell]
+        const { latDeg, lonDeg } = dirToLatLon(c3)
+        const hDoc = el.h || 0
+        const edit = fineEditFor(ctx.bodyId, docCell)
+        let h
+        if (edit) {
+          h = edit.h
+        } else {
+          const cosD = c3[0] * ctx.focusDir[0] + c3[1] * ctx.focusDir[1] + c3[2] * ctx.focusDir[2]
+          const w = featherWeight(Math.acos(Math.min(1, Math.max(-1, cosD))), ctx.capAngle, ctx.featherFrac)
+          if (w > 0 && w < 1) allIndep = false
+          const elev = w > 0 ? demElevationAt(latDeg, lonDeg, ctx.tiles, ctx.pixelDeg, ctx.tileSize) : null
+          h = elev == null ? hDoc : w * (elev / ctx.scale) + (1 - w) * hDoc
+        }
+        if (dr >= 0 && dq >= 0 && dr < n && dq < n) {
+          docCells.add(docCell)
+          if (h > maxH) maxH = h
+          // `e` is the object the dispatch's region.byHex holds — the patcher
+          // mutates its .h in place, and the dispatch reads it fresh per query
+          hexes.push({ q: Q, r: Rr, h, type: elementType(el), rgb: elementColor(el), docCell, e: { q: Q, r: Rr, docCell, h } })
+        } else {
+          haloDocCells.add(docCell)
+          halo.push({ q: Q, r: Rr, h })
+        }
+      }
+    }
+    return { hexes, halo, docCells, haloDocCells, maxH, allIndep }
+  }
+
+  /**
+   * The DEM tiles a chunk's block needs: the lat/lon of the block's four
+   * corners + center (± TILE_MARGIN_DEG), expanded to whole tiles. The block
+   * spans ~1.9° and a tile is 2°, so the corner range (not the center tile)
+   * is what covers it; a wrap of the antimeridian is handled as two ranges.
+   * A tile that is absent from the DB simply never arrives — the synthesis
+   * falls back to the document height there (graceful, by design).
+   */
+  const tilesForChunk = (ctx, I, J) => {
+    const n = ctx.chunkSide
+    const q0 = I * n
+    const r0 = J * n
+    const c = n >> 1
+    const pts = [
+      [q0, r0],
+      [q0 + n - 1, r0],
+      [q0, r0 + n - 1],
+      [q0 + n - 1, r0 + n - 1],
+      [q0 + c, r0 + c],
+    ]
+    let latMin = 90
+    let latMax = -90
+    let lonMin = 180
+    let lonMax = -180
+    for (const [q, r] of pts) {
+      const { latDeg, lonDeg } = dirToLatLon(fineHexDirs(ctx.patch, q, r, ctx.a).c3)
+      if (latDeg < latMin) latMin = latDeg
+      if (latDeg > latMax) latMax = latDeg
+      if (lonDeg < lonMin) lonMin = lonDeg
+      if (lonDeg > lonMax) lonMax = lonDeg
+    }
+    const tileDeg = ctx.tileSize * ctx.pixelDeg
+    const out = new Set()
+    // The tile keys MUST agree with tileKeyFor — the LOOKUP side of
+    // demElevationAt — including its edge clamps. A raw floor lattice walks
+    // past the edge (lat < 0 with a 120° tile → floor gives −120, but the
+    // lookup pins to the −90 edge tile), so the fetch would land a tile the
+    // lookup never reads and the synthesis would silently fall back to the
+    // document. Deriving the range from tileKeyFor keeps both sides on the
+    // same lattice by construction.
+    const [latLo] = tileKeyFor(latMin - TILE_MARGIN_DEG, 0, ctx.tileSize, ctx.pixelDeg)
+    const [latHi] = tileKeyFor(latMax + TILE_MARGIN_DEG, 0, ctx.tileSize, ctx.pixelDeg)
+    const addRange = (l0, l1) => {
+      // tileKeyFor returns [latTile, lonTile] — lat FIRST. With a 0 placeholder
+      // in the other axis, take the component that was actually asked for.
+      const [, loLo] = tileKeyFor(0, l0 - TILE_MARGIN_DEG, ctx.tileSize, ctx.pixelDeg)
+      const [, loHi] = tileKeyFor(0, l1 + TILE_MARGIN_DEG, ctx.tileSize, ctx.pixelDeg)
+      for (let la = latLo; la <= latHi; la += tileDeg)
+        for (let lo = loLo; lo <= loHi; lo += tileDeg)
+          out.add(Math.round(la) + ',' + Math.round(lo))
+    }
+    if (lonMax - lonMin <= 180) addRange(lonMin, lonMax)
+    else {
+      addRange(lonMin, 180)
+      addRange(-180, lonMax)
+    }
+    return [...out]
+  }
+
+  // --------------------------------------------------------- chunk lifecycle
+  /** Worker batches (assembled {type, geometry}) → mounted meshes. */
   const makeChunkMeshes = (batches) => {
     const meshes = []
     const geos = []
@@ -142,88 +371,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     return { meshes, geos }
   }
 
-  const refreshSuppression = () => {
-    if (!supp) return
-    const chunks = [...mountedRef.current.values()].filter((c) => !c.pending)
-    const box = setMountedTexture(supp.mountedTexture, chunks)
-    supp.uniforms.fdTexOffset.value.set(box.Imin, box.Jmin)
-    supp.uniforms.fdTexSize.value.set(box.W, box.H)
-  }
-
-  // §6: publish the mounted set to the core dispatch (surface.js/motion.js
-  // route walk/pick/altitude/park-r through it). The value is the region's
-  // fine→doc map flattened over the loaded set — stage 1 the fine cells ARE
-  // the document cells, so it is the identity. Runs on every mount/evict;
-  // never through React state (the 60 Hz rule).
-  const publishRegion = () => {
-    const byCell = new Map()
-    for (const c of mountedRef.current.values()) {
-      if (c.pending || !c.cells) continue
-      for (const cell of c.cells) byCell.set(cell, cell)
-    }
-    publishFineRegion(planet.id, byCell)
-  }
-
-  const requestChunk = (chunk) => {
-    if (mountedRef.current.has(chunk.key) || pendingRef.current.has(chunk.key)) return
-    pendingRef.current.add(chunk.key)
-    // `cells` (the chunk's document cells) is kept on the entry so the §5
-    // stroke patcher can find which mounted chunks a painted cell falls in.
-    mountedRef.current.set(chunk.key, { pending: true, I: chunk.I, J: chunk.J, cells: chunk.cells })
-    const packed = planet.atomsPacked || null
-    buildChunkAsync(planet.id, chunk.key, renderPlanet, {
-      atomsPacked: packed,
-      cells: chunk.cells,
-      onBatches: (batches) => {
-        pendingRef.current.delete(chunk.key)
-        const entry = mountedRef.current.get(chunk.key)
-        if (!entry || !groupRef.current) return // unmounted mid-flight
-        const { meshes, geos } = makeChunkMeshes(batches)
-        for (const m of meshes) groupRef.current.add(m)
-        entry.meshes = meshes
-        entry.geos = geos
-        entry.pending = false
-        refreshSuppression()
-        publishRegion()
-      },
-      onError: () => {
-        pendingRef.current.delete(chunk.key)
-        const entry = mountedRef.current.get(chunk.key)
-        if (entry) mountedRef.current.delete(chunk.key)
-      },
-    })
-  }
-
-  const evictChunk = (key) => {
-    const c = mountedRef.current.get(key)
-    if (!c) return
-    pendingRef.current.delete(key)
-    if (c.meshes) {
-      for (const m of c.meshes) if (groupRef.current) groupRef.current.remove(m)
-      for (const g of c.geos) g.dispose()
-    }
-    mountedRef.current.delete(key)
-    publishRegion()
-  }
-
-  // Full region teardown (session left the body, or the focus crossed into
-  // the no-region band near a patch horizon): every chunk evicted, the §6
-  // dispatch falls back to the document, the suppression cap is zeroed.
-  const teardownRegion = () => {
-    for (const key of [...mountedRef.current.keys()]) evictChunk(key)
-    pendingRef.current.clear()
-    lastFocusChunkRef.current = null
-    publishFineRegion(planet.id, null)
-    if (supp) {
-      supp.uniforms.fdCapPlane.value = 0 // radius 0 → the discard is a no-op
-      setMountedTexture(supp.mountedTexture, [])
-    }
-  }
-
-  // ---- §5 the stroke patcher: keep mounted chunks honest on a doc edit ------
-  // Assembles raw builder batches into THREE meshes (the worker path does this
-  // off-thread; the §5 same-frame patch does it here, on the main thread, so
-  // the painted cell is on the rendered fine surface before the next frame).
+  /** Raw builder batches → meshes, synchronously (the §5 same-frame patch). */
   const makeChunkMeshesFromBatches = (batches) => {
     const meshes = []
     const geos = []
@@ -242,32 +390,217 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     return { meshes, geos }
   }
 
+  /** §4.4: the document shader's discard texture = the MOUNTED (live) chunks. */
+  const refreshSuppression = () => {
+    if (!supp) return
+    const chunks = [...mountedRef.current.values()].filter((c) => c.meshes)
+    const box = setMountedTexture(supp.mountedTexture, chunks)
+    supp.uniforms.fdTexOffset.value.set(box.Imin, box.Jmin)
+    supp.uniforms.fdTexSize.value.set(box.W, box.H)
+  }
+
+  /** The region's maxH = the max over the mounted chunks (O(#chunks)). */
+  const computeMaxH = () => {
+    let m = 0
+    for (const c of mountedRef.current.values()) if (c.meshes && c.maxH > m) m = c.maxH
+    return m
+  }
+
   /**
-   * The §5 stroke patcher (registered with core/finedisc.js): a paint changed
-   * these document cells; rebuild the mounted chunks that cover them.
-   *  - step 3 (same frame): a synchronous rebuild of the affected chunk's
-   *    geometry, swapped in place — the weld invariant holds for the fine
-   *    layer exactly as for the document (mesh + surface re-derive from the
-   *    new elements in the same frame). At stage 1 a chunk is small (a doc
-   *    lattice block), so the main-thread cost is negligible; stage 2 turns
-   *    this into a direct vertex patch for DEM-sized chunks.
-   *  - step 4 (background): the re-synthesis backstop — a no-op at stage 1,
-   *    because the synchronous rebuild already made the chunk's bytes honest
-   *    (there are no stored fine heights to re-derive); it is where stage 2
-   *    re-runs the §4.1 synthesis (DEM + document + overlay) off-thread.
+   * Request (or RE-REQUEST) one chunk: fetch its tiles, run the §4.1
+   * synthesis on the main thread, post the vertex math to the worker.
+   * Re-requests are the norm — the feather moves with the focus (see
+   * useFrame) — and the worker's seq-supersede plus the old-geometry-
+   * stays-visible swap keep the surface continuous through the transition.
    */
-  const patcher = (cells, planet) => {
+  const requestChunk = (chunk, ctx) => {
+    let entry = mountedRef.current.get(chunk.key)
+    if (!entry) {
+      entry = { key: chunk.key, I: chunk.I, J: chunk.J, meshes: null, geos: null, liveHexes: null, liveHalo: null, liveHaloMap: null, allIndep: false, cancel: null }
+      mountedRef.current.set(chunk.key, entry)
+    }
+    const gen = genRef.current
+    const tileKeys = tilesForChunk(ctx, chunk.I, chunk.J)
+    Promise.all(
+      tileKeys.map((k) => {
+        const [tl, ln] = k.split(',')
+        return getTile(+tl, +ln)
+      })
+    )
+      .then(() => {
+        if (gen !== genRef.current) return // a newer focus-chunk move superseded this
+        const syn = synthesizeChunk(ctx, chunk.I, chunk.J)
+        if (entry.cancel) entry.cancel() // drop the superseded in-flight build
+        entry.cancel = buildFineChunkAsync(
+          planet.id,
+          chunk.key,
+          {
+            R: ctx.R,
+            patch: ctx.patch,
+            a: ctx.a,
+            hexes: syn.hexes.map((hx) => ({ q: hx.q, r: hx.r, h: hx.h, type: hx.type, rgb: hx.rgb, docCell: hx.docCell })),
+            halo: syn.halo,
+            onBatches: (batches) => {
+              const e = mountedRef.current.get(chunk.key)
+              if (!e || !groupRef.current) return // unmounted mid-flight
+              const { meshes, geos } = makeChunkMeshes(batches)
+              for (const m of meshes) groupRef.current.add(m)
+              if (e.meshes) {
+                // a replacement: the old geometry is out, the new one in
+                for (const m of e.meshes) groupRef.current.remove(m)
+                for (const g of e.geos) g.dispose()
+              }
+              e.meshes = meshes
+              e.geos = geos
+              e.liveHexes = syn.hexes
+              e.liveHalo = syn.halo
+              e.liveHaloMap = new Map(syn.halo.map((h) => [h.q + ',' + h.r, h.h]))
+              e.docCells = syn.docCells
+              e.haloDocCells = syn.haloDocCells
+              e.maxH = syn.maxH
+              e.allIndep = syn.allIndep
+              // the dispatch sees the landed hexes NOW (the published region
+              // object is mutated in place — it was never re-published)
+              const region = regionRef.current
+              if (region) {
+                for (const hx of syn.hexes) region.byHex.set(hx.q + ',' + hx.r, hx.e)
+                region.maxH = computeMaxH()
+              }
+              refreshSuppression()
+            },
+            onError: () => {
+              const e = mountedRef.current.get(chunk.key)
+              if (!e) return
+              if (!e.meshes) mountedRef.current.delete(chunk.key) // first build died
+              refreshSuppression()
+            },
+          }
+        )
+      })
+      .catch(() => {})
+  }
+
+  /** Evict one chunk: geometry disposed, the dispatch loses its hexes. */
+  const evictChunk = (key) => {
+    const c = mountedRef.current.get(key)
+    if (!c) return
+    if (c.cancel) c.cancel()
+    if (c.meshes) {
+      for (const m of c.meshes) if (groupRef.current) groupRef.current.remove(m)
+      for (const g of c.geos) g.dispose()
+    }
+    const region = regionRef.current
+    if (region && c.liveHexes) for (const hx of c.liveHexes) region.byHex.delete(hx.q + ',' + hx.r)
+    mountedRef.current.delete(key)
+    if (region) region.maxH = computeMaxH()
+    refreshSuppression()
+  }
+
+  /** Full region teardown (the session left, or the focus is in the
+   *  no-region band near a patch horizon): every chunk evicted, the §6
+   *  dispatch falls back to the document, the suppression cap is zeroed.
+   *  The tile LRU is KEPT (§7: the cache survives evictions). */
+  const teardownRegion = () => {
+    for (const key of [...mountedRef.current.keys()]) evictChunk(key)
+    lastFocusChunkRef.current = null
+    focusRef.current = null
+    if (regionRef.current) {
+      regionRef.current.byHex.clear()
+      regionRef.current.fanCache.clear()
+      regionRef.current.maxH = 0
+      regionRef.current = null
+    }
+    publishFineRegion(planet.id, null)
+    if (supp) {
+      supp.uniforms.fdCapPlane.value = 0 // radius 0 → the discard is a no-op
+      setMountedTexture(supp.mountedTexture, [])
+    }
+  }
+
+  // ---- §5 the stroke patcher: keep the mounted chunks honest on a doc edit
+  // A paint changed these DOCUMENT cells (applyBrush did the rest). The
+  // mounted chunks whose block OR halo covers a painted cell are re-
+  // synthesized and rebuilt the SAME FRAME (the weld invariant for the fine
+  // layer: the painted height is on the rendered surface and on the surface
+  // of record before the next frame). The halo scope matters: a boundary
+  // wall reads the NEIGHBOUR's fine height, so a stroke across a chunk edge
+  // must also refresh the neighbour's walls (a stale neighbour wall would
+  // leave a see-through step gap). Chunks whose heights come out unchanged
+  // (re-painting the same value mid-drag) skip the geometry rebuild.
+  const rebuildChunk = (entry, ctx) => {
+    const syn = synthesizeChunk(ctx, entry.I, entry.J)
+    if (entry.liveHexes) {
+      let same = true
+      for (let i = 0; i < syn.hexes.length; i++)
+        if (syn.hexes[i].h !== entry.liveHexes[i].h) {
+          same = false
+          break
+        }
+      if (same && entry.liveHaloMap)
+        for (const h of syn.halo)
+          if (entry.liveHaloMap.get(h.q + ',' + h.r) !== h.h) {
+            same = false
+            break
+          }
+      if (same) return false
+    }
+    const hTable = new Map()
+    for (const h of syn.halo) hTable.set(h.q + ',' + h.r, h.h)
+    for (const h of syn.hexes) hTable.set(h.q + ',' + h.r, h.h)
+    const built = syn.hexes.map((hx) => {
+      const d = fineHexDirs(ctx.patch, hx.q, hx.r, ctx.a)
+      return { q: hx.q, r: hx.r, c3: d.c3, corners: d.corners, h: hx.h, type: hx.type, rgb: hx.rgb, docCell: hx.docCell }
+    })
+    const batches = buildFineGeometryData(ctx.R, ctx.patch, ctx.a, built, (q, r) => hTable.get(q + ',' + r) ?? 0)
+    const { meshes, geos } = makeChunkMeshesFromBatches(batches)
+    for (const m of entry.meshes) if (groupRef.current) groupRef.current.remove(m)
+    for (const g of entry.geos) g.dispose()
+    for (const m of meshes) if (groupRef.current) groupRef.current.add(m)
+    entry.meshes = meshes
+    entry.geos = geos
+    entry.liveHexes = syn.hexes
+    entry.liveHalo = syn.halo
+    entry.liveHaloMap = new Map(syn.halo.map((h) => [h.q + ',' + h.r, h.h]))
+    entry.docCells = syn.docCells
+    entry.haloDocCells = syn.haloDocCells
+    entry.maxH = syn.maxH
+    entry.allIndep = syn.allIndep
+    const region = regionRef.current
+    if (region) for (const hx of syn.hexes) region.byHex.set(hx.q + ',' + hx.r, hx.e)
+    return true
+  }
+
+  const patcher = (cells, freshPlanet) => {
+    const region = regionRef.current
+    const base = ctxRef.current
+    const focus = focusRef.current
+    const catalog = catalogRef.current
+    if (!region || !base || !focus || !catalog) return
     const cellSet = new Set(cells)
-    for (const entry of mountedRef.current.values()) {
-      if (entry.pending || !entry.meshes) continue
-      if (!entry.cells.some((c) => cellSet.has(c))) continue
-      const batches = buildChunkGeometryData(planet, { cells: entry.cells })
-      for (const m of entry.meshes) if (groupRef.current) groupRef.current.remove(m)
-      for (const g of entry.geos) g.dispose()
-      const { meshes, geos } = makeChunkMeshesFromBatches(batches)
-      if (groupRef.current) for (const m of meshes) groupRef.current.add(m)
-      entry.meshes = meshes
-      entry.geos = geos
+    const ctx = { ...base, elements: freshPlanet.elements, focusDir: focus.dir }
+    const touched = new Set()
+    const consider = (entry) => {
+      if (!entry || !entry.liveHexes || touched.has(entry.key)) return
+      // cheap guard: does the stroke even reach this chunk (block or halo)?
+      let reaches = false
+      for (const c of cellSet)
+        if (entry.docCells && (entry.docCells.has(c) || entry.haloDocCells.has(c))) {
+          reaches = true
+          break
+        }
+      if (!reaches) return
+      touched.add(entry.key)
+      if (rebuildChunk(entry, ctx)) region.maxH = computeMaxH()
+    }
+    for (const entry of mountedRef.current.values()) consider(entry)
+    // the 8-neighbour ring of every touched chunk (halo consistency above)
+    for (const key of [...touched]) {
+      const { patch, I, J } = parseChunkKey(key)
+      for (let dI = -1; dI <= 1; dI++)
+        for (let dJ = -1; dJ <= 1; dJ++) {
+          if (!dI && !dJ) continue
+          consider(mountedRef.current.get(chunkKey(patch, I + dI, J + dJ)))
+        }
     }
   }
 
@@ -282,6 +615,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planet.id])
 
+  // ---------------------------------------------------------------- the frame
   useFrame(() => {
     if (!renderPlanet) return
     const focus = fineFocusFor(planet.id)
@@ -290,21 +624,27 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       if (lastFocusChunkRef.current !== null) teardownRegion()
       return
     }
+    focusRef.current = focus
+    const catalog = catalogRef.current
+    if (!catalog || catalogFailedRef.current) {
+      // the summary has not arrived (or the catalog is not in the DB): no
+      // region until it does — a failure is remembered, never retried
+      if (lastFocusChunkRef.current !== null) teardownRegion()
+      return
+    }
 
+    const worldScale = useStore.getState().world.scale
     const grid = getHexSphere(renderPlanet.frequency)
     const R = planetRadius(renderPlanet)
-    const D = capRadiusU(useStore.getState().world.scale)
-    const aU = fineHexEdge(grid, R)
-    const a = aU / R // the PLANE cell edge (dimensionless)
-    const hexKm = (aU * useStore.getState().world.scale) / 1000
-    const chunkSide = chunkSideFor(hexKm)
+    const D = capRadiusU(worldScale)
+    const capAngle = D / R
+    const a = fineLatticeEdge(catalog.pixelDeg) // the fine hex edge (plane units) = the pixel
+    const chunkSide = fineChunkSide(C.fineDisc.chunkKm, catalog.pixelDeg, R * worldScale)
 
     // §3.2: the cap must sit wholly inside one patch and the §4.4 texture
-    // must stay bounded. Near a patch horizon the gnomonic plane point
-    // diverges (chunk I/J ~ 1/z, texture box ~ 1/z²) — beyond the safe
-    // angle there is NO region: the document surface renders there, and the
-    // dispatch publishes null (§6).
-    if (!focusSafe(focus.dir, D / R, a, chunkSide)) {
+    // must stay bounded. Beyond the safe angle there is NO region: the
+    // document surface renders there, and the dispatch publishes null (§6).
+    if (!focusSafe(focus.dir, capAngle, a, chunkSide)) {
       if (lastFocusChunkRef.current !== null) teardownRegion()
       return
     }
@@ -313,24 +653,95 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     const fh = planeToHex(a, focusPlane.x, focusPlane.y)
     const focusChunkKey = chunkOfHex(focusPlane.patch, chunkSide, fh.q, fh.r)
 
+    // §6 patch invariant: the region's lattice is bound to the patch it was
+    // created on, and `region.patch` is never updated in place. A STALE focus
+    // can only reach this point on the very first frame — `walkerLocation` is
+    // module-global (it outlives a harness boot) and the Walker's own useFrame
+    // runs AFTER this one, so a leftover dir from a previous session on the
+    // same body can sit in the OTHER patch. Left alone, fineHexUnder would
+    // compare the fresh dir's patch against the stale region patch and miss
+    // every query for the rest of the session (isFine silently false). A
+    // continuous move can NOT trigger this: focusSafe tears the region down at
+    // 82.27° polar, well before the patch boundary (|z| → 0, 90°), so a live
+    // region always shares its focus's patch. Tear down on a mismatch and let
+    // the block below recreate the region under the current patch this frame.
+    if (regionRef.current && regionRef.current.patch !== focusPlane.patch) teardownRegion()
+
+    // the region (re)appears: publish it (ONE object, mutated in place from
+    // here on — the dispatch reads it fresh on every query)
+    if (!regionRef.current) {
+      regionRef.current = { a, patch: focusPlane.patch, R, maxH: 0, byHex: new Map(), fanCache: new Map() }
+      publishFineRegion(planet.id, regionRef.current)
+    }
+
+    ctxRef.current = {
+      patch: focusPlane.patch,
+      a,
+      chunkSide,
+      focusDir: focus.dir,
+      capAngle,
+      featherFrac: C.fineDisc.feather,
+      grid,
+      elements: renderPlanet.elements,
+      tiles: tilesRef.current,
+      pixelDeg: catalog.pixelDeg,
+      tileSize: catalog.tileSize,
+      R,
+      scale: worldScale,
+      bodyId: planet.id,
+    }
+    const ctx = ctxRef.current
+
     if (focusChunkKey !== lastFocusChunkRef.current) {
       lastFocusChunkRef.current = focusChunkKey
-      const ls = loadedSet(grid, focus.dir, D, R, chunkSide)
-      const desired = new Set(ls.chunks.map((c) => c.key))
+      genRef.current++ // stale tile waits from the previous move die here
 
-      for (const key of [...mountedRef.current.keys()]) {
-        if (!desired.has(key)) evictChunk(key)
+      // §3.3: loaded = the chunks intersecting the cap (the cap's fine hexes,
+      // grouped by their chunk). A requested chunk carries the FULL block,
+      // not block ∩ cap — the §4.4 suppression is chunk-box granular, so the
+      // fine surface must cover the whole block or boundary chunks leave
+      // see-through gaps; the out-of-cap hexes are w = 0 exactly (the
+      // feather) and sit on the document surface.
+      const inCap = enumerateFineHexes(a, focusPlane.patch, focus.dir, D, R)
+      const desired = new Set()
+      for (const h of inCap) desired.add(chunkOfHex(focusPlane.patch, chunkSide, h.q, h.r))
+
+      for (const key of [...mountedRef.current.keys()]) if (!desired.has(key)) evictChunk(key)
+
+      // THE FEATHER MOVES WITH THE FOCUS: a chunk's blend weights were
+      // synthesized at the previous focus, so every mounted chunk is
+      // re-requested at the new one (seq-supersede; the old geometry stays
+      // visible until its replacement lands — §4.3's "continuous at ALL
+      // times, including mid-stream"). A chunk whose heights are focus-
+      // independent (allIndep: fully inside the feather → h_dem, fully
+      // outside → h_doc, painted cells always) keeps its build — only the
+      // feather-ring chunks pay the re-synthesis. The bound is conservative
+      // (plane distances bound the 3D angles), so a skipped chunk is ALWAYS
+      // focus-independent at the new focus.
+      const inner = (1 - C.fineDisc.feather) * capAngle
+      const toRequest = []
+      for (const key of desired) {
+        const { patch, I, J } = parseChunkKey(key)
+        const entry = mountedRef.current.get(key)
+        let skip = false
+        if (entry && entry.liveHexes && entry.allIndep) {
+          const cp = hexToPlane(a, I * chunkSide + chunkSide / 2, J * chunkSide + chunkSide / 2)
+          const dp = Math.hypot(cp.x - focusPlane.x, cp.y - focusPlane.y)
+          const cr = 1.5 * chunkSide * a // the block's plane radius (conservative)
+          skip = dp + cr <= inner || Math.max(0, dp - cr) >= capAngle
+        }
+        if (!skip) toRequest.push({ key, patch, I, J })
       }
-      const ordered = orderQueue(ls.chunks, focus.dir, focus.vel, chunkSide, a)
-      for (const chunk of ordered) requestChunk(chunk)
+      const ordered = orderQueue(toRequest, focus.dir, focus.vel, chunkSide, a)
+      for (const chunk of ordered) requestChunk(chunk, ctx)
 
-      // the suppression cap follows the focus (PlanetSim owns the material)
+      // the suppression cap follows the focus (the Planet owns the material)
       if (supp) {
         supp.uniforms.fdFocusPlane.value.set(focusPlane.x, focusPlane.y)
         supp.uniforms.fdPatch.value = focusPlane.patch
         supp.uniforms.fdPlaneA.value = a
         supp.uniforms.fdChunkSide.value = chunkSide
-        supp.uniforms.fdCapPlane.value = D / R // the cap radius in plane units
+        supp.uniforms.fdCapPlane.value = capAngle // the cap radius (plane units)
       }
     }
   })
@@ -339,7 +750,8 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
   useEffect(() => {
     return () => {
       for (const key of [...mountedRef.current.keys()]) evictChunk(key)
-      pendingRef.current.clear()
+      tilesRef.current.clear()
+      inflightRef.current.clear()
       publishFineRegion(planet.id, null) // §6: no region on this body any more
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

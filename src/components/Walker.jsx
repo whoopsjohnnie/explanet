@@ -411,12 +411,13 @@ export default function Walker({ planetId }) {
     // tile mode (absent): the classic game-feel gravityScale + clamp
     const g = surfaceGravity(st.world.gravity, mass, w.r, st.world.scale)
     // §6 dispatch: the walked surface is the surface of record at the walker's
-    // cell. Stage 1 the fine cells ARE the document cells, so the dispatch
-    // returns the same object — the branch is real (checked against the
-    // mounted set), the value is the identity. The walker sits at the region's
-    // center (500+ km from its edge) and never crosses the fine→doc boundary
-    // mid-stride; crossing a CHUNK boundary is seamless by construction.
-    const walkSurface = surfaceOfRecord(surface, planetId, w.cell).surface
+    // direction — the composite FINE surface (the DEM-pixel chord fans) while
+    // a chunk is mounted underfoot, the document surface elsewhere (the
+    // composite falls through per point, so the switch is seamless). The
+    // walker sits at the region's center (500+ km from its edge) and never
+    // crosses the fine→doc boundary mid-stride; crossing a CHUNK boundary is
+    // seamless by construction.
+    const walkSurface = surfaceOfRecord(surface, planetId, w.dir).surface
     stepWalker(walkSurface, w, g, tmp.wishArr, { jump: k.jump, sprint: k.sprint }, dt)
     k.jump = false
 

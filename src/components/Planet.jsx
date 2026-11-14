@@ -40,7 +40,7 @@ import { getTerrainMaterials } from '../three/materials.js'
 import { makeSuppressionMaterials } from '../three/fineMaterial.js'
 import { buildLevelsAsync, ASYNC_MIN_CELLS } from '../three/geometryService.js'
 import FineRegion, { useIsFocus } from './FineRegion.jsx'
-import { remapToDoc } from '../core/finedisc.js'
+import { remapToDoc, fineRegionOf, makeFineSurface } from '../core/finedisc.js'
 
 // scratch objects for the analytic pick (single-threaded, per-call)
 const _ray = new THREE.Ray()
@@ -212,15 +212,22 @@ function usePlanetPick(planet, renderPlanet) {
       if (!surface) return
       _inv.copy(this.matrixWorld).invert()
       _ray.copy(raycaster.ray).applyMatrix4(_inv)
+      // §6: the march runs against the surface of record — the composite FINE
+      // surface (the DEM-pixel chord fans) while a region is mounted on this
+      // body, the plain document surface otherwise. The composite already
+      // reports the DOCUMENT cell at every sample.
+      const region = fineRegionOf(planet.id)
+      const pickSurface = region ? makeFineSurface(surface, region) : surface
       const hit = intersectHeightfield(
-        surface,
+        pickSurface,
         [_ray.origin.x, _ray.origin.y, _ray.origin.z],
         [_ray.direction.x, _ray.direction.y, _ray.direction.z]
       )
       if (!hit) return
       // §6: the hit is remapped to the enclosing DOCUMENT cell before anything
       // else sees it — applyBrush, the selection and the brush preview all take
-      // a document cell, unchanged. (Stage 1 the fine→doc map is the identity.)
+      // a document cell, unchanged (the composite applied the map at the
+      // sample; this is the named contract point).
       hit.cell = remapToDoc(planet.id, hit.cell)
       const point = new THREE.Vector3(hit.point[0], hit.point[1], hit.point[2]).applyMatrix4(this.matrixWorld)
       intersects.push({ distance: raycaster.ray.origin.distanceTo(point), point, object: this, cell: hit.cell })
@@ -511,7 +518,11 @@ function PlanetSim({ planet }) {
   // document (the blend input, the fine->doc map), and the session hydrates
   // before anything on-body happens, so this is downstream of it, never a bypass.
   const isFocus = useIsFocus(planet)
-  const canFine = isFocus && !!renderPlanet && Array.isArray(renderPlanet.elements)
+  // A fine region exists only for a body that CARRIES a terrain catalog
+  // (§6: a body without one gets no fine region — the document mesh renders
+  // as today). And only once its document is in hand (the blend input and the
+  // fine→doc map need the real grid, not a stub's preview sample).
+  const canFine = isFocus && !!renderPlanet && Array.isArray(planet.elements) && !!planet.terrain?.catalog
   const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
   useEffect(
     () => () => {
@@ -650,7 +661,11 @@ function PlanetFlyer({ planet }) {
   // fine region (stage 1) — same as PlanetSim: the body the player is ON gets
   // streamed chunks + the §4.4 document suppression. A stub gets none.
   const isFocus = useIsFocus(planet)
-  const canFine = isFocus && !!renderPlanet && Array.isArray(renderPlanet.elements)
+  // A fine region exists only for a body that CARRIES a terrain catalog
+  // (§6: a body without one gets no fine region — the document mesh renders
+  // as today). And only once its document is in hand (the blend input and the
+  // fine→doc map need the real grid, not a stub's preview sample).
+  const canFine = isFocus && !!renderPlanet && Array.isArray(planet.elements) && !!planet.terrain?.catalog
   const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
   useEffect(
     () => () => {

@@ -16,6 +16,7 @@
 
 import { buildLodGeometryData, computeFaceNormals } from '../core/geometry.js'
 import { buildChunkGeometryData } from '../core/finedisc.js'
+import { buildFineGeometryData, fineHexDirs } from '../core/fineTerrain.js'
 import { elementsFromPacked } from '../core/atoms.js'
 import { lodChain } from '../core/lod.js'
 
@@ -53,8 +54,60 @@ function runChunkJob(data) {
   latest.delete(key)
 }
 
+/**
+ * A FINE CHUNK job (stage 2): one block of the fine (DEM-pixel) lattice
+ * (docs/terrain.txt §3/§4). The main thread owns the §4.1 SYNTHESIS — it sees
+ * the DEM tiles (it fetched them), the document grid (the fine→doc map) and
+ * the feather, and it passes the per-hex FINAL heights (world units) — so the
+ * worker is pure vertex math: the fine hexes' chord-fan geometry
+ * (fineTerrain.js, imported unmodified). One postMessage, one reply — a chunk
+ * is a single unit of work, as stage 1.
+ *
+ * The payload:
+ *   R, patch, a   the body radius, the region patch, the fine hex edge
+ *   hexes         the chunk's fine hexes [{ q, r, h, type, rgb, docCell }] —
+ *                 h is the §4.1/§4.3/§5-composited final height (world units)
+ *   halo          the one-hex ring around the block [{ q, r, h }] — the
+ *                 neighbour heights a boundary wall closes against (a halo
+ *                 hex never emits geometry of its own)
+ */
+function runFineChunkJob(data) {
+  const { key, seq, R, patch, a, hexes, halo } = data
+  const prev = latest.get(key)
+  if (prev !== undefined && seq < prev) return // already superseded
+  latest.set(key, seq)
+
+  // the neighbour heights a boundary wall closes against: the chunk's hexes
+  // plus its halo (the caller synthesized both with the same pure function, so
+  // adjacent chunks agree on the shared boundary)
+  const hTable = new Map()
+  for (const h of halo) hTable.set(h.q + ',' + h.r, h.h)
+  for (const h of hexes) hTable.set(h.q + ',' + h.r, h.h)
+
+  const built = []
+  for (const h of hexes) {
+    const d = fineHexDirs(patch, h.q, h.r, a)
+    built.push({
+      q: h.q,
+      r: h.r,
+      c3: d.c3,
+      corners: d.corners,
+      h: h.h,
+      type: h.type,
+      rgb: h.rgb,
+      docCell: h.docCell,
+    })
+  }
+  const { batches, transfer } = packBatch(
+    buildFineGeometryData(R, patch, a, built, (q, r) => hTable.get(q + ',' + r) ?? 0)
+  )
+  self.postMessage({ key, seq, type: 'finechunk', batches }, transfer)
+  latest.delete(key)
+}
+
 self.onmessage = async ({ data }) => {
   if (data.type === 'chunk') return runChunkJob(data)
+  if (data.type === 'finechunk') return runFineChunkJob(data)
 
   const { key, seq, frequency, scale, packed } = data
   const prev = latest.get(key)

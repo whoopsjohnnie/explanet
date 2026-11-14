@@ -65,8 +65,9 @@ function startWorker() {
   worker.onmessage = ({ data }) => {
     const job = jobs.get(data.key)
     if (!job || job.seq !== data.seq) return // superseded or cancelled
-    if (data.type === 'chunk') {
-      // a chunk is a single unit of work: one reply with all its batches
+    if (data.type === 'chunk' || data.type === 'finechunk') {
+      // a chunk (stage 1 lattice block or a fine DEM block) is a single unit
+      // of work: one reply with all its batches
       job.onBatches(data.batches.map((b) => assembleMesh(b, data.frequency)))
       jobs.delete(data.key)
       return
@@ -157,6 +158,36 @@ export function buildChunkAsync(planetId, chunkKey, renderPlanet, { atomsPacked,
     },
     transferable.transfer
   )
+  return () => {
+    const job = jobs.get(key)
+    if (job && job.seq === jobId) jobs.delete(key)
+  }
+}
+
+/**
+ * Build ONE FINE chunk off-thread (docs/terrain.txt §4, stage 2). Same worker,
+ * same seq-supersede contract as the other chunk builds — keyed per FINE chunk
+ * (a newer build of the same chunk key supersedes a stale one), one
+ * postMessage, one reply carrying all of its terrain batches (`onBatches`).
+ *
+ * The main thread has already run the §4.1 synthesis (DEM + document +
+ * feather + the §5 overlay → the per-hex final heights, in world units) and
+ * the fine→doc map — the worker only does the chord-fan vertex math, so the
+ * payload is pure numbers (no DEM tiles, no document atoms to clone).
+ *
+ * Returns a cancel function; after it (or supersession by a newer build of
+ * the same chunk) `onBatches` never fires again.
+ */
+export function buildFineChunkAsync(planetId, chunkKey, { R, patch, a, hexes, halo, onBatches, onError }) {
+  if (workerBroken) {
+    onError(new Error('geometry worker unavailable'))
+    return () => {}
+  }
+  if (!worker) startWorker()
+  const key = `${planetId}|finechunk:${chunkKey}`
+  const jobId = ++seq
+  jobs.set(key, { seq: jobId, onBatches, onError })
+  worker.postMessage({ key, seq: jobId, type: 'finechunk', R, patch, a, hexes, halo })
   return () => {
     const job = jobs.get(key)
     if (job && job.seq === jobId) jobs.delete(key)
