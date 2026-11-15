@@ -48,7 +48,10 @@
  *    unsuppressed, same level, no chunks); the region also streams while
  *    FLYING low over the body (the flight focus gate — launch clears the doc
  *    anchor, so the gate rides the motion.js flightFocus fact, not the pose),
- *    and tears down when the craft climbs past the cap radius
+ *    and tears down when the craft climbs past the cap radius; and on the
+ *    STORED-HEX source (the 'hexball' fixture, terrain2 §6.2) the fine layer
+ *    carries the streamed hexes' relief exactly (a doc-faithful + perturbation
+ *    hexcell set through the setHexTileProvider seam)
  */
 
 import { test } from 'node:test'
@@ -64,11 +67,20 @@ import { planetRadius } from '../src/core/planetMath.js'
 import { C } from '../src/core/constants.js'
 import {
   setTerrainProviders,
+  setHexTileProvider,
   dirToLatLon,
   fineHexDirs,
   demElevationAt,
   tileKeyFor,
 } from '../src/core/fineTerrain.js'
+import {
+  highResGrid,
+  rowForLat,
+  rowLonRange,
+  cellDir,
+  cellLatLon,
+  nearestCell,
+} from '../src/core/hexlattice.js'
 import {
   fineRegionOf,
   isFine,
@@ -144,6 +156,69 @@ setTerrainProviders({
   }),
   tiles: DEM_TILE,
 })
+
+// ---------------------------------------------------------------------------
+// The synthetic stored hexes for the 'hexball' fixture (terrain2 §6.2).
+//
+// hexball declares `hex_meters` + a body `dbId`, so its fine layer streams
+// STORED hexcells (the row-keyed lat/lon rects of /hex/tile) instead of a DEM
+// catalog. The harness has no world database, so the hexcells are synthesized
+// in code through the setHexTileProvider seam, the same pattern as TEST-DEM.
+// The height of a stored hex is doc-faithful + a perturbation the f12
+// document smooths away (a 12° period against the ~9.5° doc cell — ~0.8
+// cycles inside one cell, so a single doc `h` cannot express it):
+//
+//     h(row,col) = hDoc(cellAtDirection(cellDir(row,col))) + A·cos30lat·cos30lon
+//
+// (lat/lon the stored hex's center in RADIANS; A in WORLD UNITS — the stored
+// datum, no scale division). A = 3.3e-4 u puts the spawn-basin value at
+// |−0.62·A| ≈ 2.0e-4 u (≈ 77 m — the walker's spawn fall stays trivially in
+// budget, as TEST-DEM's 140 m does) while the relief assertion below needs
+// > 1e-4 u. The provider is module-global (like the DEM's): it reads the
+// CURRENT boot's world and yields no rect unless it declares hex_meters and
+// names a body with elements — a boot without the fixture finds no data and
+// the synthesis falls back to the document height there.
+// ---------------------------------------------------------------------------
+const HEX_PERT_A = 3.3e-4
+
+/** The height (WORLD UNITS) of stored hex (row, col), from the live hexball. */
+function testHexHeight(planet, docGrid, grid, row, col) {
+  const dir = cellDir(grid, row, col)
+  const cell = cellAtDirection(docGrid, dir)
+  const hDoc = (planet.elements[cell] && planet.elements[cell].h) || 0
+  const { lat, lon } = cellLatLon(grid, row, col)
+  return hDoc + HEX_PERT_A * Math.cos(30 * lat) * Math.cos(30 * lon)
+}
+
+/**
+ * One synthetic stored-hex rect (Map<row,{col0,h:Float64Array}>, heights in
+ * world units) — the /hex/tile row packing, per-row column selection via
+ * rowLonRange (each row has its own column count).
+ */
+const HEX_TILE = async (dbId, lat0, lat1, lon0, lon1) => {
+  const s = useStore.getState()
+  const w = s.world
+  if (!w || !(w.hex_meters > 0)) return null
+  const planet = w.planets.find((p) => p.dbId === dbId)
+  if (!planet || !Array.isArray(planet.elements) || planet.generated) return null
+  const grid = highResGrid(planetRadius(planet) * w.scale, w.hex_meters)
+  const docGrid = getHexSphere(planet.frequency)
+  const DEG = Math.PI / 180
+  const tiles = new Map()
+  const r0 = rowForLat(grid, lat1 * DEG) // larger lat = smaller row index
+  const r1 = rowForLat(grid, lat0 * DEG)
+  for (let row = r0; row <= r1; row++) {
+    const range = rowLonRange(grid, row, lon0, lon1)
+    if (!range) continue
+    const h = new Float64Array(range.j1 - range.j0 + 1)
+    for (let col = range.j0; col <= range.j1; col++)
+      h[col - range.j0] = testHexHeight(planet, docGrid, grid, row, col)
+    tiles.set(row, { col0: range.j0, h })
+  }
+  return tiles
+}
+
+setHexTileProvider(HEX_TILE)
 
 // The stage-2 fine pins spawn the walker at the shuttle's flat-basin anchor
 // (document cell 849 center, h = 0 over ~9°). The boot camera points along
@@ -736,6 +811,91 @@ test('finedisc: the fine layer carries the DEM relief (blended, not the document
 
   // (c) at the walker's dir the fine surface differs from the document — the
   // DEM's relief is on the surface of record, not the document's smoothed hex
+  const surface = makeSurface(planet, scale)
+  const qf = surfaceOfRecord(surface, bodyId, focus).surface.heightAt(focus)
+  const qd = surface.heightAt(focus)
+  assert.ok(
+    Math.abs(qf.h - qd.h) > 1e-4,
+    `the fine relief must differ from the document at the walker dir (got ${Math.abs(qf.h - qd.h)})`
+  )
+
+  // (d) the chunk MESH carries it: a top vertex sits at radius R + the fine
+  // height (the chord-fan top is at R + h exactly, quantized to float32)
+  const cell = qf.cell
+  const covering = w
+    .terrainMeshes()
+    .filter((m) => !m.suppressed)
+    .filter((m) => m.geometry.userData.cellByTri.includes(cell))
+  assert.ok(covering.length >= 1, 'a chunk must cover the underfoot document cell')
+  const target = R + qf.h
+  let found = false
+  for (const cm of covering) {
+    const pos = cm.geometry.attributes.position
+    for (let i = 0; i < pos.count; i++) {
+      const vx = pos.getX(i)
+      const vy = pos.getY(i)
+      const vz = pos.getZ(i)
+      if (Math.abs(Math.hypot(vx, vy, vz) - target) < 1e-4) {
+        found = true
+        break
+      }
+    }
+    if (found) break
+  }
+  assert.ok(found, `the chunk mesh must carry a top vertex at R + the fine height (${target})`)
+  await w.close()
+})
+
+test('finedisc (hex mode): the fine layer carries the stored-hex relief (blended, not the document)', {
+  timeout: 300_000,
+}, async () => {
+  const w = await bootWorld({ world: 'hexball', camera: { position: FINE_CAM } })
+  await landWalker(w)
+  const bodyId = w.planet('p-testball').id
+  assert.ok(await waitForFine(w, bodyId), 'a chunk must be mounted under the walker')
+  const planet = w.planet(bodyId)
+  const region = fineRegionOf(bodyId)
+  const R = region.R
+  const scale = w.world.scale
+  const capAngle = capRadiusU(scale) / R
+  const inner = (1 - C.fineDisc.feather) * capAngle
+  const focus = walkerLocation.dir
+  // the SAME grid the component builds (highResGrid is memoized per
+  // (radiusM, hexMeters)) — the test's lookups and the synthesis's agree
+  const grid = highResGrid(R * scale, w.world.hex_meters)
+  const docGrid = getHexSphere(planet.frequency)
+
+  // (a) deep inside (w = 1): the fine hex's height IS the STORED hex under it,
+  // exactly — the nearest-point sample through the feather (1·x + 0·y)
+  // (b) outside the cap (w = 0): the fine hex sits on the document, exactly
+  let nW1 = 0
+  let nW0 = 0
+  for (const e of region.byHex.values()) {
+    const c3 = fineHexDirs(region.patch, e.q, e.r, region.a).c3
+    const cosD = c3[0] * focus[0] + c3[1] * focus[1] + c3[2] * focus[2]
+    const d = Math.acos(Math.min(1, Math.max(-1, cosD)))
+    if (d <= inner) {
+      const { row, col } = nearestCell(grid, c3)
+      const hStored = testHexHeight(planet, docGrid, grid, row, col)
+      assert.equal(
+        e.h,
+        hStored,
+        `w=1 hex (${e.q},${e.r}) must carry its stored hex exactly (got ${e.h}, want ${hStored})`
+      )
+      nW1++
+    } else if (d >= capAngle) {
+      assert.equal(e.h, (planet.elements[e.docCell].h || 0), `w=0 hex (${e.q},${e.r}) must sit on the document exactly`)
+      nW0++
+    }
+  }
+  assert.ok(nW1 > 0, 'there must be deep-inside (w=1) hexes in the region')
+  assert.ok(nW0 > 0, 'there must be out-of-cap (w=0) hexes in the region (full blocks)')
+
+  // (c) at the walker's dir the fine surface differs from the document — the
+  // stored hexes' relief is on the surface of record, not the document's
+  // smoothed hex. (This is the flat-terrain regression: a rect-keyed LRU
+  // passed where a row-keyed lookup was expected made EVERY hex fall back to
+  // the document, so the fine layer rendered exactly at document height.)
   const surface = makeSurface(planet, scale)
   const qf = surfaceOfRecord(surface, bodyId, focus).surface.heightAt(focus)
   const qd = surface.heightAt(focus)

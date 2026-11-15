@@ -187,6 +187,29 @@ export function makeTestballWorld() {
 }
 
 /**
+ * The STORED-HEX variant of the testball (spec 'hexball', terrain2 §6.2):
+ * the same body (same geometry, same anchors, same flat basin), but the world
+ * declares `hex_meters` and the body carries a `dbId` — so the derived rule
+ * (`storesHexCells`) streams its fine layer from the STORED hexcells instead
+ * of a DEM catalog (the fixture drops `planet.terrain`: `canFine` must hold
+ * through the hex rule alone). The harness has no world database, so the
+ * hexcells are synthesized in test-headless.mjs through the
+ * `setHexTileProvider` seam (doc-faithful + perturbation, the same pattern as
+ * TEST-DEM). This fixture is the automated guard for the hex seam: the
+ * flat-terrain regression (the rect-keyed tile LRU passed where a ROW-keyed
+ * lookup was expected, so every fine hex fell back to the document height)
+ * shipped because hex mode was never exercised headlessly.
+ */
+export function makeHexballWorld() {
+  const w = makeTestballWorld()
+  w.hex_meters = 1850 // the stored hex edge in METERS (Sol Real's value)
+  const p = w.planets[0]
+  p.dbId = 777 // any id — the provider seam never touches a database
+  delete p.terrain // hex mode only: no DEM catalog
+  return w
+}
+
+/**
  * Synthetic DB-skeleton fixture (spec 'stubworld'), built in code: the first
  * landable body is a STUB — `elements: null`, a freq-8 `preview` sample, a
  * `dbId` no server answers to (the harness has no world database) — exactly
@@ -255,6 +278,7 @@ export function makeStubWorld() {
 function loadWorld(spec) {
   if (spec === 'starter') return makeStarterWorld()
   if (spec === 'testball') return makeTestballWorld()
+  if (spec === 'hexball') return makeHexballWorld()
   if (spec === 'stubworld') return makeStubWorld()
   let path = spec
   if (spec === 'sol-real') path = fileURLToPath(new URL('../../public/sol-real.json', import.meta.url))

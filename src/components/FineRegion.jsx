@@ -312,8 +312,14 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
    * DEM's relief but keeps the document's look). `allIndep` marks a chunk
    * whose heights are focus-INDEPENDENT (no unpainted hex in the feather
    * band) — such a chunk keeps its build across focus moves (see useFrame).
+   *
+   * `hexTileSets` (hex mode) is this chunk's OWN fetched rect tile sets — an
+   * array of row-keyed Maps (1, or 2 across an antimeridian split). That is
+   * the structure hexHeightAt looks up (row → {col0, h}); the tile LRU is
+   * keyed by RECT RANGE, not row, so passing the LRU itself would miss every
+   * hex and fall back to the document height (a flat fine region).
    */
-  const synthesizeChunk = (ctx, I, J) => {
+  const synthesizeChunk = (ctx, I, J, hexTileSets) => {
     const n = ctx.chunkSide
     const q0 = I * n
     const r0 = J * n
@@ -349,7 +355,14 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
           let hFine = null
           if (w > 0) {
             if (ctx.gridHr) {
-              hFine = hexHeightAt(c3, ctx.gridHr, ctx.hexTiles)
+              // the chunk's row-keyed rect sets (1, or 2 across the
+              // antimeridian split) — a hex reads the set whose row/col
+              // span holds it
+              for (const tiles of hexTileSets || []) {
+                if (!tiles) continue
+                hFine = hexHeightAt(c3, ctx.gridHr, tiles)
+                if (hFine != null) break
+              }
             } else {
               const { latDeg, lonDeg } = dirToLatLon(c3)
               const elev = demElevationAt(latDeg, lonDeg, ctx.tiles, ctx.pixelDeg, ctx.tileSize)
@@ -546,7 +559,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
   const requestChunk = (chunk, ctx) => {
     let entry = mountedRef.current.get(chunk.key)
     if (!entry) {
-      entry = { key: chunk.key, I: chunk.I, J: chunk.J, meshes: null, geos: null, liveHexes: null, liveHalo: null, liveHaloMap: null, allIndep: false, cancel: null }
+      entry = { key: chunk.key, I: chunk.I, J: chunk.J, meshes: null, geos: null, liveHexes: null, liveHalo: null, liveHaloMap: null, allIndep: false, cancel: null, hexTileSets: null }
       mountedRef.current.set(chunk.key, entry)
     }
     const gen = genRef.current
@@ -559,9 +572,12 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
           return getTile(+tl, +ln)
         })
     Promise.all(dataPromises)
-      .then(() => {
+      .then((tileSets) => {
         if (gen !== genRef.current) return // a newer focus-chunk move superseded this
-        const syn = synthesizeChunk(ctx, chunk.I, chunk.J)
+        // hex mode: the chunk OWNS its row-keyed rect sets for its lifetime
+        // (the LRU may evict; the §5 patcher re-synthesizes from these)
+        if (ctx.gridHr) entry.hexTileSets = tileSets
+        const syn = synthesizeChunk(ctx, chunk.I, chunk.J, ctx.gridHr ? tileSets : null)
         if (entry.cancel) entry.cancel() // drop the superseded in-flight build
         entry.cancel = buildFineChunkAsync(
           planet.id,
@@ -660,7 +676,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
   // leave a see-through step gap). Chunks whose heights come out unchanged
   // (re-painting the same value mid-drag) skip the geometry rebuild.
   const rebuildChunk = (entry, ctx) => {
-    const syn = synthesizeChunk(ctx, entry.I, entry.J)
+    const syn = synthesizeChunk(ctx, entry.I, entry.J, entry.hexTileSets)
     if (entry.liveHexes) {
       let same = true
       for (let i = 0; i < syn.hexes.length; i++)
@@ -832,11 +848,11 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       grid,
       elements: renderPlanet.elements,
       tiles: tilesRef.current,
-      // the stored-hex source (hex mode): the body's latitude-row grid + the
-      // fetched rect tiles (null/absent → the synthesis falls back to the
-      // document height, as with an absent DEM tile)
+      // the stored-hex source (hex mode): the body's latitude-row grid. The
+      // row-keyed RECT tile sets are NOT here — they are per-CHUNK (the LRU
+      // is keyed by rect range, not row), owned by each mounted entry and
+      // passed to the synthesis as hexTileSets (see requestChunk).
       gridHr: hexGridRef.current,
-      hexTiles: hexTilesRef.current,
       pixelDeg: catalog ? catalog.pixelDeg : 0,
       tileSize: catalog ? catalog.tileSize : 0,
       R,
