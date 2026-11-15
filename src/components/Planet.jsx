@@ -349,8 +349,15 @@ function PlanetView({ spinRef, planet, radius, shown, materials, pickRaycast, on
   // spinRef carries the spin quaternion; the overlay group cancels it every
   // frame, so the ring plane keeps its document tilt and labels sit still.
   const poseRef = useRef(null)
-  const [labelOn, setLabelOn] = useState(true)
-  const labelOnRef = useRef(true)
+  // THE LABELS MOUNT LAZILY. The initial state is OFF: a drei <Html> is a
+  // whole react-dom root (createRoot + DOM div + render), so starting ON
+  // mounted one per body at boot (~1000 roots) and the first frame then
+  // mass-unmounted the gated ones inside the synchronous scene commit —
+  // ReactDOMRoot.unmount() during a React commit: error spam + main-thread
+  // saturation that wedged 1000-body worlds. The first useFrame turns ON
+  // exactly the labels that are meant to be visible; hysteresis unchanged.
+  const [labelOn, setLabelOn] = useState(false)
+  const labelOnRef = useRef(false)
   useFrame(() => {
     if (poseRef.current && spinRef.current) {
       poseRef.current.quaternion.copy(spinRef.current.quaternion).invert()

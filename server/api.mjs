@@ -177,7 +177,7 @@ export async function apiHandler(req, res, next) {
     }
     return send(res, 404, JSON.stringify({ error: `no api route ${path}` }))
   } catch (err) {
-    const status = /no world|no bodies|no star|no craft model|no terrain tile|no stored high-res/.test(err.message) ? 404 : 500
+    const status = /no world|no bodies|no star|no craft model|no terrain tile|no stored high-res|stores no hexcells/.test(err.message) ? 404 : 500
     return send(res, status, JSON.stringify({ error: err.message }))
   }
 }
