@@ -65,6 +65,27 @@ function angDist(v, latR, lonR) {
   return Math.acos(clamp(d, -1, 1))
 }
 
+/**
+ * Build a document's elements by walking a geodesic grid through a BOUND
+ * per-hex terrain function — `tf = { fn: (dir, latDeg, lonDeg) => { t, c, h },
+ * unit: 'km' | 'u' }` (scripts/sol-real/bodyTerrain.mjs). This is the shared
+ * document path: gen-sol-real.mjs builds every body's document through it, and
+ * import-hexcells.mjs evaluates the SAME bound fn on the fine latitude-row
+ * grid — one function, two grids, so the stored high-res and the document
+ * agree by construction. `unit` 'km' → h in km (× KM2U, as the builders did);
+ * 'u' → h already in engine units (the potato builder).
+ */
+export function elementsFromHexFn(tf, frequency) {
+  const hex = getHexSphere(frequency)
+  const els = new Array(hex.cellCount)
+  for (let i = 0; i < hex.cellCount; i++) {
+    const p = latLon(hex, i)
+    const r = tf.fn([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG)
+    els[i] = { t: r.t, h: tf.unit === 'km' ? r.h * KM2U : r.h, c: r.c }
+  }
+  return els
+}
+
 // ---------------------------------------------------------------------------
 // Earth — from the ETOPO2022 60s digital elevation model
 // (scripts/sol-real/etopo.mjs): land elevation + seafloor depth in METERS,
@@ -279,65 +300,78 @@ export function buildEarth(frequency, dem, seed = 42) {
 // Mars
 // ---------------------------------------------------------------------------
 
+/**
+ * Mars per-hex: height in KM + material + color from the hex's body-local unit
+ * direction, latitude and longitude (degrees). The buildMars loop factored out
+ * so the STORED HIGH-RES hexes (docs/terrain2.txt) evaluate the SAME terrain at
+ * the fine-grid centers — the document and the stored hexes agree by
+ * construction (one function, two grids).
+ */
+export function marsHex(dir, latDeg, lonDeg, seed = 303) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  const lat = latDeg
+  const lon = lonDeg
+  const M = MARS
+  let h = 0
+  // dichotomy + global texture
+  h += lat < 0 ? M.dichotomy.southH * 0.5 : 0
+  h += (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.5) * 1.6
+  // Tharsis bulge
+  const db = angDist(p, M.bulge.lat * DEG, M.bulge.lon * DEG)
+  if (db < M.bulge.r * DEG) h += M.bulge.h * Math.cos((db / (M.bulge.r * DEG)) * Math.PI * 0.5) ** 2
+  // shield volcanoes
+  for (const v of M.volca) {
+    const d = angDist(p, v.lat * DEG, v.lon * DEG)
+    if (d < v.r * DEG) {
+      const s = 1 - d / (v.r * DEG)
+      h += v.h * s * s * (0.85 + 0.3 * valueNoise(p.x * 30, p.y * 30, p.z * 30, seed + 3))
+      if (s > 0.86) h -= v.h * 0.12 // summit caldera
+    }
+  }
+  // Valles Marineris: elongated depression
+  {
+    const r = M.rift
+    const dlat = (lat - r.lat) / r.rLat
+    let dl = ((lon - r.lon + 540) % 360) - 180
+    dl /= r.rLon
+    const e = dlat * dlat + dl * dl
+    if (e < 1.3) h += r.h * Math.max(0, 1 - e / 1.3)
+  }
+  // impacts
+  for (const im of M.impact) {
+    const d = angDist(p, im.lat * DEG, im.lon * DEG)
+    const rr = im.r * DEG
+    if (d < rr) {
+      const s = d / rr
+      h += im.h * Math.cos(s * Math.PI * 0.5) ** 2
+      if (s > 0.82) h += im.rim * Math.exp(-((s - 0.9) ** 2) / 0.004)
+    }
+  }
+  h += (fbm(p.x * 18, p.y * 18, p.z * 18, seed + 5, 3) - 0.5) * 0.35
+
+  // polar caps
+  let c = mix(M.colorDark, M.color, fbm(p.x * 7, p.y * 7, p.z * 7, seed + 2, 4))
+  let t = 'dirt'
+  const capN = (90 - lat) / M.polar.northR
+  const capS = (lat + 90) / M.polar.southR
+  if (Math.min(capN, capS) < 1 + (valueNoise(p.x * 9, p.y * 9, p.z * 9, seed) - 0.5) * 0.5) {
+    h += M.polar.h
+    t = 'snow'
+    c = M.polar.c
+  }
+  // dark albedo features (Syrtis Major et al.)
+  const dark = fbm(p.x * 2.2 + 40, p.y * 2.2, p.z * 2.2, seed + 31, 3)
+  if (dark < 0.42) c = mix(c, '#5e3b2a', (0.42 - dark) * 1.6)
+  if (h < 0.01) h = 0.01
+  return { t, c, h }
+}
+
 export function buildMars(frequency, seed = 303) {
   const hex = getHexSphere(frequency)
   const els = new Array(hex.cellCount)
-  const M = MARS
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    const lat = p.lat / DEG
-    const lon = p.lon / DEG
-    let h = 0
-    // dichotomy + global texture
-    h += lat < 0 ? M.dichotomy.southH * 0.5 : 0
-    h += (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.5) * 1.6
-    // Tharsis bulge
-    const db = angDist(p, M.bulge.lat * DEG, M.bulge.lon * DEG)
-    if (db < M.bulge.r * DEG) h += M.bulge.h * Math.cos((db / (M.bulge.r * DEG)) * Math.PI * 0.5) ** 2
-    // shield volcanoes
-    for (const v of M.volca) {
-      const d = angDist(p, v.lat * DEG, v.lon * DEG)
-      if (d < v.r * DEG) {
-        const s = 1 - d / (v.r * DEG)
-        h += v.h * s * s * (0.85 + 0.3 * valueNoise(p.x * 30, p.y * 30, p.z * 30, seed + 3))
-        if (s > 0.86) h -= v.h * 0.12 // summit caldera
-      }
-    }
-    // Valles Marineris: elongated depression
-    {
-      const r = M.rift
-      const dlat = (lat - r.lat) / r.rLat
-      let dl = ((lon - r.lon + 540) % 360) - 180
-      dl /= r.rLon
-      const e = dlat * dlat + dl * dl
-      if (e < 1.3) h += r.h * Math.max(0, 1 - e / 1.3)
-    }
-    // impacts
-    for (const im of M.impact) {
-      const d = angDist(p, im.lat * DEG, im.lon * DEG)
-      const rr = im.r * DEG
-      if (d < rr) {
-        const s = d / rr
-        h += im.h * Math.cos(s * Math.PI * 0.5) ** 2
-        if (s > 0.82) h += im.rim * Math.exp(-((s - 0.9) ** 2) / 0.004)
-      }
-    }
-    h += (fbm(p.x * 18, p.y * 18, p.z * 18, seed + 5, 3) - 0.5) * 0.35
-
-    // polar caps
-    let c = mix(M.colorDark, M.color, fbm(p.x * 7, p.y * 7, p.z * 7, seed + 2, 4))
-    let t = 'dirt'
-    const capN = (90 - lat) / M.polar.northR
-    const capS = (lat + 90) / M.polar.southR
-    if (Math.min(capN, capS) < 1 + (valueNoise(p.x * 9, p.y * 9, p.z * 9, seed) - 0.5) * 0.5) {
-      h += M.polar.h
-      t = 'snow'
-      c = M.polar.c
-    }
-    // dark albedo features (Syrtis Major et al.)
-    const dark = fbm(p.x * 2.2 + 40, p.y * 2.2, p.z * 2.2, seed + 31, 3)
-    if (dark < 0.42) c = mix(c, '#5e3b2a', (0.42 - dark) * 1.6)
-    if (h < 0.01) h = 0.01
+    const { t, c, h } = marsHex([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG, seed)
     els[i] = { t, h: h * KM2U, c }
   }
   return els
@@ -347,35 +381,43 @@ export function buildMars(frequency, seed = 303) {
 // Moon
 // ---------------------------------------------------------------------------
 
+/** Moon per-hex (height in KM + material + color) — the buildMoon loop, so
+ * the stored high-res hexes evaluate the same maria/crater terrain at the
+ * fine-grid centers. */
+export function moonHex(dir, latDeg, lonDeg, seed = 700) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  const lat = latDeg
+  const D = MOON
+  // km, above the reference radius: far-side highlands ~+6, maria floor ~0
+  let h = 3.2 + (fbm(p.x * 5, p.y * 5, p.z * 5, seed, 5) - 0.5) * 9
+  let inMare = 0
+  for (const m of D.maria) {
+    const d = angDist(p, m.lat * DEG, m.lon * DEG)
+    if (d < m.r * DEG) inMare = Math.max(inMare, 1 - d / (m.r * DEG))
+  }
+  if (inMare > 0) {
+    h = h * (1 - smoothstep(inMare)) - 0.4 * smoothstep(inMare) // flooded basins
+    h += (fbm(p.x * 14, p.y * 14, p.z * 14, seed + 8, 3) - 0.5) * 0.6
+  }
+  // crater field: ridged noise punched with circular basins
+  const craters = 1 - Math.abs(fbm(p.x * 11, p.y * 11, p.z * 11, D.craterSeed, 4) * 2 - 1)
+  h += craters * 1.8
+  h += (valueNoise(p.x * 40, p.y * 40, p.z * 40, seed + 1) - 0.5) * 1.0
+  let c = mix(D.colorHighland, D.color, clamp(fbm(p.x * 6, p.y * 6, p.z * 6, seed + 4, 4) * 1.2, 0, 1))
+  c = mix(c, D.colorMaria, smoothstep(inMare) * 0.9)
+  // polar bright spots
+  if (Math.abs(lat) > 87) c = mix(c, '#e8e6e2', (Math.abs(lat) - 87) / 3)
+  if (h < 0.01) h = 0.01
+  return { t: 'rock', c, h }
+}
+
 export function buildMoon(frequency, seed = 700) {
   const hex = getHexSphere(frequency)
   const els = new Array(hex.cellCount)
-  const D = MOON
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    const lat = p.lat / DEG
-    const lon = p.lon / DEG
-    // km, above the reference radius: far-side highlands ~+6, maria floor ~0
-    let h = 3.2 + (fbm(p.x * 5, p.y * 5, p.z * 5, seed, 5) - 0.5) * 9
-    let inMare = 0
-    for (const m of D.maria) {
-      const d = angDist(p, m.lat * DEG, m.lon * DEG)
-      if (d < m.r * DEG) inMare = Math.max(inMare, 1 - d / (m.r * DEG))
-    }
-    if (inMare > 0) {
-      h = h * (1 - smoothstep(inMare)) - 0.4 * smoothstep(inMare) // flooded basins
-      h += (fbm(p.x * 14, p.y * 14, p.z * 14, seed + 8, 3) - 0.5) * 0.6
-    }
-    // crater field: ridged noise punched with circular basins
-    const craters = 1 - Math.abs(fbm(p.x * 11, p.y * 11, p.z * 11, D.craterSeed, 4) * 2 - 1)
-    h += craters * 1.8
-    h += (valueNoise(p.x * 40, p.y * 40, p.z * 40, seed + 1) - 0.5) * 1.0
-    let c = mix(D.colorHighland, D.color, clamp(fbm(p.x * 6, p.y * 6, p.z * 6, seed + 4, 4) * 1.2, 0, 1))
-    c = mix(c, D.colorMaria, smoothstep(inMare) * 0.9)
-    // polar bright spots
-    if (Math.abs(lat) > 87) c = mix(c, '#e8e6e2', (Math.abs(lat) - 87) / 3)
-    if (h < 0.01) h = 0.01
-    els[i] = { t: 'rock', h: h * KM2U, c }
+    const { t, c, h } = moonHex([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG, seed)
+    els[i] = { t, h: h * KM2U, c }
   }
   return els
 }
@@ -384,26 +426,50 @@ export function buildMoon(frequency, seed = 700) {
 // Mercury & Venus (simpler single-purpose builders)
 // ---------------------------------------------------------------------------
 
+/** Mercury per-hex (height in KM + material + color) — the buildMercury loop,
+ * so the stored high-res hexes evaluate the same Caloris/crater terrain at the
+ * fine-grid centers. */
+export function mercuryHex(dir, latDeg, lonDeg, seed = 101) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  let h = (fbm(p.x * 5, p.y * 5, p.z * 5, seed, 5) - 0.45) * 2.4
+  const craters = 1 - Math.abs(fbm(p.x * 12, p.y * 12, p.z * 12, 606, 4) * 2 - 1)
+  h += craters * 0.3
+  let c = mix(MERCURY.colorDark, MERCURY.color, fbm(p.x * 6, p.y * 6, p.z * 6, seed + 2, 4))
+  const dCal = angDist(p, MERCURY.caloris.lat * DEG, MERCURY.caloris.lon * DEG)
+  if (dCal < MERCURY.caloris.r * DEG) {
+    const s = dCal / (MERCURY.caloris.r * DEG)
+    h = h * (1 - smoothstep(1 - s * 1.4)) - 0.4 * (1 - s) // smooth lava floor
+    c = mix(c, '#a09a92', (1 - s) * 0.7) // smooth bright plains
+    if (s > 0.88 && s < 1) h += 0.9 * Math.exp(-((s - 0.94) ** 2) / 0.002)
+  }
+  if (h < 0.01) h = 0.01
+  return { t: 'rock', c, h }
+}
+
 export function buildMercury(frequency, seed = 101) {
   const hex = getHexSphere(frequency)
   const els = new Array(hex.cellCount)
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    let h = (fbm(p.x * 5, p.y * 5, p.z * 5, seed, 5) - 0.45) * 2.4
-    const craters = 1 - Math.abs(fbm(p.x * 12, p.y * 12, p.z * 12, 606, 4) * 2 - 1)
-    h += craters * 0.3
-    let c = mix(MERCURY.colorDark, MERCURY.color, fbm(p.x * 6, p.y * 6, p.z * 6, seed + 2, 4))
-    const dCal = angDist(p, MERCURY.caloris.lat * DEG, MERCURY.caloris.lon * DEG)
-    if (dCal < MERCURY.caloris.r * DEG) {
-      const s = dCal / (MERCURY.caloris.r * DEG)
-      h = h * (1 - smoothstep(1 - s * 1.4)) - 0.4 * (1 - s) // smooth lava floor
-      c = mix(c, '#a09a92', (1 - s) * 0.7) // smooth bright plains
-      if (s > 0.88 && s < 1) h += 0.9 * Math.exp(-((s - 0.94) ** 2) / 0.002)
-    }
-    if (h < 0.01) h = 0.01
-    els[i] = { t: 'rock', h: h * KM2U, c }
+    const { t, c, h } = mercuryHex([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG, seed)
+    els[i] = { t, h: h * KM2U, c }
   }
   return els
+}
+
+/** Venus per-hex (height in KM + material + color) — the buildVenus loop. */
+export function venusHex(dir, latDeg, lonDeg, seed = 202) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  let h = (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.4) * 0.9
+  for (const hl of VENUS.highlands) {
+    const d = angDist(p, hl.lat * DEG, hl.lon * DEG)
+    if (d < hl.r * DEG) h += hl.h * Math.cos((d / (hl.r * DEG)) * Math.PI * 0.5) ** 2
+  }
+  h += (fbm(p.x * 16, p.y * 16, p.z * 16, seed + 9, 3) - 0.5) * 0.2
+  let c = mix('#c98f45', VENUS.color, fbm(p.x * 5, p.y * 5, p.z * 5, seed + 4, 4))
+  if (h > 1.2) c = mix(c, VENUS.colorHigh, clamp((h - 1.2) / 2, 0, 1)) // highland "snow" (real: metal frost)
+  if (h < 0.01) h = 0.01
+  return { t: 'sand', c, h }
 }
 
 export function buildVenus(frequency, seed = 202) {
@@ -411,16 +477,8 @@ export function buildVenus(frequency, seed = 202) {
   const els = new Array(hex.cellCount)
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    let h = (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.4) * 0.9
-    for (const hl of VENUS.highlands) {
-      const d = angDist(p, hl.lat * DEG, hl.lon * DEG)
-      if (d < hl.r * DEG) h += hl.h * Math.cos((d / (hl.r * DEG)) * Math.PI * 0.5) ** 2
-    }
-    h += (fbm(p.x * 16, p.y * 16, p.z * 16, seed + 9, 3) - 0.5) * 0.2
-    let c = mix('#c98f45', VENUS.color, fbm(p.x * 5, p.y * 5, p.z * 5, seed + 4, 4))
-    if (h > 1.2) c = mix(c, VENUS.colorHigh, clamp((h - 1.2) / 2, 0, 1)) // highland "snow" (real: metal frost)
-    if (h < 0.01) h = 0.01
-    els[i] = { t: 'sand', h: h * KM2U, c }
+    const { t, c, h } = venusHex([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG, seed)
+    els[i] = { t, h: h * KM2U, c }
   }
   return els
 }
@@ -429,63 +487,77 @@ export function buildVenus(frequency, seed = 202) {
 // Icy / volcanic moons & dwarf planets (palette-driven)
 // ---------------------------------------------------------------------------
 
+/**
+ * Palette-driven per-hex (height in KM + material + color) for the icy /
+ * volcanic moons and dwarf planets — the buildMoonByPalette loop, so the
+ * stored high-res hexes evaluate the same terrain at the fine-grid centers.
+ */
+export function moonPaletteHex(dir, latDeg, lonDeg, pal, seed = 500, opts = {}) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  const lat = latDeg
+  let h = (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.45) * 1.4
+  let c = mix(pal.c2, pal.c, clamp(fbm(p.x * 3.5, p.y * 3.5, p.z * 3.5, seed + 11, 4) * 1.3, 0, 1))
+
+  if (pal.linea) {
+    // Europa: reddish ridged crack bands
+    const w = Math.sin(p.x * 22 + fbm(p.x * 4, p.y * 4, p.z * 4, seed + 21, 3) * 6) +
+      Math.sin(p.y * 17 - p.z * 19 + fbm(p.z * 5, p.x * 5, p.y * 5, seed + 31, 3) * 5)
+    if (Math.abs(w) < 0.28) c = mix(c, pal.c2, 1 - Math.abs(w) / 0.28)
+  }
+  if (pal.spots) {
+    // Io: dark volcanic pits + orange patches
+    const s = fbm(p.x * 8, p.y * 8, p.z * 8, seed + 13, 4)
+    if (s > 0.62) c = mix(c, '#7a2d16', (s - 0.62) / 0.38)
+    const s2 = fbm(p.x * 5 + 30, p.y * 5, p.z * 5, seed + 41, 3)
+    if (s2 > 0.6) c = mix(c, '#e8a13a', (s2 - 0.6) / 0.4)
+    h += (s - 0.5) * 2.5
+  }
+  if (pal.grooves) {
+    const g = Math.sin(p.y * 30 + fbm(p.x * 5, p.y * 5, p.z * 5, seed + 51, 3) * 7)
+    if (g > 0.55) c = mix(c, pal.c2, (g - 0.55) / 0.45) // bright grooved terrain
+    else c = mix(c, '#6b6156', 0.35)
+  }
+  if (pal.craters) {
+    const cr = 1 - Math.abs(fbm(p.x * 12, p.y * 12, p.z * 12, seed + 61, 4) * 2 - 1)
+    h += cr * 0.3 * pal.craters
+    if (cr > 0.8) c = mix(c, pal.c2, (cr - 0.8) / 0.2) // fresh ejecta
+  }
+  if (pal.dunes) {
+    const d = Math.sin(p.y * 26 + p.x * 6 + fbm(p.x * 3, p.y * 3, p.z * 3, seed + 71, 3) * 8)
+    if (d > 0.4) c = mix(c, pal.c2, (d - 0.4) / 0.6 * 0.8)
+  }
+  if (pal.tiger) {
+    // NOTE: the original keys the stripe test on the cell's p.lat — p.lat is 0
+    // exactly when latDeg is 0 (p.lat = asin(dir.y)), and the lat*0 branch
+    // evaluates to ±0, so latDeg === 0 is the faithful reproduction.
+    const t = Math.sin(latDeg ? 0 : dir[0] * 8 + dir[2] * 6)
+    if (Math.abs(dir[1] + 0.02 * t) < 0.09) c = mix(c, '#a8d4ea', 0.7) // south polar stripes
+  }
+  if (opts.polarCaps) {
+    if (Math.abs(lat) > 72) c = mix(c, '#eef4f8', (Math.abs(lat) - 72) / 18)
+  }
+  if (opts.redPole) {
+    // Iapetus-style: one hemisphere dark (leading side, crude)
+    const side = p.x * Math.cos(0.4) + p.z * Math.sin(0.4)
+    if (side < -0.15) c = mix(c, '#3a332c', clamp(-side, 0, 1) * 1.1)
+  }
+  if (opts.iceCaps) {
+    if (Math.abs(lat) > 60) {
+      c = mix(c, '#f0f4f6', (Math.abs(lat) - 60) / 30)
+      h += 0.6 * Math.max(0, (Math.abs(lat) - 60) / 30)
+    }
+  }
+  if (h < 0.01) h = 0.01
+  return { t: pal.t || 'snow', c, h }
+}
+
 export function buildMoonByPalette(frequency, pal, seed = 500, opts = {}) {
   const hex = getHexSphere(frequency)
   const els = new Array(hex.cellCount)
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    const lat = p.lat / DEG
-    let h = (fbm(p.x * 4, p.y * 4, p.z * 4, seed, 5) - 0.45) * 1.4
-    let c = mix(pal.c2, pal.c, clamp(fbm(p.x * 3.5, p.y * 3.5, p.z * 3.5, seed + 11, 4) * 1.3, 0, 1))
-
-    if (pal.linea) {
-      // Europa: reddish ridged crack bands
-      const w = Math.sin(p.x * 22 + fbm(p.x * 4, p.y * 4, p.z * 4, seed + 21, 3) * 6) +
-        Math.sin(p.y * 17 - p.z * 19 + fbm(p.z * 5, p.x * 5, p.y * 5, seed + 31, 3) * 5)
-      if (Math.abs(w) < 0.28) c = mix(c, pal.c2, 1 - Math.abs(w) / 0.28)
-    }
-    if (pal.spots) {
-      // Io: dark volcanic pits + orange patches
-      const s = fbm(p.x * 8, p.y * 8, p.z * 8, seed + 13, 4)
-      if (s > 0.62) c = mix(c, '#7a2d16', (s - 0.62) / 0.38)
-      const s2 = fbm(p.x * 5 + 30, p.y * 5, p.z * 5, seed + 41, 3)
-      if (s2 > 0.6) c = mix(c, '#e8a13a', (s2 - 0.6) / 0.4)
-      h += (s - 0.5) * 2.5
-    }
-    if (pal.grooves) {
-      const g = Math.sin(p.y * 30 + fbm(p.x * 5, p.y * 5, p.z * 5, seed + 51, 3) * 7)
-      if (g > 0.55) c = mix(c, pal.c2, (g - 0.55) / 0.45) // bright grooved terrain
-      else c = mix(c, '#6b6156', 0.35)
-    }
-    if (pal.craters) {
-      const cr = 1 - Math.abs(fbm(p.x * 12, p.y * 12, p.z * 12, seed + 61, 4) * 2 - 1)
-      h += cr * 0.3 * pal.craters
-      if (cr > 0.8) c = mix(c, pal.c2, (cr - 0.8) / 0.2) // fresh ejecta
-    }
-    if (pal.dunes) {
-      const d = Math.sin(p.y * 26 + p.x * 6 + fbm(p.x * 3, p.y * 3, p.z * 3, seed + 71, 3) * 8)
-      if (d > 0.4) c = mix(c, pal.c2, (d - 0.4) / 0.6 * 0.8)
-    }
-    if (pal.tiger) {
-      const t = Math.sin(p.lat ? lat * 0 : 0 + p.x * 8 + p.z * 6)
-      if (Math.abs(p.y + 0.02 * t) < 0.09) c = mix(c, '#a8d4ea', 0.7) // south polar stripes
-    }
-    if (opts.polarCaps) {
-      if (Math.abs(lat) > 72) c = mix(c, '#eef4f8', (Math.abs(lat) - 72) / 18)
-    }
-    if (opts.redPole) {
-      // Iapetus-style: one hemisphere dark (leading side, crude)
-      const side = p.x * Math.cos(0.4) + p.z * Math.sin(0.4)
-      if (side < -0.15) c = mix(c, '#3a332c', clamp(-side, 0, 1) * 1.1)
-    }
-    if (opts.iceCaps) {
-      if (Math.abs(lat) > 60) {
-        c = mix(c, '#f0f4f6', (Math.abs(lat) - 60) / 30)
-        h += 0.6 * Math.max(0, (Math.abs(lat) - 60) / 30)
-      }
-    }
-    if (h < 0.01) h = 0.01
-    els[i] = { t: pal.t || 'snow', h: h * KM2U, c }
+    const { t, c, h } = moonPaletteHex([p.x, p.y, p.z], p.lat / DEG, p.lon / DEG, pal, seed, opts)
+    els[i] = { t, h: h * KM2U, c }
   }
   return els
 }
@@ -495,33 +567,47 @@ export function buildMoonByPalette(frequency, pal, seed = 500, opts = {}) {
 // relief (a rubble pile is ~10-20% lumpy at ANY absolute scale).
 // ---------------------------------------------------------------------------
 
+/**
+ * Potato per-hex (height + material + color) for the small bodies. Height is
+ * in ENGINE UNITS (unlike the km builders): relief is a fraction of `R`, the
+ * body's radius in engine units (geometry and planetVolume treat h as
+ * absolute), so the caller binds R = the body's true engine radius — the same
+ * radiusForFrequency(frequency)·scale the document was built at, which is why
+ * the stored high-res hexes (docs/terrain2.txt) reproduce the document's
+ * surface at the fine-grid centers.
+ */
+export function potatoHex(dir, R, { seed = 1, color = '#6f665c', lumpiness = 0.14, craters = 0.5, elongate = 0 } = {}) {
+  const p = { x: dir[0], y: dir[1], z: dir[2] }
+  let shape =
+    fbm(p.x * 2.4, p.y * 2.4, p.z * 2.4, seed, 4) - 0.4 +
+    0.5 * (fbm(p.x * 5, p.y * 5, p.z * 5, seed + 2, 3) - 0.5)
+  if (elongate) shape += elongate * Math.abs(p.x)
+  let h = shape * lumpiness * R
+  if (craters > 0) {
+    const cr = 1 - Math.abs(fbm(p.x * 9, p.y * 9, p.z * 9, seed + 7, 3) * 2 - 1)
+    h -= cr * craters * 0.22 * R
+  }
+  const tint = (fbm(p.x * 8, p.y * 8, p.z * 8, seed + 4, 2) - 0.5) * 22
+  const rgb = (s) => parseInt(s.slice(1), 16)
+  const v = rgb(color)
+  const c =
+    '#' +
+    [ (v >> 16) + tint, ((v >> 8) & 255) + tint, (v & 255) + tint ]
+      .map((x) => clamp(Math.round(x), 0, 255).toString(16).padStart(2, '0'))
+      .join('')
+  return { t: 'rock', h, c }
+}
+
 export function buildPotato(frequency, { seed = 1, color = '#6f665c', lumpiness = 0.14, craters = 0.5, elongate = 0, scale = 1 } = {}) {
   const hex = getHexSphere(frequency)
+  // tiny escape-hatch bodies ride scale ≠ 1 (sizeGrid) — their relief fractions
+  // are measured against the SCALED radius
+  const R = radiusForFrequency(frequency) * scale
   const els = new Array(hex.cellCount)
   for (let i = 0; i < hex.cellCount; i++) {
     const p = latLon(hex, i)
-    let shape =
-      fbm(p.x * 2.4, p.y * 2.4, p.z * 2.4, seed, 4) - 0.4 +
-      0.5 * (fbm(p.x * 5, p.y * 5, p.z * 5, seed + 2, 3) - 0.5)
-    if (elongate) shape += elongate * Math.abs(p.x)
-    // relief is absolute engine units measured against the SCALED radius
-    // (geometry and planetVolume treat h as absolute), so fraction the GRID
-    // radius only when scale = 1; tiny escape-hatch bodies scale it too.
-    const R = radiusForFrequency(frequency) * scale
-    let h = shape * lumpiness * R
-    if (craters > 0) {
-      const cr = 1 - Math.abs(fbm(p.x * 9, p.y * 9, p.z * 9, seed + 7, 3) * 2 - 1)
-      h -= cr * craters * 0.22 * R
-    }
-    const tint = (fbm(p.x * 8, p.y * 8, p.z * 8, seed + 4, 2) - 0.5) * 22
-    const rgb = (s) => parseInt(s.slice(1), 16)
-    const v = rgb(color)
-    const c =
-      '#' +
-      [ (v >> 16) + tint, ((v >> 8) & 255) + tint, (v & 255) + tint ]
-        .map((x) => clamp(Math.round(x), 0, 255).toString(16).padStart(2, '0'))
-        .join('')
-    els[i] = { t: 'rock', h, c }
+    const { t, h, c } = potatoHex([p.x, p.y, p.z], R, { seed, color, lumpiness, craters, elongate })
+    els[i] = { t, h, c }
   }
   return els
 }

@@ -35,17 +35,10 @@ import { generateElements } from '../src/core/generators.js'
 import { createCraft } from '../src/core/worldSchema.js'
 import { planetVolume, frequencyForRadius, radiusForFrequency, MAX_FREQUENCY } from '../src/core/planetMath.js'
 import { keplerState } from '../src/core/kepler.js'
-import { PLANETS, DWARFS, RINGS, EXTRA_MOONS, MOON_PALETTES, NAMED_COLORS, TAXA } from './sol-real/features.js'
+import { PLANETS, DWARFS, RINGS, EXTRA_MOONS } from './sol-real/features.js'
 import { atmosphereFor } from '../src/core/atmospheres.js'
-import {
-  buildEarth,
-  buildMars,
-  buildMoon,
-  buildMercury,
-  buildVenus,
-  buildMoonByPalette,
-  buildPotato,
-} from './sol-real/terrain.js'
+import { buildEarth, elementsFromHexFn } from './sol-real/terrain.js'
+import { terrainFor, MOON_TERRAIN, hash01 } from './sol-real/bodyTerrain.mjs'
 import { loadEtopo } from './sol-real/etopo.mjs'
 
 // ---------------------------------------------------------------------------
@@ -95,15 +88,9 @@ const slug = (s) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
 
-/** deterministic hash in [0,1) from a string — stable node/peri/M0 spread */
-function hash01(str, salt = 0) {
-  let h = Math.imul(salt + 2654435761, 1) ^ str.length
-  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 1597334677)
-  h ^= h >>> 15
-  h = Math.imul(h, 2246822519)
-  h ^= h >>> 13
-  return ((h >>> 0) % 1000000) / 1000000
-}
+// hash01 (the deterministic string hash for node/peri/M0/seed/color spread)
+// lives in ./sol-real/bodyTerrain.mjs — imported above — because it drives
+// BOTH the orbital spread here and the per-body terrain parameters there.
 
 function spinVec(day, tiltDeg) {
   const w = SPIN_RATE / day
@@ -179,6 +166,11 @@ const orbitsData = JSON.parse(readSeed(seedAt('./sol-real/data/orbits.json'), 'r
 const etopo = loadEtopo(
   readSeedBinary(seedAt('./sol-real/data/etopo2022-60s.f32'), 'fetch + convert with scripts/sol-real/fetch-terrain.mjs (DATA.md)')
 )
+// name → seed-table entry for the small bodies (asteroids/comets) — terrainFor
+// reads diameter/sbClass/a from it for the potato color + lumpiness
+const small = new Map()
+for (const a of orbitsData.asteroids) small.set(a.name, a)
+for (const c of orbitsData.comets) small.set(c.name, c)
 
 const PLANET_DOC_ID = {}
 for (const p of PLANETS) PLANET_DOC_ID[p.name] = `p-${p.name.toLowerCase()}`
@@ -253,18 +245,20 @@ const GIANTS = {
   Neptune: { preset: 'ice_neptune', seed: 707 },
 }
 
+/**
+ * A rocky planet's document grid + elements. Earth is the only DEM-sourced
+ * body (the ETOPO2022 60s catalog — real coastlines and relief); every other
+ * body resolves through the shared terrainFor dispatch (bodyTerrain.mjs) so
+ * the document and the stored high-res hexes (import-hexcells.mjs) evaluate
+ * the SAME per-hex function — they agree by construction.
+ */
 function buildRockyTerrain(name, rKm, seed) {
   if (name === 'Earth') {
     return { freq: MAX_FREQUENCY, elements: buildEarth(MAX_FREQUENCY, etopo, seed) }
   }
   const freq = gridFor(rKm)
-  if (name === 'Mars') return { freq, elements: buildMars(freq, seed) }
-  if (name === 'Moon') return { freq, elements: buildMoon(freq, seed) }
-  if (name === 'Mercury') return { freq, elements: buildMercury(freq, seed) }
-  if (name === 'Venus') return { freq, elements: buildVenus(freq, seed) }
-  if (name === 'Pluto')
-    return { freq, elements: buildMoonByPalette(freq, { c: '#cfc2b0', c2: '#8a7d6e', t: 'ice' }, seed, { iceCaps: true }) }
-  throw new Error(`no terrain builder for ${name}`)
+  const tf = terrainFor({ name, kind: name === 'Pluto' ? 'dwarf' : 'planet', parent: null, seed, frequency: freq, scale: 1 })
+  return { freq, elements: elementsFromHexFn(tf, freq) }
 }
 
 for (const d of PLANETS) {
@@ -326,11 +320,7 @@ for (const d of DWARFS) {
   if (d.skip) continue
   const orb = stateFrom({ aAU: d.a, e: d.e, iDeg: d.i, omDeg: d.om, wDeg: d.w, M0Deg: d.M0 })
   const freq = gridFor(d.rKm)
-  let pal
-  if (d.taxon === 'ice') pal = { c: '#d8d6d2', c2: '#8f9498', t: 'snow' }
-  else if (d.taxon === 'red') pal = { c: '#c98a5e', c2: '#8f5a36', t: 'ice' }
-  else pal = { c: '#a5a096', c2: '#706b62', t: 'rock', craters: 0.6 }
-  const elements = buildMoonByPalette(freq, pal, d.seed, { polarCaps: d.taxon === 'ice' })
+  const elements = elementsFromHexFn(terrainFor({ name: d.name, kind: 'dwarf', parent: null, seed: d.seed, frequency: freq, scale: 1 }), freq)
   const atmo = atmosphereFor(d.name, d.rKm)
   planets.push({
     id: uniqueId(DWARF_DOC_ID[d.name]),
@@ -352,44 +342,9 @@ for (const d of DWARFS) {
 
 // ---------------------------------------------------------------------------
 // moons — all scripted Kepler orbits around their parents
+// (MOON_TERRAIN / PARENT_FAMILY / the per-body terrain dispatch live in
+//  ./sol-real/bodyTerrain.mjs — MOON_TERRAIN is imported for the grid caps)
 // ---------------------------------------------------------------------------
-const MOON_TERRAIN = {
-  Moon: { pal: null }, // built by the real-maria builder (special-cased below)
-  Io: { pal: MOON_PALETTES.io },
-  Europa: { pal: MOON_PALETTES.europa },
-  Ganymede: { pal: MOON_PALETTES.ganymede },
-  Callisto: { pal: MOON_PALETTES.callisto },
-  Titan: { pal: MOON_PALETTES.titan },
-  Rhea: { pal: MOON_PALETTES.rhea },
-  Iapetus: { pal: MOON_PALETTES.iapetus, opts: { redPole: true } },
-  Dione: { pal: MOON_PALETTES.dione },
-  Tethys: { pal: MOON_PALETTES.tethys },
-  Enceladus: { pal: MOON_PALETTES.enceladus },
-  Mimas: { pal: MOON_PALETTES.mimas },
-  Phoebe: { pal: MOON_PALETTES.phoebe, cap: 10 },
-  Titania: { pal: MOON_PALETTES.uranusMoon },
-  Oberon: { pal: MOON_PALETTES.uranusMoon },
-  Umbriel: { pal: { c: '#7e8286', c2: '#565a5e', t: 'snow' } },
-  Ariel: { pal: { c: '#c3c8cc', c2: '#8b9094', t: 'snow' } },
-  Miranda: { pal: { c: '#a9aeb2', c2: '#767b7f', t: 'snow' }, cap: 12 },
-  Triton: { pal: MOON_PALETTES.triton },
-  Charon: { pal: MOON_PALETTES.charon },
-}
-
-const PARENT_FAMILY = {
-  Jupiter: MOON_PALETTES.jupiterMoon,
-  Saturn: MOON_PALETTES.saturnMoon,
-  Uranus: MOON_PALETTES.uranusMoon,
-  Neptune: MOON_PALETTES.neptuneMoon,
-  Mars: MOON_PALETTES.marsMoon,
-  Pluto: MOON_PALETTES.saturnMoon,
-  Haumea: MOON_PALETTES.neptuneMoon,
-  Orcus: MOON_PALETTES.saturnMoon,
-  Quaoar: MOON_PALETTES.saturnMoon,
-  Salacia: MOON_PALETTES.saturnMoon,
-  Eris: MOON_PALETTES.neptuneMoon,
-}
-
 const parentRadii = {}
 for (const p of PLANETS) parentRadii[p.name] = p.rKm
 
@@ -412,13 +367,10 @@ function addMoon(m) {
       : sizeGrid(rKm)
     : sizeGrid(rKm, 2, 8)
   const seed = 1000 + Math.floor(hash01(m.name, 7) * 8999)
-  let elements
-  if (m.parent === 'Earth' && m.name === 'Moon') elements = buildMoon(freq, seed)
-  else if (named) elements = buildMoonByPalette(freq, named.pal, seed, named.opts || { craters: 0.35 })
-  else {
-    const pal = PARENT_FAMILY[m.parent] || MOON_PALETTES.saturnMoon
-    elements = buildPotato(freq, { seed, color: pal.c, lumpiness: 0.16, craters: 0.5, scale })
-  }
+  // the shared dispatch (bodyTerrain.mjs): Moon → the real-maria builder,
+  // named moons → their palette, the rest → a potato in the parent's family
+  // palette — the SAME terrainFor the stored high-res hexes resolve through
+  const elements = elementsFromHexFn(terrainFor({ name: m.name, kind: 'moon', parent: m.parent, seed, frequency: freq, scale }, { small }), freq)
   const mu = Number(m.mass15) ? (Number(m.mass15) * 1e15) / M_SUN_KG : estimateMu(diam, m.parent)
 
   const sma = Number(m.sma)
@@ -479,18 +431,6 @@ function addMoon(m) {
 // ---------------------------------------------------------------------------
 // asteroids & comets — scripted potatoes with real colors
 // ---------------------------------------------------------------------------
-function asteroidColor(name, sbClass, aAU) {
-  const lower = name.toLowerCase()
-  for (const [k, c] of Object.entries(NAMED_COLORS)) if (lower.includes(k)) return c
-  if (sbClass) {
-    if (/centaur|transneptun|scattered|detached/i.test(sbClass)) return hash01(name, 3) < 0.5 ? TAXA.D : TAXA.P
-    if (/trojan/i.test(sbClass)) return TAXA.D
-    if (/apollo|amor|aten|arjuna|phocaea/i.test(sbClass)) return hash01(name, 4) < 0.7 ? TAXA.S : TAXA.C
-  }
-  if (aAU != null && aAU > 3.3) return TAXA.C
-  return hash01(name, 5) < 0.7 ? TAXA.C : TAXA.S
-}
-
 function addSmall(o, kind) {
   const el = o.orbit
   if (!el || !Number.isFinite(el.e)) return
@@ -499,15 +439,10 @@ function addSmall(o, kind) {
   const { freq, scale } = sizeGrid(rKm, 2, kind === 'comet' ? 5 : diam >= 300 ? 25 : diam >= 60 ? 12 : 6)
   if (!Number.isFinite(freq)) return
   const seed = 2000 + Math.floor(hash01(o.name, 11) * 8999)
-  const color = kind === 'comet' ? '#3f3a36' : asteroidColor(o.name, o.sbClass, el.a)
-  const elements = buildPotato(freq, {
-    seed,
-    color,
-    scale,
-    lumpiness: kind === 'comet' ? 0.2 : diam >= 300 ? 0.07 : 0.15,
-    craters: kind === 'comet' ? 0.25 : diam >= 200 ? 0.7 : 0.4,
-    elongate: hash01(o.name, 12) < 0.25 ? 0.35 : 0,
-  })
+  // the shared dispatch (bodyTerrain.mjs): a potato with real colors by SBDX
+  // class, lumpiness by size — the SAME terrainFor the stored high-res hexes
+  // resolve through (color + lumpiness come off the `small` seed table)
+  const elements = elementsFromHexFn(terrainFor({ name: o.name, kind, parent: null, seed, frequency: freq, scale, diameterKm: diam }, { small }), freq)
   const rho = kind === 'comet' ? 500 : diam > 150 ? 2500 : 1800
   const mu = ((4 / 3) * Math.PI * (rKm * 1000) ** 3 * rho) / M_SUN_KG
   const qAU = el.q != null && Number.isFinite(el.q) ? el.q : el.a * (1 - el.e)
@@ -534,6 +469,7 @@ function addSmall(o, kind) {
     seed,
     frequency: freq,
     scale,
+    diameterKm: diam,   // real diameter (km) — the hexcells importer's band input
     density: densityFor(mu, freq, scale, elements),
     isStatic: false,
     elements,

@@ -213,6 +213,14 @@ CREATE TABLE bodies (
                  CHECK (kind IS NULL OR kind IN
                    ('star', 'planet', 'dwarf', 'moon', 'asteroid', 'comet')),
 
+  -- Real diameter in KILOMETERS (migration 012). The exact input the hexcells
+  -- importer reads to rebuild the potato terrain's size band (lumpiness /
+  -- craters by 200 / 300 km) — (frequency, scale) is lossy (scale = 1 leaves
+  -- the true radius within 12 % of the grid radius) and cannot recover those
+  -- thresholds (docs/terrain2.txt §5.1). NULL where the band is fixed.
+  diameter_km    double precision
+                 CHECK (diameter_km IS NULL OR diameter_km > 0),
+
   sort_order     integer NOT NULL DEFAULT 0,   -- preserves the JSON array order
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now(),

@@ -88,7 +88,7 @@ console.error(`importing ${src}: "${world.name ?? 'Untitled World'}", ` +
 // SQL + COPY payload (one stream; psql reads COPY data after each
 // "COPY ... FROM stdin;" line until a lone "\.")
 // ---------------------------------------------------------------------------
-const bodyCols = `doc_id, name, preset, kind, seed, frequency, scale,
+const bodyCols = `doc_id, name, preset, kind, seed, frequency, scale, diameter_km,
   center_x, center_y, center_z, velocity_x, velocity_y, velocity_z,
   spin_x, spin_y, spin_z, density, gravity_immune, sort_order`
 
@@ -101,6 +101,7 @@ const bodyRows = world.planets.map((p, i) => {
     cop(p.__docId), cop(p.name ?? 'Planet'), cop(p.preset ?? 'earthlike'),
     p.kind ? cop(String(p.kind)) : '\\N',
     Math.round(Number(p.seed) || 1), Math.round(Number(p.frequency) || 6), num(p.scale, 1),
+    Number.isFinite(Number(p.diameterKm)) && Number(p.diameterKm) > 0 ? num(p.diameterKm) : '\\N',
     num(c.x), num(c.y), num(c.z), num(v.x), num(v.y), num(v.z), num(s.x), num(s.y), num(s.z),
     num(p.density, 0.05), p.isStatic ? 't' : 'f', i,
     p.generation ? cop(JSON.stringify(p.generation)) : '\\N',
@@ -163,7 +164,7 @@ ${modelUpserts};
 
 CREATE TEMP TABLE st_bodies (
   doc_id text, name text, preset text, kind text, seed bigint, frequency integer,
-  scale double precision,
+  scale double precision, diameter_km double precision,
   center_x double precision, center_y double precision, center_z double precision,
   velocity_x double precision, velocity_y double precision, velocity_z double precision,
   spin_x double precision, spin_y double precision, spin_z double precision,
@@ -211,17 +212,23 @@ UPDATE bodies b
   JOIN bodies p ON p.doc_id = NULLIF(s.parent, '') AND p.world_id = currval('worlds_id_seq')
  WHERE b.doc_id = s.doc_id AND b.world_id = currval('worlds_id_seq');
 
--- terrain keys the built-in palette doesn't know become this world's materials
-INSERT INTO materials (world_id, key, label)
-SELECT currval('worlds_id_seq'), u.k, u.k
+`
+
+const atomsInsert = `
+-- terrain keys the built-in palette doesn't know become this world's materials.
+-- This MUST run AFTER the st_atoms COPY (the rows stream between the staging
+-- block and this one) — it reads the document's material keys FROM st_atoms,
+-- which is still empty if it ran inside the staging block. (A prior revision
+-- ran it too early: non-global keys like 'ice' resolved to NULL material_id
+-- on every import.)
+INSERT INTO materials (world_id, key, label, color)
+SELECT currval('worlds_id_seq'), u.k, u.k, '#c8c8c8'
 FROM (
   SELECT DISTINCT a.material_key AS k FROM st_atoms a
   WHERE a.material_key IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM materials m WHERE m.key = a.material_key AND m.world_id IS NULL)
 ) u;
-`
 
-const atomsInsert = `
 INSERT INTO atoms (body_id, cell_index, height, material_id, color)
 SELECT b.id, a.cell_index, a.height, m.id, a.color
 FROM st_atoms a

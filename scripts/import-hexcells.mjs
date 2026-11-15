@@ -2,47 +2,60 @@
 /**
  * import-hexcells.mjs — generate + COPY the STORED high-res hexes (docs/terrain2.txt).
  * ---------------------------------------------------------------------------
- * This is the generation side of the inverted terrain model: it reads the
- * world document (for the world-level `hex_meters`, the per-body `highres`
- * opt-in, each body's radius, scale and seed) and the DEM catalog (the
- * ETOPO2022 60s seed file — the SAME source the document was built from, so
- * the document and the high-res share one datum), walks each highres body's
- * latitude-row grid (core/hexlattice.js), and EMITS one `hexcells` row per
- * stored hex:
+ * The generation side of the inverted terrain model. DB-DRIVEN: it reads the
+ * world row and its bodies straight from postgres (NEVER the world.json
+ * document — a large world is DB-only, and the document is only the app's save
+ * format). For EVERY stored body of a world with `hex_meters` set — the rule
+ * is derived, `generation IS NULL` (docs/terrain2.txt §5.1) — it walks the
+ * body's latitude-row grid (core/hexlattice.js) and emits ONE `hexcells` row
+ * per stored hex:
  *
  *   (body_id, lat_row, lon_col)   the positional key (docs/terrain2.txt §5)
  *   lat, lon                      derived, stored for stream order (a pin, never
  *                                 authoritative over the lattice key)
- *   height                        the DEM sample at the hex, meters → world
- *                                 units (÷ world.scale) — the SAME datum the
- *                                 document uses
- *   material_id, color            the document's own color rules, shared via
- *                                 earthHex (a coastline hex is land or sea, not
- *                                 a blend)
+ *   height                        relief above the core, in WORLD UNITS — the
+ *                                 same datum the document uses
+ *   material_id, color            the body's own color rules (the SAME per-hex
+ *                                 fn the document was built with)
  *
- * The rows are STREAMED to psql via COPY FROM stdin (one row at a time — the
- * tens of millions of rows are never held in memory, and never touch a JSON
- * world file: large worlds are DB-only). The COPY runs in ONE transaction that
- * first DELETEs the target bodies' existing hexcells (idempotent — a re-run
- * refreshes in place) and, before COMMIT, a DO block re-checks that the
- * landed row count equals the grid's exact cell count (a truncated stream
- * aborts the whole import).
+ * Two terrain sources, ONE shared dispatch (scripts/sol-real/bodyTerrain.mjs):
  *
- * The hexes are the STORED SURFACE the app renders from. The DEM (`terrain`
- * table / this seed file) is only the GENERATION source — the rendered data
- * source is `hexcells` (docs/terrain2.txt §5.4), never the catalog.
+ *   • Earth — the only DEM-sourced body (terrainFor → { kind: 'earth' }): the
+ *     ETOPO2022 60s catalog (the SAME seed file the document was built from, so
+ *     document and high-res share one datum). height = the DEM sample
+ *     (meters ÷ world.scale); material/color via earthHex (a coastline hex is
+ *     land or sea, not a blend).
+ *   • every other stored body — the procedural per-hex fn (terrainFor →
+ *     { kind: 'hex', fn, unit }) evaluated at the fine-grid centers: the SAME
+ *     bound fn the document was built with, so the document and the stored
+ *     hexes agree by construction (one function, two grids). unit 'km' →
+ *     height = h·1000/SCALE (≡ h·KM2U, the document's datum); 'u' → h as-is
+ *     (the potato builder, already in engine units).
+ *
+ * The DIAMETER (bodies.diameter_km, migration 012) is read from the DB — it is
+ * the exact input the potato band (lumpiness / craters) needs, so there is no
+ * seed-table inversion and no drift. The seed table (orbits.json) is read ONLY
+ * for the small bodies' COLOR (sbClass / semi-major axis), which is not stored
+ * on the body.
+ *
+ * The rows STREAM to psql via COPY FROM stdin (a bounded buffer — the ~200 M
+ * rows are never held in memory). ONE transaction: DELETE the target bodies'
+ * existing hexcells (idempotent — a re-run refreshes in place) → COPY → a DO
+ * block re-checks that the landed row count equals the sum of the grid totals
+ * (a truncated stream aborts the whole import).
  *
  * Usage (run AFTER import-db.mjs created the world row + bodies):
- *   PGHOST=... PGDATABASE=... PGUSER=... \
- *     node scripts/import-hexcells.mjs [world.json] [etopo2022-60s.f32]
+ *   PGHOST=... PGDATABASE=... PGUSER=... node scripts/import-hexcells.mjs [world-id | world-name]
+ *   (no arg = the newest world with hex_meters set)
  */
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { lookupPgpass } from '../server/db.mjs'
 import { loadEtopo } from './sol-real/etopo.mjs'
-import { highResGrid } from '../src/core/hexlattice.js'
+import { highResGrid, cellLatLonDeg } from '../src/core/hexlattice.js'
 import { earthHex } from './sol-real/terrain.js'
+import { terrainFor } from './sol-real/bodyTerrain.mjs'
 
 // env vars REQUIRED (no infrastructure names in this repo — see DATA.md)
 for (const k of ['PGHOST', 'PGDATABASE', 'PGUSER'])
@@ -54,71 +67,8 @@ process.env.PGPORT ||= '5432'
 if (!process.env.PGPASSWORD)
   process.env.PGPASSWORD = lookupPgpass(process.env.PGHOST, Number(process.env.PGPORT), process.env.PGDATABASE, process.env.PGUSER) || ''
 
-const docPath = process.argv[2] || 'public/sol-real.json'
-const demPath = process.argv[3] || 'scripts/sol-real/data/etopo2022-60s.f32'
 const qstr = (v) => `'${String(v).replace(/'/g, "''")}'`
 
-// ---------------------------------------------------------------------------
-// World document → the high-res bodies (position + grid parameters)
-// ---------------------------------------------------------------------------
-let world
-try {
-  world = JSON.parse(readFileSync(docPath, 'utf8'))
-} catch (e) {
-  console.error(`\nworld document not found: ${docPath}\n${e.message}`)
-  console.error('Generate it first: node scripts/gen-sol-real.mjs --hex-meters 1850 --highres earth --out ../public/sol-real.json')
-  process.exit(1)
-}
-if (!Number.isFinite(Number(world.hex_meters))) {
-  console.error(`${docPath}: no hex_meters — generate with --hex-meters <m> (docs/terrain2.txt §4)`)
-  process.exit(1)
-}
-const HEX_M = Number(world.hex_meters) // stored hex edge, METERS (world-uniform, R1)
-const SCALE = Number(world.scale) // meters per world unit (height datum)
-if (!Number.isFinite(SCALE) || !(SCALE > 0)) {
-  console.error(`${docPath}: world has no valid scale (meters per unit) — required for the height datum`)
-  process.exit(1)
-}
-
-const highresBodies = world.planets.filter((p) => p.highres)
-if (!highresBodies.length) {
-  console.error(`${docPath}: no highres bodies — generate with --highres <body>`)
-  process.exit(1)
-}
-
-// build each highres body's grid (radius from its document frequency + scale)
-let totalExpected = 0
-for (const p of highresBodies) {
-  const f = Math.round(Number(p.frequency) || 6)
-  const bodyScale = Number(p.scale) || 1
-  const cells = 10 * f * f + 2
-  const radiusU = Math.sqrt(cells / (4 * Math.PI)) * bodyScale
-  p.__radiusM = radiusU * SCALE
-  p.__grid = highResGrid(p.__radiusM, HEX_M)
-  p.__seed = Math.round(Number(p.seed) || 42)
-  totalExpected += p.__grid.total
-}
-
-// the DEM (the generation source — same file the document was built from)
-let dem
-try {
-  dem = loadEtopo(readFileSync(demPath))
-} catch (e) {
-  console.error(`\nDEM seed not found: ${demPath}`)
-  console.error('Seed data is not part of this repo — see DATA.md.')
-  console.error('For this seed: scripts/sol-real/data/etopo2022-60s.f32 (NOAA ETOPO2022 60s; regenerate with scripts/sol-real/fetch-terrain.mjs).')
-  process.exit(1)
-}
-const { W, H, data } = dem
-
-// the material keys the high-res will use are the document's own (earthHex
-// shares the document's color rules) — confirm they all resolve first
-const usedKeys = new Set()
-for (const p of highresBodies) for (const e of p.elements || []) if (e.t) usedKeys.add(e.t)
-
-// ---------------------------------------------------------------------------
-// Resolve the world + body + material ids (the world import must have run)
-// ---------------------------------------------------------------------------
 async function query(sql) {
   const p = spawn('psql', ['-X', '-q', '-A', '-t', '-F', '\t', '-c', sql], { stdio: ['ignore', 'pipe', 'pipe'] })
   let out = ''
@@ -130,30 +80,118 @@ async function query(sql) {
   return out.split('\n').filter(Boolean)
 }
 
-// the world is the NEWEST row with the document's name (import-db appends one)
-const nameRows = await query(`SET search_path = explanet; SELECT id FROM worlds WHERE name = ${qstr(world.name ?? 'Untitled World')} ORDER BY id DESC LIMIT 1`)
-if (!nameRows.length) {
-  console.error(`no world named "${world.name}" in $PGDATABASE — import it first:\n  node scripts/import-db.mjs ${docPath}`)
+// ---------------------------------------------------------------------------
+// Resolve the target world (arg = world id, world name, or the newest with
+// hex_meters set)
+// ---------------------------------------------------------------------------
+const arg = process.argv[2]
+let worldSel
+if (arg && /^\d+$/.test(arg)) worldSel = `id = ${arg}`
+else if (arg) worldSel = `name = ${qstr(arg)}`
+else worldSel = `hex_meters IS NOT NULL`
+
+const worldRows = await query(
+  `SET search_path = explanet; SELECT id, name, hex_meters, scale FROM worlds WHERE ${worldSel} ORDER BY id DESC LIMIT 1`
+)
+if (!worldRows.length) {
+  console.error(`no ${arg && !/^\d+$/.test(arg) ? `world named "${arg}"` : arg ? `world id ${arg}` : 'world with hex_meters set'} in $PGDATABASE`)
+  console.error('Import it first:  node scripts/import-db.mjs <world.json>')
   process.exit(1)
 }
-const worldId = Number(nameRows[0])
-
-const docIds = highresBodies.map((p) => String(p.id ?? ''))
-const idRows = await query(
-  `SET search_path = explanet; SELECT doc_id, id FROM bodies WHERE world_id = ${worldId} AND doc_id IN (${docIds.map(qstr).join(',')})`
-)
-const bodyId = new Map()
-for (const r of idRows) {
-  const tab = r.indexOf('\t')
-  if (tab < 0) continue
-  bodyId.set(r.slice(0, tab), Number(r.slice(tab + 1)))
+const W = worldRows[0].split('\t')
+const worldId = Number(W[0])
+const worldName = W[1]
+const HEX_M = Number(W[2]) // stored hex edge, METERS (world-uniform, R1)
+const SCALE = Number(W[3]) // meters per world unit (height datum)
+if (!Number.isFinite(HEX_M) || !(HEX_M > 0)) {
+  console.error(`world ${worldId} ("${worldName}"): no hex_meters — generate with --hex-meters <m> (docs/terrain2.txt §4)`)
+  process.exit(1)
 }
-for (const p of highresBodies) {
-  if (!bodyId.has(String(p.id))) {
-    console.error(`highres body "${p.name}" (doc_id "${p.id}") not found in world ${worldId} — import the world first`)
+if (!Number.isFinite(SCALE) || !(SCALE > 0)) {
+  console.error(`world ${worldId}: world has no valid scale (meters per unit) — required for the height datum`)
+  process.exit(1)
+}
+
+// ---------------------------------------------------------------------------
+// The target bodies: every stored (non-generated) body of the world. The
+// parent NAME is joined in (the moon family palette keys off it).
+// ---------------------------------------------------------------------------
+const bodyRows = await query(`
+  SET search_path = explanet;
+  SELECT b.id, b.name, b.kind, b.seed, b.frequency, b.scale, b.diameter_km, p.name
+  FROM bodies b
+  LEFT JOIN bodies p ON p.id = b.parent_body_id
+  WHERE b.world_id = ${worldId} AND b.generation IS NULL
+  ORDER BY b.sort_order
+`)
+if (!bodyRows.length) {
+  console.error(`world ${worldId} ("${worldName}"): no stored (non-generated) bodies — nothing to import`)
+  process.exit(1)
+}
+const bodies = bodyRows.map((r) => {
+  const [id, name, kind, seed, frequency, scale, diameterKm, parentName] = r.split('\t')
+  return {
+    id: Number(id),
+    name,
+    kind: kind || null,
+    seed: Number(seed) || 0,
+    frequency: Number(frequency) || 6,
+    scale: Number(scale) || 1,
+    diameterKm: diameterKm === '' ? null : Number(diameterKm),
+    parent: parentName === '' ? null : parentName,
+  }
+})
+
+// the seed table — read ONLY for the small bodies' color (sbClass / a); the
+// diameter (the band input) comes from the DB, not here.
+const orbitsPath = 'scripts/sol-real/data/orbits.json'
+let small
+try {
+  const orbits = JSON.parse(readFileSync(orbitsPath, 'utf8'))
+  small = new Map()
+  for (const a of orbits.asteroids || []) small.set(a.name, a)
+  for (const c of orbits.comets || []) small.set(c.name, c)
+} catch (e) {
+  console.error(`\nseed table not found: ${orbitsPath} (needed for the small bodies' color)`)
+  console.error('Seed data is not part of this repo — see DATA.md.')
+  process.exit(1)
+}
+
+// ---------------------------------------------------------------------------
+// Per body: build the grid (radius from the document frequency + scale — the
+// derived, mass-basis radius the high-res surface sits on) + the terrain
+// source (the shared dispatch). Pre-flight every material key the fns can emit.
+// ---------------------------------------------------------------------------
+let totalExpected = 0
+const usedKeys = new Set()
+for (const b of bodies) {
+  const f = Math.round(b.frequency)
+  const cells = 10 * f * f + 2
+  const radiusU = Math.sqrt(cells / (4 * Math.PI)) * b.scale
+  b.__radiusM = radiusU * SCALE
+  b.__grid = highResGrid(b.__radiusM, HEX_M)
+  b.__tf = terrainFor(b, { small }) // { kind:'earth' } | { kind:'hex', fn, unit, keys }
+  for (const k of b.__tf.keys) usedKeys.add(k)
+  totalExpected += b.__grid.total
+}
+const hasEarth = bodies.some((b) => b.__tf.kind === 'earth')
+
+// the DEM (Earth's generation source — the same file the document was built
+// from); loaded only when the world has an Earth body.
+let dem
+if (hasEarth) {
+  const demPath = 'scripts/sol-real/data/etopo2022-60s.f32'
+  try {
+    dem = loadEtopo(readFileSync(demPath))
+  } catch (e) {
+    console.error(`\nDEM seed not found: ${demPath}`)
+    console.error('Seed data is not part of this repo — see DATA.md.')
+    console.error('For this seed: scripts/sol-real/data/etopo2022-60s.f32 (NOAA ETOPO2022 60s; regenerate with scripts/sol-real/fetch-terrain.mjs).')
     process.exit(1)
   }
 }
+const { W: demW, H: demH, data: demData } = dem || { W: 0, H: 0, data: null }
+const step21600 = 21600 // (360° × 60 px/deg) — the DEM's lon span
 
 // material key → id (world-specific preferred, then the global built-ins)
 const matRows = await query(
@@ -172,23 +210,20 @@ if (missing.length) {
   process.exit(1)
 }
 
-console.error(
-  `importing high-res for world ${worldId} ("${world.name}"): hex_meters=${HEX_M}m, scale=${SCALE} m/u`
-)
-for (const p of highresBodies)
-  console.error(`  ${p.name} (body ${bodyId.get(p.id)}): radius ${p.__radiusM.toFixed(1)} m → ${p.__grid.total.toLocaleString('en-US')} hexes`)
+console.error(`importing high-res for world ${worldId} ("${worldName}"): hex_meters=${HEX_M}m, scale=${SCALE} m/u`)
+console.error(`  ${bodies.length} stored bodies → ${totalExpected.toLocaleString('en-US')} hexes expected`)
 
 // ---------------------------------------------------------------------------
 // COPY stream: header (one transaction: delete-then-copy), the rows, then the
 // "\." terminator + a count-verification DO block + COMMIT.
 // ---------------------------------------------------------------------------
-const bodyIds = highresBodies.map((p) => bodyId.get(p.id))
+const bodyIds = bodies.map((b) => b.id)
 const header = `BEGIN;
 SET LOCAL search_path = explanet;
 SET LOCAL client_min_messages = warning;
 SET LOCAL statement_timeout = 0;
 
--- one transaction: replace the high-res rows of the target bodies in place
+-- one transaction: replace the stored hexcells of the target bodies in place
 -- (idempotent), then COPY the fresh generation.
 DELETE FROM hexcells WHERE body_id IN (${bodyIds.join(',')});
 
@@ -197,14 +232,14 @@ COPY hexcells (body_id, lat_row, lon_col, lat, lon, height, material_id, color) 
 
 const footer = `\\.
 
--- every high-res row must have landed: the grid is walked exactly once, so the
--- count is the sum of the grid totals (a truncated stream aborts the import)
+-- every hex must have landed: each grid is walked exactly once, so the count
+-- is the sum of the grid totals (a truncated stream aborts the import)
 DO $do$
 DECLARE n bigint;
 BEGIN
   SELECT count(*) INTO n FROM hexcells WHERE body_id IN (${bodyIds.join(',')});
   IF n <> ${totalExpected} THEN
-    RAISE EXCEPTION 'import aborted: % high-res rows landed, expected %', n, ${totalExpected};
+    RAISE EXCEPTION 'import aborted: % hexcells landed, expected %', n, ${totalExpected};
   END IF;
 END
 $do$;
@@ -223,7 +258,7 @@ async function send(chunk) {
 }
 
 // a bounded buffer of COPY rows, flushed in chunks (keeps a bounded amount in
-// memory while the DEM + grid live on)
+// memory while the DEM + grids live on)
 const lineBuf = []
 const FLUSH = 200_000
 async function flush() {
@@ -233,13 +268,13 @@ async function flush() {
 }
 
 const t0 = Date.now()
-const step21600 = 21600 // (2π in degrees = 360) × 60 px/deg — the DEM's lon span
 try {
   await send(header)
-  for (const p of highresBodies) {
-    const grid = p.__grid
-    const bid = bodyId.get(p.id)
-    const seed = p.__seed
+  for (const b of bodies) {
+    const grid = b.__grid
+    const bid = b.id
+    const isEarth = b.__tf.kind === 'earth'
+    const tf = b.__tf
     const rows = grid.rows
     const logEvery = Math.max(1, Math.floor(rows / 24))
     for (let r = 0; r < rows; r++) {
@@ -247,28 +282,50 @@ try {
       const latDeg = (lat * 180) / Math.PI
       const cosLat = Math.cos(lat)
       const sinLat = Math.sin(lat)
-      const demRow = Math.max(0, Math.min(H - 1, Math.round((90 - latDeg) * 60)))
-      const demBase = demRow * W
       const latStr = latDeg.toFixed(5)
       const cols = grid.cols[r]
-      const step = step21600 / cols // DEM-col advance per hex (≈2.6 px/hex)
-      for (let c = 0; c < cols; c++) {
-        const lon = (c + 0.5) * ((2 * Math.PI) / cols) - Math.PI
-        const lonDeg = (lon * 180) / Math.PI
-        let demCol = Math.round((c + 0.5) * step)
-        if (demCol < 0) demCol = 0
-        else if (demCol > W - 1) demCol = W - 1
-        const meters = data[demBase + demCol]
-        const { t, c: color } = earthHex(latDeg, lonDeg, meters, [cosLat * Math.cos(lon), sinLat, -cosLat * Math.sin(lon)], seed)
-        const mid = matId.get(t)
-        if (mid == null) throw new Error(`material key "${t}" not resolved (should have been checked pre-flight)`)
-        lineBuf.push(`${bid}\t${r}\t${c}\t${latStr}\t${lonDeg.toFixed(5)}\t${(meters / SCALE).toFixed(6)}\t${mid}\t${color}`)
+      const latStep = (2 * Math.PI) / cols
+      if (isEarth) {
+        // Earth: the DEM sample at the hex (meters → world units) + earthHex
+        // color rules (the document's own).
+        const demRow = Math.max(0, Math.min(demH - 1, Math.round((90 - latDeg) * 60)))
+        const demBase = demRow * demW
+        const step = step21600 / cols // DEM-col advance per hex (≈2.6 px/hex)
+        for (let c = 0; c < cols; c++) {
+          const lon = (c + 0.5) * latStep - Math.PI
+          const lonDeg = (lon * 180) / Math.PI
+          let demCol = Math.round((c + 0.5) * step)
+          if (demCol < 0) demCol = 0
+          else if (demCol > demW - 1) demCol = demW - 1
+          const meters = demData[demBase + demCol]
+          const { t, c: color } = earthHex(latDeg, lonDeg, meters, [cosLat * Math.cos(lon), sinLat, -cosLat * Math.sin(lon)], b.seed)
+          const mid = matId.get(t)
+          if (mid == null) throw new Error(`material key "${t}" not resolved (should have been checked pre-flight)`)
+          lineBuf.push(`${bid}\t${r}\t${c}\t${latStr}\t${lonDeg.toFixed(5)}\t${(meters / SCALE)}\t${mid}\t${color}`)
+        }
+      } else {
+        // procedural: the shared per-hex fn at the fine-grid centers (the SAME
+        // fn the document was built with — they agree by construction).
+        const fn = tf.fn
+        const km = tf.unit === 'km'
+        for (let c = 0; c < cols; c++) {
+          const lon = (c + 0.5) * latStep - Math.PI
+          const cosLon = Math.cos(lon)
+          const sinLon = Math.sin(lon)
+          const dir = [cosLat * cosLon, sinLat, -cosLat * sinLon]
+          const res = fn(dir, latDeg, (lon * 180) / Math.PI)
+          const mid = matId.get(res.t)
+          if (mid == null) throw new Error(`material key "${res.t}" not resolved (should have been checked pre-flight)`)
+          const height = km ? (res.h * 1000) / SCALE : res.h
+          lineBuf.push(`${bid}\t${r}\t${c}\t${latStr}\t${((lon * 180) / Math.PI).toFixed(5)}\t${height}\t${mid}\t${res.c}`)
+        }
       }
-      await flush()
+      if (lineBuf.length >= FLUSH) await flush()
       if ((r + 1) % logEvery === 0)
-        console.error(`  ${p.name}: row ${r + 1}/${rows} (${(((r + 1) / rows) * 100).toFixed(0)}%) — ${((Date.now() - t0) / 1000).toFixed(0)}s`)
+        console.error(`  ${b.name}: row ${r + 1}/${rows} (${(((r + 1) / rows) * 100).toFixed(0)}%) — ${((Date.now() - t0) / 1000).toFixed(0)}s`)
     }
-    console.error(`  ${p.name}: all ${grid.total.toLocaleString('en-US')} hexes emitted`)
+    await flush()
+    console.error(`  ${b.name}: all ${grid.total.toLocaleString('en-US')} hexes emitted`)
   }
   await flush()
   await send(footer)
@@ -282,5 +339,5 @@ try {
   process.exit(1)
 }
 
-console.error(`\n✓ high-res imported into world ${worldId}: ${totalExpected.toLocaleString('en-US')} hexcells in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+console.error(`\n✓ high-res imported into world ${worldId} ("${worldName}"): ${totalExpected.toLocaleString('en-US')} hexcells in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 console.error('  the app renders these (GET /api/bodies/:id/hex/…) — the DEM catalog is only the generation source')
