@@ -38,6 +38,7 @@ import { gzip } from 'node:zlib'
 import pg from 'pg'
 import { sampleLodElements } from '../src/core/lod.js'
 import { generateElements } from '../src/core/generators.js'
+import { highResGrid, rowForLat, rowLonRange } from '../src/core/hexlattice.js'
 import { C } from '../src/core/constants.js'
 
 const { Pool } = pg
@@ -455,6 +456,112 @@ export async function terrainTile(catalog, tileLat, tileLon) {
 }
 
 // ---------------------------------------------------------------------------
+// Stored high-res hexes — the hexcells table (read side of migration 011)
+// ---------------------------------------------------------------------------
+// The inverted terrain model (docs/terrain2.txt): a world with `hex_meters`
+// set stores its surface as high-res hexcells, and the app streams them as
+// lat/lon RECTANGLES around the player (the fine layer's height source — the
+// §6.2 swap). The body's grid MUST be computed exactly as the importer
+// (scripts/import-hexcells.mjs) computed it, or the (lat_row, lon_col) keys
+// the app requests and the rows the table holds would be two different
+// lattices: radiusM = √(cells/4π) · scale · world.scale (the derived
+// mass-basis radius), then core/hexlattice.js highResGrid(radiusM,
+// hex_meters) — the same pure function on both sides.
+
+/** The body's stored-hex grid, exactly as the importer walked it. */
+function hexGridFor(b, worldScale, hexMeters) {
+  const radiusM = Math.sqrt(cellCount(b.frequency) / (4 * Math.PI)) * b.scale * worldScale
+  return highResGrid(radiusM, hexMeters)
+}
+
+async function hexBody(dbId) {
+  const { rows } = await getPool().query(
+    `SELECT b.id, b.name, b.frequency, b.scale,
+            b.generation IS NOT NULL AS generated,
+            w.hex_meters, w.scale AS world_scale
+       FROM bodies b JOIN worlds w ON w.id = b.world_id
+      WHERE b.id = $1`,
+    [Number(dbId)]
+  )
+  if (!rows.length) throw new Error(`no bodies ${dbId} in ${DATABASE}@${HOST}`)
+  const b = rows[0]
+  if (b.hex_meters == null) throw new Error(`no stored high-res for body ${dbId} — its world has no hex_meters set`)
+  if (b.generated) throw new Error(`body ${dbId} is generated — it stores no hexcells`)
+  return { b, hexMeters: Number(b.hex_meters), worldScale: Number(b.world_scale) }
+}
+
+/** Grid summary for GET /api/bodies/:id/hex (introspection + client grid). */
+export async function hexSummary(dbId) {
+  const { b, hexMeters, worldScale } = await hexBody(dbId)
+  const grid = hexGridFor(b, worldScale, hexMeters)
+  const { rows: [cnt] } = await getPool().query(
+    `SELECT count(*)::int FROM hexcells WHERE body_id = $1`,
+    [Number(b.id)]
+  )
+  return {
+    bodyId: Number(b.id),
+    name: b.name,
+    hexMeters,
+    radiusM: grid.radiusM,
+    rows: grid.rows,
+    total: grid.total,
+    count: cnt.count,
+  }
+}
+
+/**
+ * One lat/lon rectangle of stored hexes for GET /api/bodies/:id/hex/tile
+ * (?lat0=&lat1=&lon0=&lon1=, degrees; lat0 < lat1, lon0 < lon1, NO
+ * antimeridian wrap — the caller splits that). Returns the rows in
+ * (lat_row, lon_col) order, packed per row: { row, col0, heights[] } —
+ * heights[col − col0] is the cell's relief in WORLD UNITS (the stored datum,
+// the same the document uses). A rect with no stored rows (not imported)
+ * returns { rows: [] } — the app's synthesis falls back to the document
+ * height there, gracefully.
+ */
+export async function hexTile(dbId, lat0, lat1, lon0, lon1) {
+  const L0 = Number(lat0), L1 = Number(lat1), G0 = Number(lon0), G1 = Number(lon1)
+  if (![L0, L1, G0, G1].every((v) => Number.isFinite(v))) throw new Error(`bad hex tile range: ${lat0},${lat1},${lon0},${lon1}`)
+  if (G0 > G1) throw new Error('hex tile lon wraps the antimeridian — split the range at ±180')
+  const { b, hexMeters, worldScale } = await hexBody(dbId)
+  const grid = hexGridFor(b, worldScale, hexMeters)
+
+  // the row band (rowForLat clamps to the poles) and, per row, the column
+  // span that overlaps [lon0, lon1] — the per-row test (rowLonRange): each
+  // row has its own column count, so the same index is a different longitude
+  // on different rows and a shared col index would select the wrong cells.
+  const la = Math.max(-90, Math.min(90, Math.min(L0, L1)))
+  const lb = Math.max(-90, Math.min(90, Math.max(L0, L1)))
+  const lo = Math.max(-180, G0)
+  const hi = Math.min(180, G1)
+  const row0 = rowForLat(grid, lb * (Math.PI / 180))
+  const row1 = rowForLat(grid, la * (Math.PI / 180))
+  const conds = []
+  for (let row = row0; row <= row1; row++) {
+    const span = rowLonRange(grid, row, lo, hi)
+    if (span) conds.push(`(lat_row = ${row} AND lon_col BETWEEN ${span.j0} AND ${span.j1})`)
+  }
+  if (!conds.length) return { bodyId: Number(b.id), lat0: la, lat1: lb, lon0: lo, lon1: hi, rows: [] }
+
+  const { rows: cells } = await getPool().query(
+    `SELECT lat_row, lon_col, height FROM hexcells
+      WHERE body_id = $1 AND (${conds.join(' OR ')})
+      ORDER BY lat_row, lon_col`,
+    [Number(b.id)]
+  )
+  const out = []
+  let cur = null
+  for (const r of cells) {
+    if (!cur || cur.row !== r.lat_row) {
+      cur = { row: r.lat_row, col0: r.lon_col, heights: [] }
+      out.push(cur)
+    }
+    cur.heights.push(Number(r.height))
+  }
+  return { bodyId: Number(b.id), lat0: la, lat1: lb, lon0: lo, lon1: hi, rows: out }
+}
+
+// ---------------------------------------------------------------------------
 // Craft models — the craft classes (read side of migration 009)
 // ---------------------------------------------------------------------------
 // `models` is the CRAFT CLASS: mover identity (kind) + the serialized mesh
@@ -616,7 +723,11 @@ export async function worldSkeleton(worldId, { refresh = false } = {}) {
         ? Number(b.generation.avgHeight)
         : num(b.avg_height, 0)
       planet.preview = await bodyPreview(b.id, PREVIEW_FREQUENCY)
-      planet.generated = b.generation // observability; normalizeWorld() strips it
+      // LOAD-BEARING (not just observability): a generated body stores no
+      // surface — in a world with hex_meters it is the ONLY exemption from
+      // stored hexcells (docs/terrain2.txt §5.1), and the app derives that
+      // from this flag (normalizeWorld() keeps it; serializeWorld() strips it).
+      planet.generated = true
     } else if (cellCount(frequency) <= FULL_INLINE_CELLS) {
       planet.elements = await bodyElements(b.id)
       planet.preview = null

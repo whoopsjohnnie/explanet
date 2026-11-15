@@ -27,13 +27,23 @@
  *                                        stream); lattice metadata in headers.
  *                                        (The fine-terrain layer decodes with
  *                                        new Int16Array(bytes).)
+ *   GET /api/bodies/:id/hex             → the body's STORED high-res summary
+ *                                         (hex_meters, radius, grid rows,
+ *                                         row count — docs/terrain2.txt §6.2)
+ *   GET /api/bodies/:id/hex/tile?       → one lat/lon RECTANGLE of stored
+ *      lat0=&lat1=&lon0=&lon1=           hexes (degrees; the fine layer's
+ *                                        height source in a hex_meters world,
+ *                                        streamed ahead of the player). Rows
+ *                                        in (lat_row, lon_col) order, packed
+ *                                        per row { row, col0, heights[] } —
+ *                                        heights in world units.
  *
  * The skeleton is the boot payload: bodies with real frequency/density (so
  * derived radius/mass and orbits stay exact) but atoms only for the small
  * bodies; giants arrive as stubs + a preview sample and stream their atoms
  * in later via /api/bodies/:id/elements.
  */
-import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked, craftModels, craftModelByKey, terrainCatalogs, terrainTile } from './db.mjs'
+import { listWorlds, defaultWorldId, worldSkeleton, bodyPayload, getPool, gzipText, starCatalogs, starsList, starByHr, skyPacked, craftModels, craftModelByKey, terrainCatalogs, terrainTile, hexSummary, hexTile } from './db.mjs'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -145,9 +155,29 @@ export async function apiHandler(req, res, next) {
       res.end(t.payload)
       return
     }
+    // ---- stored high-res hexes: the inverted-terrain height source ----
+    // A world with hex_meters streams its surface in lat/lon rectangles
+    // (docs/terrain2.txt §6.2) — the fine layer's height source, replacing
+    // the DEM tile. The grid is derived server-side from the body's
+    // (frequency, scale) + world scale, exactly as the importer walked it.
+    const hexSummaryMatch = /^\/api\/bodies\/(\d+)\/hex$/.exec(path)
+    if (hexSummaryMatch) {
+      return send(res, 200, JSON.stringify(await hexSummary(hexSummaryMatch[1])))
+    }
+    const hexTileMatch = /^\/api\/bodies\/(\d+)\/hex\/tile$/.exec(path)
+    if (hexTileMatch) {
+      const t = await hexTile(
+        hexTileMatch[1],
+        params.get('lat0'),
+        params.get('lat1'),
+        params.get('lon0'),
+        params.get('lon1')
+      )
+      return send(res, 200, JSON.stringify(t))
+    }
     return send(res, 404, JSON.stringify({ error: `no api route ${path}` }))
   } catch (err) {
-    const status = /no world|no bodies|no star|no craft model|no terrain tile/.test(err.message) ? 404 : 500
+    const status = /no world|no bodies|no star|no craft model|no terrain tile|no stored high-res/.test(err.message) ? 404 : 500
     return send(res, status, JSON.stringify({ error: err.message }))
   }
 }

@@ -36,6 +36,7 @@
 import { hexToPlane, planeToHex, dirFromPlane, projectToPlane } from './finedisc.js'
 import { cellAtDirection } from './surface.js'
 import { terrainDefaults } from './terrain.js'
+import { rowForLat, colForLon } from './hexlattice.js'
 
 const SQRT3 = Math.sqrt(3)
 const DEG = Math.PI / 180
@@ -466,3 +467,103 @@ export function setTerrainProviders({ catalogs, tiles } = {}) {
 
 export const getTerrainCatalogProvider = () => catalogProvider
 export const getTerrainTileProvider = () => tileProvider
+
+// ---------------------------------------------------------------------------
+// The STORED hex source (docs/terrain2.txt §6.2 — the inverted terrain model)
+// ---------------------------------------------------------------------------
+// When a world declares `hex_meters`, the STORED high-res hexes (the
+// hexcells table — a global latitude-row grid, hexlattice.js) replace the DEM
+// as the fine layer's height source. EVERYTHING else is unchanged: the
+// body-fixed gnomonic lattice, the chord-fan geometry, the feather (§4.3),
+// the §4.4 suppression, the §6 dispatch, the worker chunk jobs, the
+// ahead-of-velocity queue. The one swap is the height of a fine hex:
+//
+//     today:  h_dem = the DEM pixel under the fine hex (demElevationAt)
+//     new:    h     = the STORED hex under the fine hex (hexHeightAt)
+//
+// Both are NEAREST-POINT samples: a fine hex reads the stored hex whose
+// center is nearest its own center (nearestCell, O(1)). The streaming unit
+// is a lat/lon RECTANGLE of stored hexes (the server's /api/bodies/:id/hex/
+// tile endpoint, in (lat_row, lon_col) order); the app keeps one
+// Map<row, { col0, h: Float64Array }> per fetched rect, so the per-hex
+// lookup is a row lookup + an array index. A rect that is absent (not
+// fetched yet, or the body stores no hexes) resolves to null per hex — the
+// synthesis falls back to the document height there, exactly as it does for
+// an absent DEM tile.
+//
+// The fine hex edge is the stored hex edge (a world constant, not a catalog
+// property): in plane units a = hexMeters / radiusM (the gnomonic plane is
+// in body-radius units). The chunk side stays a constant PHYSICAL footprint
+// (C.fineDisc.chunkKm), as in the DEM path.
+
+/**
+ * Does `planet` stream its fine layer from stored hexcells? The rule is
+ * DERIVED (docs/terrain2.txt §5.1) — resolution is a WORLD property, so the
+ * only per-body inputs are: the world declares `hex_meters`, the body STORES
+ * its surface (generated bodies — the giants — are the exemption, they have
+ * no hexcells rows), and the body is addressable in the world database
+ * (a `dbId`; a plain file world has no stored hexes behind the stream, so
+ * the same code path simply finds no data). No per-body resolution flag.
+ */
+export function storesHexCells(planet, world) {
+  return !!(
+    world &&
+    Number.isFinite(world.hex_meters) &&
+    world.hex_meters > 0 &&
+    planet &&
+    planet.dbId != null &&
+    !planet.generated
+  )
+}
+
+/** The fine hex edge in PLANE units for a stored-hex world = hexMeters / radiusM. */
+export function hexLatticeEdge(hexMeters, radiusM) {
+  return hexMeters / radiusM
+}
+
+/** The fine-hex count per chunk side for a stored-hex world (constant
+ *  physical footprint: round(chunkKm / hexKm)). */
+export function hexChunkSide(chunkKm, hexMeters) {
+  return Math.max(1, Math.round((chunkKm * 1000) / hexMeters))
+}
+
+/**
+ * The height of the stored hex nearest body-local unit `dir`, in WORLD
+ * UNITS (the stored datum — no world-scale division), from a fetched tile
+ * set (Map<row, { col0, h: Float64Array }>) built from a
+ * /api/bodies/:id/hex/tile response, or null when that row/col is not
+ * loaded — the caller falls back to the document height (the same graceful
+ * rule as demElevationAt).
+ */
+export function hexHeightAt(dir, grid, tiles) {
+  const lat = Math.asin(Math.max(-1, Math.min(1, dir[1])))
+  const lon = Math.atan2(-dir[2], dir[0])
+  const row = rowForLat(grid, lat)
+  const entry = tiles.get(row)
+  if (!entry) return null
+  const i = colForLon(grid, row, lon) - entry.col0
+  if (i < 0 || i >= entry.h.length) return null
+  return entry.h[i]
+}
+
+// The hex-tile provider (the seam the headless harness swaps, exactly like
+// the DEM tile provider): (dbId, lat0, lat1, lon0, lon1) →
+// Promise<Map<row,{col0,h:Float64Array}>|null>. The default fetches the
+// /api/bodies/:id/hex/tile endpoint (degrees, lat0 < lat1, lon0 < lon1, no
+// antimeridian wrap — the caller splits that).
+let hexTileProvider = async (dbId, lat0, lat1, lon0, lon1) => {
+  const q = `lat0=${lat0}&lat1=${lat1}&lon0=${lon0}&lon1=${lon1}`
+  const res = await fetch(`/api/bodies/${dbId}/hex/tile?${q}`)
+  if (!res.ok) return null
+  const j = await res.json()
+  const tiles = new Map()
+  for (const r of j.rows || []) tiles.set(r.row, { col0: r.col0, h: new Float64Array(r.heights) })
+  return tiles
+}
+
+/** Swap the stored-hex tile provider (the seam for tests / alternate sources). */
+export function setHexTileProvider(fn) {
+  if (fn) hexTileProvider = fn
+}
+
+export const getHexTileProvider = () => hexTileProvider

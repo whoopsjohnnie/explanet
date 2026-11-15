@@ -41,6 +41,7 @@ import { makeSuppressionMaterials } from '../three/fineMaterial.js'
 import { buildLevelsAsync, ASYNC_MIN_CELLS } from '../three/geometryService.js'
 import FineRegion, { useIsFocus } from './FineRegion.jsx'
 import { remapToDoc, fineRegionOf, makeFineSurface } from '../core/finedisc.js'
+import { storesHexCells } from '../core/fineTerrain.js'
 
 // scratch objects for the analytic pick (single-threaded, per-call)
 const _ray = new THREE.Ray()
@@ -517,12 +518,20 @@ function PlanetSim({ planet }) {
   // meshes ride the spin frame. A stub has no fine region — the chunks need the
   // document (the blend input, the fine->doc map), and the session hydrates
   // before anything on-body happens, so this is downstream of it, never a bypass.
+  const world = useStore((s) => s.world)
   const isFocus = useIsFocus(planet)
   // A fine region exists only for a body that CARRIES a terrain catalog
   // (§6: a body without one gets no fine region — the document mesh renders
   // as today). And only once its document is in hand (the blend input and the
   // fine→doc map need the real grid, not a stub's preview sample).
-  const canFine = isFocus && !!renderPlanet && Array.isArray(planet.elements) && !!planet.terrain?.catalog
+  // A fine source = a terrain catalog (the DEM path) OR stored hexcells
+  // (docs/terrain2.txt §6.2: the world declares hex_meters and this body
+  // stores its surface — the derived rule, no per-body flag). §6: a body
+  // with NEITHER gets no fine region — the document mesh renders as today.
+  // And only once its document is in hand (the blend input and the fine→doc
+  // map need the real grid, not a stub's preview sample).
+  const canFine =
+    isFocus && !!renderPlanet && Array.isArray(planet.elements) && (!!planet.terrain?.catalog || storesHexCells(planet, world))
   const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
   useEffect(
     () => () => {
@@ -660,12 +669,20 @@ function PlanetFlyer({ planet }) {
 
   // fine region (stage 1) — same as PlanetSim: the body the player is ON gets
   // streamed chunks + the §4.4 document suppression. A stub gets none.
+  const world = useStore((s) => s.world)
   const isFocus = useIsFocus(planet)
   // A fine region exists only for a body that CARRIES a terrain catalog
   // (§6: a body without one gets no fine region — the document mesh renders
   // as today). And only once its document is in hand (the blend input and the
   // fine→doc map need the real grid, not a stub's preview sample).
-  const canFine = isFocus && !!renderPlanet && Array.isArray(planet.elements) && !!planet.terrain?.catalog
+  // A fine source = a terrain catalog (the DEM path) OR stored hexcells
+  // (docs/terrain2.txt §6.2: the world declares hex_meters and this body
+  // stores its surface — the derived rule, no per-body flag). §6: a body
+  // with NEITHER gets no fine region — the document mesh renders as today.
+  // And only once its document is in hand (the blend input and the fine→doc
+  // map need the real grid, not a stub's preview sample).
+  const canFine =
+    isFocus && !!renderPlanet && Array.isArray(planet.elements) && (!!planet.terrain?.catalog || storesHexCells(planet, world))
   const supp = useMemo(() => (canFine ? makeSuppressionMaterials(materials) : null), [canFine, materials])
   useEffect(
     () => () => {

@@ -185,6 +185,28 @@ export function cellForLatLon(grid, latDeg, lonDeg) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The column indices of row `row` that overlap the longitude range
+ * [lon0Deg, lon1Deg] (degrees; lon0 < lon1, NO antimeridian wrap — the
+ * caller splits that). Cell j covers lon ∈ [j·d − π, (j+1)·d − π) where
+ * d = 2π/cols (center (j+½)·d − π). The overlap test is PER ROW: each row
+ * has its own column count, so the same index is a different longitude on
+ * different rows — a single shared col index would select the wrong cells.
+ * Boundary-touching cells are included (keeps the rect closed; they can
+ * never be the nearest of a sample strictly inside the range).
+ * @returns {{j0:number, j1:number}|null} inclusive bounds, or null when the
+ * row is entirely outside the range.
+ */
+export function rowLonRange(grid, row, lon0Deg, lon1Deg) {
+  const c = grid.cols[row]
+  const d = (2 * Math.PI) / c
+  const l0 = lon0Deg * DEG
+  const l1 = lon1Deg * DEG
+  const j0 = Math.max(0, Math.floor((l0 + Math.PI) / d - 1e-9))
+  const j1 = Math.min(c - 1, Math.floor((l1 + Math.PI) / d + 1e-9))
+  return j0 <= j1 ? { j0, j1 } : null
+}
+
+/**
  * The (row, col) ranges covering a lat/lon RECTANGLE: lat ∈ [lat0, lat1],
  * lon ∈ [lon0, lon1] (degrees, lat0 < lat1). The generator and the tile
  * endpoint use this to enumerate a tile's cells. lon wraps at ±180.

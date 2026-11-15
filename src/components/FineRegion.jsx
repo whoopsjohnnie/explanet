@@ -7,6 +7,16 @@
  * on finedisc.js's chunk lattice (reused verbatim), streamed ahead of the
  * player and feathered to the document mesh at the cap's edge (§4.3).
  *
+ * THE HEIGHT SOURCE (docs/terrain2.txt §6.2 — the inverted terrain model):
+ * in a world that declares `hex_meters`, the fine hex's height is the
+ * STORED hexcells row under it (nearest point — the same sampling rule as
+ * the DEM), streamed in lat/lon rectangles from /api/bodies/:id/hex/tile.
+ * The lattice, the chord-fan geometry, the feather, the §4.4 suppression,
+ * the §6 dispatch, the worker jobs and the queue are ALL UNCHANGED — only
+ * `demElevationAt` swaps to `hexHeightAt` (and the edge a = hexMeters/R
+ * instead of the pixel size). Bodies without stored hexes (generated, or a
+ * world without hex_meters) take the DEM path exactly as before.
+ *
  * Ownership, by data:
  *   • the MAIN THREAD owns the §4.1 synthesis — per fine hex the final
  *     height h_final (overlay > feather blend > DEM > document), the fine→doc
@@ -72,9 +82,15 @@ import {
   buildFineGeometryData,
   elementType,
   elementColor,
+  storesHexCells,
+  hexLatticeEdge,
+  hexChunkSide,
+  hexHeightAt,
   getTerrainCatalogProvider,
   getTerrainTileProvider,
+  getHexTileProvider,
 } from '../core/fineTerrain.js'
+import { highResGrid } from '../core/hexlattice.js'
 import { cellAtDirection } from '../core/surface.js'
 import { computeFaceNormals } from '../core/geometry.js'
 import { buildFineChunkAsync } from '../three/geometryService.js'
@@ -172,8 +188,17 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
   const catalogFailedRef = useRef(false)
   const tilesRef = useRef(new Map()) // LRU: `${tileLat},${tileLon}` → Int16Array
   const inflightRef = useRef(new Map()) // tile key → in-flight Promise
+  const hexTilesRef = useRef(new Map()) // LRU: rect key → Map<row,{col0,h}> (stored hexes)
+  const hexInflightRef = useRef(new Map()) // rect key → in-flight Promise
+  const hexGridRef = useRef(null) // the body's stored-hex grid (useFrame refreshes it)
   const genRef = useRef(0) // bumped per focus-chunk move (supersedes stale tile waits)
   const materials = getTerrainMaterials()
+
+  // The derived rule (docs/terrain2.txt §5.1): the world declares hex_meters
+  // and this body STORES its surface (generated giants are the exemption)
+  // with a database identity to stream from. No per-body resolution flag.
+  const world = useStore((s) => s.world)
+  const hexMode = storesHexCells(planet, world)
 
   // ------------------------------------------------------------------ tiles
   /**
@@ -208,11 +233,45 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     return p
   }
 
+  /**
+   * One stored-hex rectangle (Map<row,{col0,h}>, heights in world units),
+   * from the LRU or the hex-tile provider (deduped by rect key; a failed
+   * fetch resolves to null — the synthesis falls back to the document height
+   * there, exactly as with an absent DEM tile). The LRU persists across band
+   * exits (per §7, the cache is not per region) and is cleared on unmount.
+   */
+  const getHexTile = (rect) => {
+    let t = hexTilesRef.current.get(rect.key)
+    if (t) {
+      hexTilesRef.current.delete(rect.key)
+      hexTilesRef.current.set(rect.key, t) // refresh the LRU position
+      return Promise.resolve(t)
+    }
+    let p = hexInflightRef.current.get(rect.key)
+    if (!p) {
+      p = getHexTileProvider()(planet.dbId, rect.lat0, rect.lat1, rect.lon0, rect.lon1)
+        .then((tiles) => {
+          if (tiles) {
+            hexTilesRef.current.set(rect.key, tiles)
+            while (hexTilesRef.current.size > TILE_CACHE_MAX) hexTilesRef.current.delete(hexTilesRef.current.keys().next().value)
+          }
+          return tiles
+        })
+        .catch(() => null)
+        .finally(() => hexInflightRef.current.delete(rect.key))
+      hexInflightRef.current.set(rect.key, p)
+    }
+    return p
+  }
+
   // The catalog summary (GET /api/terrain shape, through the provider seam
   // the headless harness swaps for synthetic DEMs). Fetched once per session
   // mount; a failure (or a catalog absent from the DB) is remembered, so the
-  // region simply never appears and the fetch is not spammed.
+  // region simply never appears and the fetch is not spammed. In hex mode
+  // there is no catalog: the stored-hex grid is built synchronously
+  // (highResGrid) in useFrame.
   useEffect(() => {
+    if (hexMode) return
     let alive = true
     // the getter returns the provider FUNCTION (the tile call below invokes it
     // the same way); invoke it here to get the catalog-summary Promise
@@ -230,7 +289,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planet.id])
+  }, [planet.id, hexMode])
 
   // --------------------------------------------------------------- synthesis
   /**
@@ -270,7 +329,6 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
         const docCell = cellAtDirection(ctx.grid, c3, hint)
         hint = docCell
         const el = ctx.elements[docCell]
-        const { latDeg, lonDeg } = dirToLatLon(c3)
         const hDoc = el.h || 0
         const edit = fineEditFor(ctx.bodyId, docCell)
         let h
@@ -280,8 +338,22 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
           const cosD = c3[0] * ctx.focusDir[0] + c3[1] * ctx.focusDir[1] + c3[2] * ctx.focusDir[2]
           const w = featherWeight(Math.acos(Math.min(1, Math.max(-1, cosD))), ctx.capAngle, ctx.featherFrac)
           if (w > 0 && w < 1) allIndep = false
-          const elev = w > 0 ? demElevationAt(latDeg, lonDeg, ctx.tiles, ctx.pixelDeg, ctx.tileSize) : null
-          h = elev == null ? hDoc : w * (elev / ctx.scale) + (1 - w) * hDoc
+          // THE SOURCE SWAP (docs/terrain2.txt §6.2): stored hexcells (the
+          // world's hex_meters) or the DEM — both nearest-point samples that
+          // fall back to the document height when the data is absent. Stored
+          // heights are already in WORLD UNITS (the stored datum); DEM
+          // elevation is meters and divides by the world scale as before.
+          let hFine = null
+          if (w > 0) {
+            if (ctx.gridHr) {
+              hFine = hexHeightAt(c3, ctx.gridHr, ctx.hexTiles)
+            } else {
+              const { latDeg, lonDeg } = dirToLatLon(c3)
+              const elev = demElevationAt(latDeg, lonDeg, ctx.tiles, ctx.pixelDeg, ctx.tileSize)
+              if (elev != null) hFine = elev / ctx.scale
+            }
+          }
+          h = hFine == null ? hDoc : w * hFine + (1 - w) * hDoc
         }
         if (dr >= 0 && dq >= 0 && dr < n && dq < n) {
           docCells.add(docCell)
@@ -357,6 +429,61 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     return [...out]
   }
 
+  /**
+   * The stored-hex RECTANGLES a chunk's block + halo need (hex mode): the
+   * block's four corners expanded by ONE fine hex (the halo ring a boundary
+   * wall closes against) plus the center, their lat/lon bounds, then a
+   * NEAREST-POINT margin of one stored hex (a fine hex at the edge maps to
+   * the stored hex nearest its center — up to ~half a stored hex beyond the
+   * exact corner). The antimeridian is split into two ranges, as above.
+   * Each rect is fetched as a whole (the server packs its rows); the key is
+   * the quantized bounds, so an adjacent chunk's overlapping rect is a
+   * different key (the LRU holds both — the rects are small).
+   */
+  const hexRectsForChunk = (ctx, I, J) => {
+    const grid = ctx.gridHr
+    const n = ctx.chunkSide
+    const q0 = I * n
+    const r0 = J * n
+    const c = n >> 1
+    const pts = [
+      [q0 - 1, r0 - 1],
+      [q0 + n, r0 - 1],
+      [q0 - 1, r0 + n],
+      [q0 + n, r0 + n],
+      [q0 + c, r0 + c],
+    ]
+    let latMin = 90
+    let latMax = -90
+    let lonMin = 180
+    let lonMax = -180
+    for (const [q, r] of pts) {
+      const { latDeg, lonDeg } = dirToLatLon(fineHexDirs(ctx.patch, q, r, ctx.a).c3)
+      if (latDeg < latMin) latMin = latDeg
+      if (latDeg > latMax) latMax = latDeg
+      if (lonDeg < lonMin) lonMin = lonDeg
+      if (lonDeg > lonMax) lonMax = lonDeg
+    }
+    // one stored hex of slack (grid.dLat = the stored row spacing, radians)
+    const DEG_INV = 180 / Math.PI
+    const mLat = 2 * grid.dLat * DEG_INV
+    const midLat = ((latMin + latMax) / 2) / DEG_INV
+    const mLon = (2 * Math.sqrt(3) * ctx.a) / Math.max(0.05, Math.cos(midLat)) * DEG_INV
+    const lat0 = Math.max(-90, latMin - mLat)
+    const lat1 = Math.min(90, latMax + mLat)
+    const rects = []
+    const addRange = (g0, g1) =>
+      rects.push({ lat0, lat1, lon0: g0, lon1: g1, key: `${lat0.toFixed(3)},${lat1.toFixed(3)},${g0.toFixed(3)},${g1.toFixed(3)}` })
+    const m0 = lonMin - mLon
+    const m1 = lonMax + mLon
+    if (m1 - m0 <= 180) addRange(Math.max(-180, m0), Math.min(180, m1))
+    else {
+      addRange(Math.max(-180, m0), 180)
+      addRange(-180, Math.min(180, m1))
+    }
+    return rects
+  }
+
   // --------------------------------------------------------- chunk lifecycle
   /** Worker batches (assembled {type, geometry}) → mounted meshes. */
   const makeChunkMeshes = (batches) => {
@@ -420,13 +547,15 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       mountedRef.current.set(chunk.key, entry)
     }
     const gen = genRef.current
-    const tileKeys = tilesForChunk(ctx, chunk.I, chunk.J)
-    Promise.all(
-      tileKeys.map((k) => {
-        const [tl, ln] = k.split(',')
-        return getTile(+tl, +ln)
-      })
-    )
+    // the chunk's data, from whichever source this body streams (stored
+    // hexcells in a hex_meters world, else the DEM tiles):
+    const dataPromises = ctx.gridHr
+      ? hexRectsForChunk(ctx, chunk.I, chunk.J).map((r) => getHexTile(r))
+      : tilesForChunk(ctx, chunk.I, chunk.J).map((k) => {
+          const [tl, ln] = k.split(',')
+          return getTile(+tl, +ln)
+        })
+    Promise.all(dataPromises)
       .then(() => {
         if (gen !== genRef.current) return // a newer focus-chunk move superseded this
         const syn = synthesizeChunk(ctx, chunk.I, chunk.J)
@@ -574,8 +703,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     const region = regionRef.current
     const base = ctxRef.current
     const focus = focusRef.current
-    const catalog = catalogRef.current
-    if (!region || !base || !focus || !catalog) return
+    if (!region || !base || !focus) return
     const cellSet = new Set(cells)
     const ctx = { ...base, elements: freshPlanet.elements, focusDir: focus.dir }
     const touched = new Set()
@@ -625,21 +753,38 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       return
     }
     focusRef.current = focus
-    const catalog = catalogRef.current
-    if (!catalog || catalogFailedRef.current) {
-      // the summary has not arrived (or the catalog is not in the DB): no
-      // region until it does — a failure is remembered, never retried
-      if (lastFocusChunkRef.current !== null) teardownRegion()
-      return
-    }
 
-    const worldScale = useStore.getState().world.scale
+    const world = useStore.getState().world
+    const worldScale = world.scale
     const grid = getHexSphere(renderPlanet.frequency)
     const R = planetRadius(renderPlanet)
     const D = capRadiusU(worldScale)
     const capAngle = D / R
-    const a = fineLatticeEdge(catalog.pixelDeg) // the fine hex edge (plane units) = the pixel
-    const chunkSide = fineChunkSide(C.fineDisc.chunkKm, catalog.pixelDeg, R * worldScale)
+    const radiusM = R * worldScale
+
+    // The fine height SOURCE (docs/terrain2.txt §6.2): the world's stored
+    // hexcells when this body stores its surface (the derived rule —
+    // hex_meters + !generated + a dbId to stream from; no per-body flag),
+    // else the DEM catalog (stage 2). The lattice/chunk math is the same
+    // shape either way — only the edge and the height lookup differ.
+    let a, chunkSide
+    let catalog = null
+    if (storesHexCells(planet, world)) {
+      a = hexLatticeEdge(world.hex_meters, radiusM)
+      chunkSide = hexChunkSide(C.fineDisc.chunkKm, world.hex_meters)
+      hexGridRef.current = highResGrid(radiusM, world.hex_meters)
+    } else {
+      hexGridRef.current = null
+      catalog = catalogRef.current
+      if (!catalog || catalogFailedRef.current) {
+        // the summary has not arrived (or the catalog is not in the DB): no
+        // region until it does — a failure is remembered, never retried
+        if (lastFocusChunkRef.current !== null) teardownRegion()
+        return
+      }
+      a = fineLatticeEdge(catalog.pixelDeg) // the fine hex edge (plane units) = the pixel
+      chunkSide = fineChunkSide(C.fineDisc.chunkKm, catalog.pixelDeg, radiusM)
+    }
 
     // §3.2: the cap must sit wholly inside one patch and the §4.4 texture
     // must stay bounded. Beyond the safe angle there is NO region: the
@@ -684,8 +829,13 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       grid,
       elements: renderPlanet.elements,
       tiles: tilesRef.current,
-      pixelDeg: catalog.pixelDeg,
-      tileSize: catalog.tileSize,
+      // the stored-hex source (hex mode): the body's latitude-row grid + the
+      // fetched rect tiles (null/absent → the synthesis falls back to the
+      // document height, as with an absent DEM tile)
+      gridHr: hexGridRef.current,
+      hexTiles: hexTilesRef.current,
+      pixelDeg: catalog ? catalog.pixelDeg : 0,
+      tileSize: catalog ? catalog.tileSize : 0,
       R,
       scale: worldScale,
       bodyId: planet.id,
@@ -752,6 +902,8 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
       for (const key of [...mountedRef.current.keys()]) evictChunk(key)
       tilesRef.current.clear()
       inflightRef.current.clear()
+      hexTilesRef.current.clear()
+      hexInflightRef.current.clear()
       publishFineRegion(planet.id, null) // §6: no region on this body any more
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -423,6 +423,13 @@ export function normalizeWorld(raw) {
       elements: stub ? null : repairElements(p.elements, frequency),
     }
     if (p.dbId != null) planet.dbId = Math.trunc(Number(p.dbId))
+    // generated bodies (bodies.generation, docs/scaling.txt §5) store NO
+    // surface: the server synthesizes their atoms on hydration. The flag
+    // (skeleton `generated`, or the document's `generation` descriptor) is
+    // load-bearing for the inverted-terrain derivation — a world with
+    // hex_meters sets stored hexcells on every body EXCEPT these
+    // (docs/terrain2.txt §5.1).
+    if (p.generated || p.generation) planet.generated = true
     if (KINDS.includes(p.kind)) planet.kind = p.kind
     if (typeof p.parent === 'string' && p.parent && p.parent !== planet.id) planet.parent = p.parent.slice(0, 64)
     const rings = normalizeRings(p.rings)
@@ -469,6 +476,6 @@ export function serializeWorld(world) {
     // per-body field to round-trip. Absent = the pre-inversion world.
     ...(positive(world.hex_meters, null) ? { hex_meters: positive(world.hex_meters, null) } : {}),
     ...(Array.isArray(world.crafts) && world.crafts.length ? { crafts: world.crafts } : {}),
-    planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, ...doc }) => doc),
+    planets: world.planets.map(({ dbId, preview, stubAvgHeight, atomsPacked, generated, ...doc }) => doc),
   }
 }
