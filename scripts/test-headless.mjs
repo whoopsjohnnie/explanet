@@ -45,7 +45,10 @@
  *    is the document exactly, and the chunk mesh carries the blended height);
  *    unmounting is clean (every chunk geometry disposed, no leak, the doc mesh
  *    survives) and restores byte-identical LOD rendering (doc terrain
- *    unsuppressed, same level, no chunks)
+ *    unsuppressed, same level, no chunks); the region also streams while
+ *    FLYING low over the body (the flight focus gate — launch clears the doc
+ *    anchor, so the gate rides the motion.js flightFocus fact, not the pose),
+ *    and tears down when the craft climbs past the cap radius
  */
 
 import { test } from 'node:test'
@@ -57,6 +60,7 @@ import { walkReadout, walkerLocation, makeSurface, cellAtDirection } from '../sr
 import { craftRuntime, eva } from '../src/core/motion.js'
 import { useStore } from '../src/state/store.js'
 import { getHexSphere } from '../src/core/hexsphere.js'
+import { planetRadius } from '../src/core/planetMath.js'
 import { C } from '../src/core/constants.js'
 import {
   setTerrainProviders,
@@ -472,6 +476,48 @@ test('lod: the mounted level coarsens with distance and refines up close', { tim
 // core/finedisc.js. Every pin boots the camera along ANCHOR_DIR so the walker
 // spawns at the flat-basin anchor (a known, in-budget focus).
 // ---------------------------------------------------------------------------
+
+test('finedisc (flight): the region streams while flying low, tears down past the cap', {
+  timeout: 300_000,
+}, async () => {
+  const w = await bootWorld({ world: 'testball' })
+  await w.frames(30) // runtime sync (parked r resolves against the terrain)
+  const bodyId = w.planet('p-testball').id
+  const id = w.craft('Shuttle').id
+  await w.board('Shuttle')
+  await w.launch('Shuttle')
+  assert.equal(craftRuntime.get(id).state.mode, 'space', 'launch must put the craft off the pad')
+  const cap = capRadiusU(w.world.scale)
+  const R = planetRadius(w.planet(bodyId))
+  // The launch point sits LAUNCH_LIFT·R above the pad — inside the cap radius.
+  // (The regression this pin guards: launch clears the doc anchor, and the old
+  // gate read ONLY the anchor — so the region tore down for the entire flight
+  // and no streamed terrain was visible until the craft parked again.)
+  const st = craftRuntime.get(id).state
+  const d0 = Math.hypot(st.pos.x, st.pos.y, st.pos.z)
+  assert.ok(
+    d0 - R < cap,
+    `the launch point must be inside the cap radius (got ${(d0 - R).toFixed(3)} u, cap ${cap.toFixed(3)} u)`
+  )
+  await w.frames(60)
+  const region = fineRegionOf(bodyId)
+  assert.ok(region, 'a craft flying low over the body must publish a fine region (the flight gate)')
+  assert.ok(region.byHex.size > 0, 'chunks must stream in while flying low')
+  // climb out of the cap radius → the per-frame proximity check (fineFocusFor)
+  // must tear the region down even though the gate still holds the body
+  w.fly({ fwd: 1 })
+  let torn = false
+  for (let i = 0; i < 60 * 120 && !torn; i++) {
+    await w.frames(1)
+    torn = fineRegionOf(bodyId) === null
+  }
+  w.flyReset()
+  const st2 = craftRuntime.get(id).state
+  const d1 = Math.hypot(st2.pos.x, st2.pos.y, st2.pos.z)
+  assert.ok(d1 - R > cap, `the craft must be OUT of the cap radius by the end (got ${(d1 - R).toFixed(2)} u, cap ${cap.toFixed(3)} u)`)
+  assert.ok(torn, 'flying past the cap radius must tear the region down')
+  await w.close()
+})
 
 test('finedisc: the walker welds to the fine surface of record (chunks mounted)', {
   timeout: 300_000,

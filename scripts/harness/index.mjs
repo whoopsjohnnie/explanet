@@ -62,21 +62,29 @@ const CameraFollow = (await import('../../src/components/CameraFollow.jsx')).def
 const AmbientCrafts = (await import('../../src/components/Crafts.jsx')).default
 const CraftCockpit = (await import('../../src/components/CraftCockpit.jsx')).default
 const EvaCam = (await import('../../src/components/EvaCam.jsx')).default
-const { craftRuntime, eva, resetFlightInput, flightInput, pendingFoot } = await import(
-  '../../src/core/motion.js'
-)
+const {
+  craftRuntime,
+  eva,
+  resetFlightInput,
+  flightInput,
+  pendingFoot,
+  resetFlightFocus,
+} = await import('../../src/core/motion.js')
 const { walkerLocation } = await import('../../src/core/surface.js')
 const { resetGeometryWorker } = await import('../../src/three/geometryService.js')
 
 /** Reset the motion framework's module state between boots (it is process-
- *  global: craftRuntime, the adrift astronaut, held keys, foot handoff, and
- *  the on-foot walker's body-fixed location — the last one outlives a boot,
- *  so a fresh boot's FineRegion could read a PREVIOUS session's dir on frame
- *  1, before the new Walker has written its own). */
+ *  global: craftRuntime, the adrift astronaut, held keys, foot handoff, the
+ *  coarse flight-focus fact (a stale association from a previous boot's
+ *  flight would gate a fine region on the wrong body), and the on-foot
+ *  walker's body-fixed location — the last one outlives a boot, so a fresh
+ *  boot's FineRegion could read a PREVIOUS session's dir on frame 1, before
+ *  the new Walker has written its own). */
 function resetMotionState() {
   craftRuntime.clear()
   eva.state = null
   resetFlightInput()
+  resetFlightFocus()
   pendingFoot.bodyId = null
   pendingFoot.dir = null
   walkerLocation.bodyId = null

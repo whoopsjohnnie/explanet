@@ -32,6 +32,8 @@ import {
   writeCraftReadout,
   setMotionWorld,
   flightInput,
+  dominantBody,
+  setFlightFocus,
 } from '../core/motion.js'
 import { craftDesignFor } from '../core/craftDesigns.js'
 
@@ -138,6 +140,22 @@ export default function AmbientCrafts() {
       const input = piloting && s.player.craftId === c.id ? flightInput : null
       stepCraft(c, dt, input)
       if (input) writeCraftReadout(c) // HUD telemetry for the piloted craft
+    }
+    // The coarse fine-region gate fact (motion.js flightFocus): the piloted
+    // craft's current body association — the anchor body while parked, the
+    // dominant body in flight. It changes only on board/launch/park or a
+    // gravity-domain crossing; the per-frame cap-radius check stays in
+    // FineRegion (fineFocusFor), which tears the region down out of range.
+    if (piloting) {
+      const rt = craftRuntime.get(s.player.craftId)
+      if (rt) {
+        const st = rt.state
+        if (st.mode === 'park') setFlightFocus(st.bodyId)
+        else {
+          const dom = dominantBody(st.pos, s.world.gravity)
+          setFlightFocus(dom ? dom.id : null)
+        }
+      }
     }
   })
 

@@ -49,6 +49,9 @@ import {
   pendingFoot,
   writeCraftReadout,
   motionReadout,
+  setFlightFocus,
+  resetFlightFocus,
+  flightFocus,
 } from '../src/core/motion.js'
 import { normalizeWorld, serializeWorld, createCraft } from '../src/core/worldSchema.js'
 import { makeSurface } from '../src/core/surface.js'
@@ -722,4 +725,21 @@ test('flightInput & pendingFoot: side channels reset cleanly', () => {
   pendingFoot.bodyId = null
   pendingFoot.dir = null
   assert.equal(pendingFoot.bodyId, null)
+})
+
+test('flightFocus: the coarse gate fact fires only on a change, and resets clean', () => {
+  resetFlightFocus()
+  assert.equal(flightFocus.getSnapshot(), null)
+  let fires = 0
+  const off = flightFocus.subscribe(() => fires++)
+  setFlightFocus('p1')
+  setFlightFocus('p1') // same value: no re-fire (the step loops write every frame)
+  setFlightFocus('p2')
+  setFlightFocus(null)
+  off()
+  setFlightFocus('p3') // unsubscribed: no fire
+  assert.equal(fires, 3, 'a change fires the subscriber; repeats and post-unwrap writes do not')
+  assert.equal(flightFocus.getSnapshot(), 'p3')
+  resetFlightFocus()
+  assert.equal(flightFocus.getSnapshot(), null)
 })

@@ -48,7 +48,7 @@
  * world that never had chunks (§7, §11).
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
@@ -97,7 +97,7 @@ import { buildFineChunkAsync } from '../three/geometryService.js'
 import { getTerrainMaterials } from '../three/materials.js'
 import { setMountedTexture } from '../three/fineMaterial.js'
 import { walkerLocation } from '../core/surface.js'
-import { craftRuntime, eva } from '../core/motion.js'
+import { craftRuntime, eva, flightFocus } from '../core/motion.js'
 import { C } from '../core/constants.js'
 
 /** The DEM tile LRU cap (~2.7 MB of 28 KiB int16 tiles) + the tile-range
@@ -107,20 +107,23 @@ const TILE_CACHE_MAX = 96
 const TILE_MARGIN_DEG = 0.05
 
 /**
- * The coarse focus fact: is `planet` the body the player is currently ON?
- * Derived from the zustand session (foot: the walker's body; craft: a craft
- * anchored to it). Changes only when the session changes bodies — safe as
- * React state.
+ * The coarse focus fact: is `planet` the body the player's session is
+ * associated with? Foot: the walker's body (the zustand session). Craft and
+ * EVA: the motion.js FLIGHT FOCUS (motion.js) — the craft's anchor body while
+ * parked, its dominant body in flight, the adrift astronaut's dominant body —
+ * a mutable fact the step loops publish and that changes only on a real
+ * association change (board, launch, park, a gravity-domain crossing), never
+ * per frame, so it is safe as React state via useSyncExternalStore. The
+ * per-frame PROXIMITY check is fineFocusFor below: a focused body that the
+ * player is no longer close to (beyond the cap radius) streams nothing — its
+ * region tears down on the first frame fineFocusFor returns null.
  */
 export function useIsFocus(planet) {
   const player = useStore((s) => s.player)
+  const focusId = useSyncExternalStore(flightFocus.subscribe, flightFocus.getSnapshot)
   if (!player || player.kind === 'freeCam') return false
   if (player.kind === 'foot') return player.bodyId === planet.id
-  if (player.kind === 'craft') {
-    const world = useStore.getState().world
-    const craft = (world.crafts || []).find((c) => c.id === player.craftId)
-    return !!craft && craft.pose?.anchor?.bodyId === planet.id
-  }
+  if (player.kind === 'craft' || player.kind === 'eva') return focusId === planet.id
   return false
 }
 

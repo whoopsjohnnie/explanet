@@ -17,7 +17,17 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useStore } from '../state/store.js'
-import { eva, craftVectors, stepEva, setMotionWorld, writeEvaReadout, flightInput, resetFlightInput } from '../core/motion.js'
+import {
+  eva,
+  craftVectors,
+  stepEva,
+  setMotionWorld,
+  writeEvaReadout,
+  flightInput,
+  resetFlightInput,
+  dominantBody,
+  setFlightFocus,
+} from '../core/motion.js'
 
 const LOOK_SENS = 0.0032
 
@@ -136,14 +146,23 @@ export default function EvaCam() {
     const s = useStore.getState()
     if (!s.player || s.player.kind !== 'eva') return
     const st = eva.state
-    if (!st) return // a land event just flipped the session; wait for it
+    if (!st) {
+      setFlightFocus(null) // a land event just flipped the session to foot
+      return
+    }
     const dt = Math.min(delta, 0.05)
     const ev = s.playing ? stepEva(dt, flightInput) : null
     if (ev) {
       // the fall ended: on foot where it landed (Walker spawns there)
       s.evaLand(ev)
+      setFlightFocus(null)
       return
     }
+    // The coarse fine-region gate fact: the astronaut's dominant body, so the
+    // streamed terrain follows an EVA fall down to the surface (the per-frame
+    // cap-radius check stays in FineRegion).
+    const dom = dominantBody(st.pos, world.gravity)
+    setFlightFocus(dom ? dom.id : null)
     writeEvaReadout()
     camera.position.set(st.pos.x, st.pos.y, st.pos.z)
     const v = craftVectors(st.yaw, st.pitch)

@@ -843,6 +843,37 @@ export function stepEva(dt, input = null) {
 }
 
 // ---------------------------------------------------------------------------
+// flight focus — the coarse BODY-ASSOCIATION fact of the piloting session:
+// the craft's anchor body while parked, its dominant body in flight, and the
+// adrift astronaut's dominant body in EVA. The fine-region GATE
+// (FineRegion's useIsFocus) subscribes to it through React's
+// useSyncExternalStore; the per-frame PROXIMITY check stays in FineRegion's
+// own useFrame (fineFocusFor), which returns null — and tears the region
+// down — whenever the player is farther than the cap radius. The fact
+// changes only on a real association change (board, launch, park, a
+// gravity-domain crossing) — never at 60 Hz — so the gate stays coarse and
+// session-level while the streamed terrain follows the player through flight
+// and EVA. The step loops (Crafts.jsx / EvaCam.jsx) publish it.
+// ---------------------------------------------------------------------------
+const flightFocusState = { id: null }
+const flightFocusSubs = new Set()
+export function setFlightFocus(id) {
+  if (flightFocusState.id === id) return
+  flightFocusState.id = id
+  for (const f of [...flightFocusSubs]) f()
+}
+export const flightFocus = {
+  subscribe: (f) => {
+    flightFocusSubs.add(f)
+    return () => flightFocusSubs.delete(f)
+  },
+  getSnapshot: () => flightFocusState.id,
+}
+export function resetFlightFocus() {
+  setFlightFocus(null)
+}
+
+// ---------------------------------------------------------------------------
 // shared side channels (the 60 Hz state the HUD polls, never React state)
 // ---------------------------------------------------------------------------
 
