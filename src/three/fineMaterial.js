@@ -141,32 +141,53 @@ export function makeSuppressionMaterials(shared) {
 
 /**
  * Resize + repopulate the mounted-chunk data texture to the current loaded set.
- * `chunks` is the loaded set's chunk array ({ I, J, ... }); the texture covers
- * their (I, J) bounding box, one byte per chunk (1 = mounted). Returns the
- * updated { Imin, Jmin, W, H } for the uniforms.
+ * `supp` is makeSuppressionMaterials' return object; `chunks` is the loaded
+ * set's chunk array ({ I, J, ... }). The texture covers their (I, J) bounding
+ * box, one byte per chunk (1 = mounted). Returns the updated { Imin, Jmin, W,
+ * H } for the uniforms.
+ *
+ * A SIZE change replaces the texture OBJECT, it never resizes it in place:
+ * three.js keys its GPU allocation on a cache key that carries no dimensions
+ * (getTextureCacheKey), so a resized image uploads as gl.texSubImage2D into
+ * the STALE allocation — the driver rejects the overflow (GL_INVALID_VALUE:
+ * offset overflows texture dimensions) and the set is never visible on the
+ * GPU (the shader samples the original 1×1 = nothing mounted, so the
+ * §4.4 discard never fires and the coarse document surface double-renders
+ * under the fine chunks). A fresh DataTexture is a fresh TextureSource, which
+ * allocates a fresh GL texture; the swap goes through the shared fdMounted
+ * uniform, so every cloned material of the body picks it up.
  */
-export function setMountedTexture(mountedTexture, chunks) {
-  if (!chunks.length) {
-    mountedTexture.image.data = new Uint8Array([0])
-    mountedTexture.image.width = 1
-    mountedTexture.image.height = 1
-    mountedTexture.needsUpdate = true
-    return { Imin: 0, Jmin: 0, W: 1, H: 1 }
+export function setMountedTexture(supp, chunks) {
+  let Imin = 0, Jmin = 0, W = 1, H = 1
+  let data = null
+  if (chunks.length) {
+    Imin = Infinity, Jmin = Infinity
+    let Imax = -Infinity, Jmax = -Infinity
+    for (const c of chunks) {
+      if (c.I < Imin) Imin = c.I
+      if (c.J < Jmin) Jmin = c.J
+      if (c.I > Imax) Imax = c.I
+      if (c.J > Jmax) Jmax = c.J
+    }
+    W = Imax - Imin + 1
+    H = Jmax - Jmin + 1
+    data = new Uint8Array(W * H)
+    for (const c of chunks) data[(c.J - Jmin) * W + (c.I - Imin)] = 1
   }
-  let Imin = Infinity, Jmin = Infinity, Imax = -Infinity, Jmax = -Infinity
-  for (const c of chunks) {
-    if (c.I < Imin) Imin = c.I
-    if (c.J < Jmin) Jmin = c.J
-    if (c.I > Imax) Imax = c.I
-    if (c.J > Jmax) Jmax = c.J
+  const tex = supp.mountedTexture
+  if (tex.image.width !== W || tex.image.height !== H) {
+    const next = new THREE.DataTexture(
+      data || new Uint8Array([0]), W, H, THREE.RedFormat, THREE.UnsignedByteType
+    )
+    next.magFilter = THREE.NearestFilter
+    next.minFilter = THREE.NearestFilter
+    next.needsUpdate = true
+    supp.uniforms.fdMounted.value = next
+    supp.mountedTexture = next
+    tex.dispose()
+  } else {
+    tex.image.data.set(data || new Uint8Array([0]))
+    tex.needsUpdate = true
   }
-  const W = Imax - Imin + 1
-  const H = Jmax - Jmin + 1
-  const data = new Uint8Array(W * H)
-  for (const c of chunks) data[(c.J - Jmin) * W + (c.I - Imin)] = 1
-  mountedTexture.image.data = data
-  mountedTexture.image.width = W
-  mountedTexture.image.height = H
-  mountedTexture.needsUpdate = true
   return { Imin, Jmin, W, H }
 }

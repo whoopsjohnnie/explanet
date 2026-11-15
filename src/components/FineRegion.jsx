@@ -521,7 +521,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
   const refreshSuppression = () => {
     if (!supp) return
     const chunks = [...mountedRef.current.values()].filter((c) => c.meshes)
-    const box = setMountedTexture(supp.mountedTexture, chunks)
+    const box = setMountedTexture(supp, chunks)
     supp.uniforms.fdTexOffset.value.set(box.Imin, box.Jmin)
     supp.uniforms.fdTexSize.value.set(box.W, box.H)
   }
@@ -642,7 +642,7 @@ export default function FineRegion({ planet, renderPlanet, supp }) {
     publishFineRegion(planet.id, null)
     if (supp) {
       supp.uniforms.fdCapPlane.value = 0 // radius 0 → the discard is a no-op
-      setMountedTexture(supp.mountedTexture, [])
+      setMountedTexture(supp, [])
     }
   }
 

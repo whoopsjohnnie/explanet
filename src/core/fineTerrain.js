@@ -37,6 +37,7 @@ import { hexToPlane, planeToHex, dirFromPlane, projectToPlane } from './finedisc
 import { cellAtDirection } from './surface.js'
 import { terrainDefaults } from './terrain.js'
 import { rowForLat, colForLon } from './hexlattice.js'
+import { hexToInt } from './atoms.js'
 
 const SQRT3 = Math.sqrt(3)
 const DEG = Math.PI / 180
@@ -435,11 +436,14 @@ export function elementType(el) {
 }
 
 /** The terrain color of a document ELEMENT (the element-object form of
- *  fineCellColor — file worlds carry no packed mirror). */
+ *  fineCellColor). The element's `c` is a hex STRING (generators, the DB wire
+ *  and elementsFromPacked all emit '#rrggbb'), or absent — parse it with the
+ *  canonical hexToInt, never a bitwise int cast (a string '| 0' is 0, which
+ *  painted every stored-atom chunk black under the vertexColors material). */
 export function elementColor(el) {
   if (el && el.c != null) {
-    const n = el.c | 0
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
+    const n = hexToInt(el.c)
+    if (n != null) return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
   }
   return defaultColor(elementType(el))
 }

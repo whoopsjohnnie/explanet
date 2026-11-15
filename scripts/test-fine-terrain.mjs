@@ -20,6 +20,7 @@ import {
   featherWeight,
   buildFineGeometryData,
   fineCellColor,
+  elementColor,
   SIDE_OFFSET,
 } from '../src/core/fineTerrain.js'
 import { hexToPlane, planeToHex, dirFromPlane } from '../src/core/finedisc.js'
@@ -281,6 +282,20 @@ const PIXEL_DEG = 1 / 60 // ETOP2022-60s
   const okC = approx(withC[0], 0x2f / 255) && approx(withC[1], 0x6d / 255) && approx(withC[2], 0x2a / 255)
   const okDef = withoutC.length === 3 && withoutC.every((v) => v >= 0 && v <= 1)
   check('fineCellColor: element color + the terrain-default fallback', okC && okDef)
+}
+
+// ---------------------------------------------------------------------------
+// 9b. elementColor: the element-object form — the hex STRING `c` must parse
+//     (a bitwise '| 0' on a string is 0 and painted every stored-atom chunk
+//     black under the vertexColors material; the regression for that).
+// ---------------------------------------------------------------------------
+{
+  const withC = elementColor({ t: 'rock', h: 0, c: '#969188' })
+  const okC = approx(withC[0], 0x96 / 255) && approx(withC[1], 0x91 / 255) && approx(withC[2], 0x88 / 255)
+  const notBlack = withC.some((v) => v > 0)
+  const noC = elementColor({ t: 'rock', h: 0 })
+  const okDef = noC.length === 3 && noC.every((v) => v >= 0 && v <= 1) && noC.some((v) => v > 0)
+  check('elementColor: string hex parses (not black) + the type-default fallback', okC && notBlack && okDef)
 }
 
 // keep the imports referenced (the module graph is exercised, not just the API)
