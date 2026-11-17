@@ -51,7 +51,7 @@ import { registry } from './physics.js'
 import { planetRadius } from './planetMath.js'
 import { getHexSphere } from './hexsphere.js'
 import { cellAtDirection, fanRadiusAt, makeSurface } from './surface.js'
-import { recordSurfaceRadius } from './finedisc.js'
+import { recordSurfaceRadius, fineRegionOf, makeFineSurface } from './finedisc.js'
 import { CRAFT_TYPES, EVA_TUNING } from './craftTypes.js'
 
 export { CRAFT_TYPES, EVA_TUNING }
@@ -192,7 +192,16 @@ export function altitudeOf(p, body, planet) {
   const dz = p.z - body.pos.z
   const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
   if (!planet || !planet.elements) return d - body.radius
-  const dir = norm3([dx, dy, dz])
+  const dirW = norm3([dx, dy, dz])
+  // §6: the document cell query AND the fine dispatch both live in the
+  // BODY-LOCAL frame — the hex grid and the fine region's gnomonic lattice are
+  // body-fixed, and the registry quat is the spin. The raw world dir is only
+  // correct for an unspun body; on a spinning body it misses the body-local
+  // fine lattice, so the craft's altitude silently reads the DOCUMENT instead
+  // of the fine surface (a rover "sits on the purple" under the orange). Rotate
+  // the dir into the body frame — exactly as fineFocusFor and the lat/lon readout
+  // (line ~998) already do.
+  const dir = body.quat ? rotateByQuat(dirW, invertQuat(body.quat)) : dirW
   const hex = getHexSphere(planet.frequency)
   const cell = cellAtDirection(hex, dir)
   const h = (planet.elements[cell] && planet.elements[cell].h) || 0
@@ -554,7 +563,14 @@ function getDriveSurface(planet) {
     driveSurface = makeSurface(planet, null) // only heightAt / tile / hex are used
     driveSurfaceKey = planet.elements
   }
-  return driveSurface
+  // §6: the rover must drive on the SURFACE OF RECORD — the fine composite
+  // (per-point dispatch into mounted chunks) when a region is mounted on the
+  // body, the document surface otherwise. Driving the plain document surface
+  // left the rover welded to the document (purple) terrain even where a fine
+  // (orange) chunk is mounted above it. The region object is mutated in place
+  // as chunks mount/evict, so a fresh wrapper each frame stays live.
+  const region = fineRegionOf(planet.id)
+  return region ? makeFineSurface(driveSurface, region) : driveSurface
 }
 
 // Rotate unit v about unit axis by angle (rad) — Rodrigues, allocation-light

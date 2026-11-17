@@ -433,13 +433,17 @@ test('drive: board rover → launch refused → drives + stays welded → eject 
   assert.ok(arc > 0.5, `the rover must drive along the surface (arc ${arc.toFixed(2)} rad)`)
 
   // it is WELDED to the rendered surface WHEN GROUNDED (the driveStep contract):
-  // the anchor r is the chord-fan radius at its dir. Mid-fall — after it drove
-  // off a ledge and obeys gravity (no lift) — it is legitimately above it.
-  const surface = makeSurface(w.planet('p-testball'), null)
+  // the anchor r is the chord-fan radius at its dir. The RENDERED surface is the
+  // surface of record — the fine composite when a chunk is mounted under the
+  // rover (the rover drives on getDriveSurface, which dispatches per point), the
+  // document otherwise. Mid-fall — after it drove off a ledge and obeys gravity
+  // (no lift) — it is legitimately above it.
+  const docSurface = makeSurface(w.planet('p-testball'), null)
+  const rec = surfaceOfRecord(docSurface, w.planet('p-testball').id, st.dir)
   if (st.grounded)
     assert.ok(
-      Math.abs(st.r - surface.heightAt(st.dir).radius) < 1e-9,
-      `grounded rover r (${st.r}) must equal the rendered surface radius at its dir (${surface.heightAt(st.dir).radius})`
+      Math.abs(st.r - rec.surface.heightAt(st.dir).radius) < 1e-9,
+      `grounded rover r (${st.r}) must equal the surface-of-record radius at its dir (${rec.surface.heightAt(st.dir).radius})`
     )
 
   // steer: A/D turns the heading (and the nose stays on the horizon)
@@ -459,9 +463,10 @@ test('drive: board rover → launch refused → drives + stays welded → eject 
   const st3 = craftRuntime.get(id).state
   assert.ok(Math.abs(st3.speed) < 0.1, 'the throttle must ease back to 0')
   assert.ok(st3.grounded, 'the rover settles back on the ground (no lift)')
+  const rec3 = surfaceOfRecord(docSurface, w.planet('p-testball').id, st3.dir)
   assert.ok(
-    Math.abs(st3.r - surface.heightAt(st3.dir).radius) < 1e-9,
-    `grounded rover r (${st3.r}) must equal the rendered surface radius at its dir (${surface.heightAt(st3.dir).radius})`
+    Math.abs(st3.r - rec3.surface.heightAt(st3.dir).radius) < 1e-9,
+    `grounded rover r (${st3.r}) must equal the surface-of-record radius at its dir (${rec3.surface.heightAt(st3.dir).radius})`
   )
 
   // eject → on foot at where the rover drove to

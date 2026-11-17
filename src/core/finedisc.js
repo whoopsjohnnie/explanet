@@ -521,6 +521,8 @@ export function makeFineSurface(docSurface, region) {
     R: docSurface.R,
     hs: docSurface.hs,
     maxH: Math.max(docSurface.maxH, region.maxH),
+    tile: docSurface.tile,
+    real: docSurface.real,
     metrics: docSurface.metrics,
     heightAt,
     fine: true,
