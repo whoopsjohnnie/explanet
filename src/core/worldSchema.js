@@ -443,8 +443,12 @@ export function normalizeWorld(raw) {
     if (stub) {
       if (Number.isFinite(Number(p.stubAvgHeight))) planet.stubAvgHeight = Number(p.stubAvgHeight)
       const pf = clampInt(p.preview?.frequency ?? 0, 1, MAX_FREQUENCY)
-      if (pf < frequency && Array.isArray(p.preview.elements) && p.preview.elements.length)
-        planet.preview = { frequency: pf, elements: repairElements(p.preview.elements, pf) }
+      const pv = p.preview?.elements
+      // a stub can legally carry NO preview (a generated body coarser than the
+      // preview frequency, or a corrupt file) — the lenient contract is to
+      // render what there is, not to throw on the missing sample
+      if (pf < frequency && Array.isArray(pv) && pv.length)
+        planet.preview = { frequency: pf, elements: repairElements(pv, pf) }
     }
     world.planets.push(planet)
   }
